@@ -26,9 +26,9 @@ const PALETTE = {
 };
 
 const UNITS = {
-  MS_TO_MPH:  2.237,    // m/s → mph
-  M_TO_FEET:  3.28084,  // m → feet
-  M_TO_YARDS: 1.094,    // m → yards
+  MS_TO_MPH: 2.237, // m/s → mph
+  M_TO_FEET: 3.28084, // m → feet
+  M_TO_YARDS: 1.094, // m → yards
 };
 
 // ─── CONFIGURATION ──────────────────────────────────────────────────────────
@@ -658,6 +658,137 @@ class TrajectoryArrow {
   }
 }
 
+// ─── CLUB SELECTOR ──────────────────────────────────────────────────────────
+/**
+ * Manages club selection logic and auto-selection based on distance
+ */
+class ClubSelector {
+  constructor(circleUIManager = null) {
+    this.circleUIManager = circleUIManager;
+    this.currentClub = 12; // Default to driver
+    this.manuallySelectedClub = false; // True if user manually picked a club
+    this.clubButtonsAttached = false; // Track if button listeners are set up
+  }
+
+  /**
+   * Reset to driver when entering aim mode
+   */
+  reset() {
+    this.currentClub = 12;
+    this.manuallySelectedClub = false;
+    this.clubButtonsAttached = false;
+  }
+
+  /**
+   * Find best club for a given distance
+   */
+  findBestClubForDistance(distance) {
+    let bestClubId = 12; // Default to driver
+    let bestDifference = Math.abs(
+      this.getPredictedDistanceForClub(ClubData.getClub(12)) - distance,
+    );
+
+    for (let i = 0; i < ClubData.CLUBS.length; i++) {
+      const club = ClubData.CLUBS[i];
+      const predicted = this.getPredictedDistanceForClub(club);
+      const difference = Math.abs(predicted - distance);
+      if (difference < bestDifference) {
+        bestDifference = difference;
+        bestClubId = i;
+      }
+    }
+    return bestClubId;
+  }
+
+  /**
+   * Get predicted max distance for a club
+   */
+  getPredictedDistanceForClub(club) {
+    return club.maxDistance;
+  }
+
+  /**
+   * Auto-select best club if user hasn't manually picked one
+   */
+  autoSelectClubIfNeeded(distance) {
+    if (!this.manuallySelectedClub) {
+      this.currentClub = this.findBestClubForDistance(distance);
+      return true; // Club changed
+    }
+    return false; // Club unchanged
+  }
+
+  /**
+   * Manually set club and prevent auto-selection until camera rotates
+   */
+  selectClub(clubId) {
+    this.currentClub = Math.max(0, Math.min(12, clubId));
+    this.manuallySelectedClub = true;
+  }
+
+  /**
+   * Allow auto-selection again (e.g., after camera rotation)
+   */
+  enableAutoSelect() {
+    this.manuallySelectedClub = false;
+  }
+
+  /**
+   * Update UI with current club info
+   */
+  updateUI() {
+    if (!this.circleUIManager) return;
+
+    const club = ClubData.getClub(this.currentClub);
+    const estimatedDistance = Utils.metersToYards(club.maxDistance);
+
+    this.circleUIManager.updateClub(
+      this.currentClub,
+      club.name,
+      estimatedDistance,
+    );
+
+    // Attach button listeners if not already done
+    if (!this.clubButtonsAttached) {
+      const buttons = this.circleUIManager.getClubButtons();
+      if (buttons) {
+        if (buttons.upBtn) {
+          buttons.upBtn.onclick = (e) => {
+            e.stopPropagation();
+            this.selectClub((this.currentClub - 1 + 13) % 13);
+            this.updateUI();
+          };
+        }
+        if (buttons.downBtn) {
+          buttons.downBtn.onclick = (e) => {
+            e.stopPropagation();
+            this.selectClub((this.currentClub + 1) % 13);
+            this.updateUI();
+          };
+        }
+        this.clubButtonsAttached = true;
+      }
+    }
+  }
+
+  /**
+   * Handle keyboard input for club selection
+   */
+  handleKeyPress(key) {
+    if (key >= "0" && key <= "9") {
+      this.selectClub(parseInt(key));
+      return true;
+    } else if (key === "q") {
+      this.selectClub((this.currentClub + 1) % 13);
+      return true;
+    } else if (key === "e") {
+      this.selectClub((this.currentClub - 1 + 13) % 13);
+      return true;
+    }
+    return false;
+  }
+}
+
 // ─── AIM VIEW ──────────────────────────────────────────────────────────────
 
 class AimView {
@@ -683,54 +814,22 @@ class AimView {
     this.cameraDistance = CONFIG.AIM_VIEW.CAMERA_DISTANCE;
     this.cameraHeight = CONFIG.AIM_VIEW.CAMERA_HEIGHT;
     this.cameraRotation = 0;
-    this.currentClub = 12;
-    this.lastLoggedClubId = -1; // Track for logging only on changes
-    this.manuallySelectedClub = false; // Track if user manually selected a club
-    this.clubButtonsAttached = false; // Track if club circle buttons have been set up
+
+    // Use ClubSelector to manage club logic
+    this.clubSelector = new ClubSelector(circleUIManager);
+
     this.trajectoryArrow = new TrajectoryArrow(scene, ballMesh.position);
     this.touchStartX = 0;
     this.touchStartY = 0;
     this.lastMouseX = 0;
     this.lastMouseY = 0;
     this.isDragging = false;
+
+    // Initialize event handlers once so removeEventListener can find them
+    this.initializeEventHandlers();
   }
 
-  activate() {
-    this.isActive = true;
-    this.currentClub = 12; // Reset to driver
-    this.manuallySelectedClub = false; // Reset auto-selection on new aim
-    this.lastLoggedClubId = -1; // Reset logging tracker
-    this.clubButtonsAttached = false; // Reset button attachment flag
-    this.camera.fov = CONFIG.CAMERA.FOV_AIM;
-
-    // Character faces camera in aim mode (smoothly rotates via updateRotation in render loop)
-    this.golfBallGuy.setFacingCamera(this.camera.position);
-
-    this.setupOrbitControls();
-    this.trajectoryArrow.create();
-    if (this.circleUIManager) {
-      this.circleUIManager.showClubCircle();
-      this.circleUIManager.showCompassCircle();
-      this.circleUIManager.hidePowerCircle();
-      // Keep stats circle visible at all times (shows yardage in aim mode too)
-    }
-    this.updateUI();
-  }
-
-  deactivate() {
-    this.isActive = false;
-    this.camera.fov = CONFIG.CAMERA.FOV_PLAY;
-    this.removeOrbitControls();
-    this.trajectoryArrow.dispose();
-    if (this.circleUIManager) {
-      this.circleUIManager.hideClubCircle();
-      this.circleUIManager.showStatsCircle();
-      this.circleUIManager.showCompassCircle();
-      this.circleUIManager.showPowerCircle();
-    }
-  }
-
-  setupOrbitControls() {
+  initializeEventHandlers() {
     this.onPointerDown = (e) => {
       if (!this.isActive) return;
       this.isDragging = true;
@@ -743,8 +842,8 @@ class AimView {
     this.onPointerMove = (e) => {
       if (!this.isDragging || !this.isActive) return;
 
-      // User is rotating camera - re-enable auto-select so it tracks the new aim
-      this.manuallySelectedClub = false;
+      // User is rotating camera - allow auto-select to track new aim
+      this.clubSelector.enableAutoSelect();
 
       const deltaX = e.clientX - this.lastMouseX;
       const deltaY = e.clientY - this.lastMouseY;
@@ -783,14 +882,15 @@ class AimView {
                 pickedMesh === pinData.mesh ||
                 pickedMesh?.parent === pinData.mesh
               ) {
-                // Pin clicked! Auto-select club for this distance
+                // Pin clicked! Use clubSelector to auto-pick best club
                 const distanceToPin = BABYLON.Vector3.Distance(
                   this.ballMesh.position,
                   pinData.mesh.position,
                 );
-                const bestClubId = this.findBestClubForDistance(distanceToPin);
-                this.currentClub = bestClubId;
-                this.updateUI();
+                const bestClubId =
+                  this.clubSelector.findBestClubForDistance(distanceToPin);
+                this.clubSelector.selectClub(bestClubId);
+                this.clubSelector.updateUI();
                 return; // Don't check for ball click if pin was clicked
               }
             }
@@ -821,21 +921,61 @@ class AimView {
 
     this.onKeyDown = (e) => {
       if (!this.isActive) return;
-      if (e.key >= "0" && e.key <= "9") {
-        this.currentClub = parseInt(e.key);
-        this.manuallySelectedClub = true;
-        this.updateUI();
-      } else if (e.key === "q") {
-        this.currentClub = (this.currentClub + 1) % 13;
-        this.manuallySelectedClub = true;
-        this.updateUI();
-      } else if (e.key === "e") {
-        this.currentClub = (this.currentClub - 1 + 13) % 13;
-        this.manuallySelectedClub = true;
-        this.updateUI();
+      if (this.clubSelector.handleKeyPress(e.key)) {
+        this.clubSelector.updateUI();
       }
     };
+  }
 
+  // Getter for backward compatibility
+  get currentClub() {
+    return this.clubSelector.currentClub;
+  }
+
+  set currentClub(value) {
+    this.clubSelector.currentClub = value;
+  }
+
+  set manuallySelectedClub(value) {
+    this.clubSelector.manuallySelectedClub = value;
+  }
+
+  get manuallySelectedClub() {
+    return this.clubSelector.manuallySelectedClub;
+  }
+
+  activate() {
+    this.isActive = true;
+    this.clubSelector.reset(); // Reset club selection
+    this.camera.fov = CONFIG.CAMERA.FOV_AIM;
+
+    // Character faces camera in aim mode (smoothly rotates via updateRotation in render loop)
+    this.golfBallGuy.setFacingCamera(this.camera.position);
+
+    this.setupOrbitControls();
+    this.trajectoryArrow.create();
+    if (this.circleUIManager) {
+      this.circleUIManager.showClubCircle();
+      this.circleUIManager.showCompassCircle();
+      this.circleUIManager.hidePowerCircle();
+    }
+    this.clubSelector.updateUI();
+  }
+
+  deactivate() {
+    this.isActive = false;
+    this.camera.fov = CONFIG.CAMERA.FOV_PLAY;
+    this.removeOrbitControls();
+    this.trajectoryArrow.dispose();
+    if (this.circleUIManager) {
+      this.circleUIManager.hideClubCircle();
+      this.circleUIManager.showStatsCircle();
+      this.circleUIManager.showCompassCircle();
+      this.circleUIManager.showPowerCircle();
+    }
+  }
+
+  setupOrbitControls() {
     // Listen to canvas pointer events (same as InputHandler)
     this.canvas.addEventListener("pointerdown", this.onPointerDown);
     this.canvas.addEventListener("pointermove", this.onPointerMove);
@@ -869,27 +1009,24 @@ class AimView {
     this.camera.setTarget(ballPos.add(new BABYLON.Vector3(0, 1, 0)));
 
     // Always get the current club (will be used for arrow and calculations)
-    const club = ClubData.getClub(this.currentClub);
+    const club = ClubData.getClub(this.clubSelector.currentClub);
 
     // Calculate distance to nearest pin and auto-select best club
     const pins = this.game?.scene?.pinManager?.pins;
 
     if (pins && pins.length > 0) {
       try {
-        const distanceToPin = this.getDistanceToNearestPin(ballPos) * UNITS.M_TO_YARDS;
-        const bestClubId = this.findBestClubForDistance(distanceToPin);
+        const distanceToPin =
+          this.getDistanceToNearestPin(ballPos) * UNITS.M_TO_YARDS;
 
-        // Track club changes (without logging)
-        this.lastLoggedClubId = bestClubId;
-
-        // Auto-select best club ONLY if user hasn't manually selected one
-        if (!this.manuallySelectedClub) {
-          this.currentClub = bestClubId;
-          this.updateUI(); // Update UI to show new club
+        // Auto-select best club if user hasn't manually picked one
+        if (this.clubSelector.autoSelectClubIfNeeded(distanceToPin)) {
+          this.clubSelector.updateUI(); // Update UI if club changed
         }
 
         // Determine arrow color based on prediction
-        const predictedDistance = this.getPredictedDistance(club);
+        const predictedDistance =
+          this.clubSelector.getPredictedDistanceForClub(club);
         const arrowColor = this.getArrowColor(predictedDistance, distanceToPin);
         if (
           this.trajectoryArrow &&
@@ -906,53 +1043,18 @@ class AimView {
   }
 
   getDistanceToNearestPin(ballPos) {
-    // Access pins via pinManager which exists in the scene
-    const pins = this.game?.scene?.pinManager?.pins;
-    if (!pins || pins.length === 0) return 0;
+    const pinManager = this.game?.scene?.pinManager;
+    if (!pinManager) return 0;
 
-    // Use aim direction (camera rotation) to find which pin we're aiming at
-    const aimDirection = this.cameraRotation;
-    // Aim direction is opposite camera direction (ball faces away from camera)
-    const aimVec = new BABYLON.Vector3(
-      Math.sin(aimDirection + Math.PI),
-      0,
-      Math.cos(aimDirection + Math.PI),
+    // Try to get pin aligned with aim direction
+    const { distance: targetDist, pin: targetPin } = pinManager.getTargetPin(
+      ballPos,
+      this.cameraRotation,
     );
-
-    let bestPin = null;
-    let smallestAngle = Math.PI;
-
-    for (let i = 0; i < pins.length; i++) {
-      const pin = pins[i];
-      const pinPos = pin.mesh.position;
-      const toPin = pinPos.subtract(ballPos);
-      const toPinFlat = toPin.clone();
-      toPinFlat.y = 0;
-
-      if (toPinFlat.length() === 0) continue;
-
-      toPinFlat.normalize();
-
-      // Calculate angle between aim direction and pin direction
-      const dotProd = BABYLON.Vector3.Dot(aimVec, toPinFlat);
-      const angle = Math.acos(Math.max(-1, Math.min(1, dotProd)));
-
-      if (angle < smallestAngle) {
-        smallestAngle = angle;
-        bestPin = pin;
-      }
-    }
-
-    // Return most-aligned pin's distance if within 90° cone (in front)
-    if (bestPin && smallestAngle < Math.PI / 2) {
-      const selectedDist = BABYLON.Vector3.Distance(
-        ballPos,
-        bestPin.mesh.position,
-      );
-      return selectedDist;
-    }
+    if (targetPin) return targetDist;
 
     // Fallback to nearest pin if nothing in front
+    const pins = pinManager.pins;
     const nearestPin = pins.reduce((nearest, pin) => {
       const dist = BABYLON.Vector3.Distance(ballPos, pin.mesh.position);
       return !nearest || dist < nearest.dist ? { dist, pin } : nearest;
@@ -961,29 +1063,11 @@ class AimView {
   }
 
   findBestClubForDistance(distance) {
-    let bestClubId = 12; // Default to driver
-    let bestDifference = Math.abs(
-      this.getPredictedDistanceForClub(ClubData.getClub(12)) - distance,
-    );
-
-    for (let i = 0; i < ClubData.CLUBS.length; i++) {
-      const club = ClubData.CLUBS[i];
-      const predicted = this.getPredictedDistanceForClub(club);
-      const difference = Math.abs(predicted - distance);
-      if (difference < bestDifference) {
-        bestDifference = difference;
-        bestClubId = i;
-      }
-    }
-    return bestClubId;
-  }
-
-  getPredictedDistanceForClub(club) {
-    return club.maxDistance;
+    return this.clubSelector.findBestClubForDistance(distance);
   }
 
   getPredictedDistance(club) {
-    return this.getPredictedDistanceForClub(club);
+    return this.clubSelector.getPredictedDistanceForClub(club);
   }
 
   getArrowColor(predictedDistance, distanceToPin) {
@@ -1003,43 +1087,7 @@ class AimView {
   }
 
   updateUI() {
-    const club = ClubData.getClub(this.currentClub);
-
-    // Calculate estimated distance for this club at full power
-    const estimatedDistance = Utils.metersToYards(club.maxDistance);
-
-    // Update the club circle through the manager
-    if (this.circleUIManager) {
-      this.circleUIManager.updateClub(
-        this.currentClub,
-        club.name,
-        estimatedDistance,
-      );
-
-      // Attach button listeners if not already attached
-      if (!this.clubButtonsAttached) {
-        const buttons = this.circleUIManager.getClubButtons();
-        if (buttons) {
-          if (buttons.upBtn) {
-            buttons.upBtn.onclick = (e) => {
-              e.stopPropagation();
-              this.currentClub = (this.currentClub - 1 + 13) % 13;
-              this.manuallySelectedClub = true;
-              this.updateUI();
-            };
-          }
-          if (buttons.downBtn) {
-            buttons.downBtn.onclick = (e) => {
-              e.stopPropagation();
-              this.currentClub = (this.currentClub + 1) % 13;
-              this.manuallySelectedClub = true;
-              this.updateUI();
-            };
-          }
-          this.clubButtonsAttached = true;
-        }
-      }
-    }
+    this.clubSelector.updateUI();
   }
 
   hideClubUI() {
@@ -2671,6 +2719,17 @@ class CircleUIManager {
       if (circle) circle.remove();
     });
 
+    // Build each circle
+    this.buildStatsCircle();
+    this.buildCompassCircle();
+    this.buildPowerCircle();
+    this.buildClubCircle();
+  }
+
+  /**
+   * Build the stats circle (top-left) showing yardage to pin
+   */
+  buildStatsCircle() {
     const scale = CONFIG.SCREEN.UI_SCALE;
     const size = this.baseSize * scale;
     const margin = 15 * scale;
@@ -2679,24 +2738,9 @@ class CircleUIManager {
     const bgColor = PALETTE.GREEN_LIGHT;
     const shadow = "drop-shadow(0 2px 8px rgba(0,0,0,0.8))";
 
-    const commonStyle = (top, right, bottom, left) => {
-      let css = `position:absolute;width:${size}px;height:${size}px;background:${bgColor};border:${borderWidth}px solid ${borderColor};border-radius:50%;z-index:1500;display:flex;flex-direction:column;align-items:center;justify-content:center;filter:${shadow};pointer-events:auto;`;
-      if (top !== null) css += `top:${top}px;`;
-      if (right !== null) css += `right:${right}px;`;
-      if (bottom !== null) css += `bottom:${bottom}px;`;
-      if (left !== null) css += `left:${left}px;`;
-      return css;
-    };
-
-    // Top-left: Stats circle (just yardage in play mode)
     this.circles.topLeft = document.createElement("div");
     this.circles.topLeft.id = "circleStats";
-    this.circles.topLeft.style.cssText = commonStyle(
-      margin,
-      null,
-      null,
-      margin,
-    );
+    this.circles.topLeft.style.cssText = `position:absolute;top:${margin}px;left:${margin}px;width:${size}px;height:${size}px;background:${bgColor};border:${borderWidth}px solid ${borderColor};border-radius:50%;z-index:1500;display:flex;flex-direction:column;align-items:center;justify-content:center;filter:${shadow};pointer-events:auto;`;
     this.circles.topLeft.innerHTML = `
       <div style="position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;color:white;font-family:monospace;text-align:center;">
         <div style="position:relative;width:${112 * scale}px;height:${88 * scale}px;margin-bottom:${4 * scale}px;">
@@ -2709,13 +2753,25 @@ class CircleUIManager {
     document.body.appendChild(this.circles.topLeft);
     this._statsFlagImg = document.getElementById("statsFlagImg");
     this._statsPinNumber = document.getElementById("statsPinNumber");
+  }
 
-    // Top-right: Compass circle
+  /**
+   * Build the compass circle (top-right) showing wind direction
+   */
+  buildCompassCircle() {
+    const scale = CONFIG.SCREEN.UI_SCALE;
+    const size = this.baseSize * scale;
+    const margin = 15 * scale;
+    const borderColor = PALETTE.GREEN_DARK;
+    const bgColor = PALETTE.GREEN_LIGHT;
+    const shadow = "drop-shadow(0 2px 8px rgba(0,0,0,0.8))";
+
     this.circles.topRight = document.createElement("div");
     this.circles.topRight.id = "circleCompass";
     this.circles.topRight.style.cssText = `position:absolute;top:${margin}px;right:${margin}px;display:flex;flex-direction:column;align-items:center;gap:${12 * scale}px;z-index:1500;pointer-events:none;`;
+
     const compassCircle = document.createElement("div");
-    compassCircle.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;background:${PALETTE.GREEN_LIGHT};border:3px solid ${PALETTE.GREEN_DARK};display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 2px 8px rgba(0,0,0,0.8));pointer-events:auto;`;
+    compassCircle.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;background:${bgColor};border:3px solid ${borderColor};display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 2px 8px rgba(0,0,0,0.8));pointer-events:auto;`;
     compassCircle.innerHTML = `
       <svg id="compassSvg" width="${size}" height="${size}" viewBox="0 0 120 120" style="filter:${shadow};pointer-events:auto;user-select:none;">
         <text x="60" y="18" text-anchor="middle" fill="${PALETTE.YELLOW}" font-size="28" font-weight="bold">N</text>
@@ -2729,28 +2785,38 @@ class CircleUIManager {
       </svg>
     `;
     this.circles.topRight.appendChild(compassCircle);
+
     const windSpeedDisplay = document.createElement("div");
     windSpeedDisplay.id = "windSpeedDisplay";
     windSpeedDisplay.style.cssText = `color:${PALETTE.YELLOW};font-size:${32 * scale}px;font-weight:bold;font-family:monospace;pointer-events:auto;`;
     windSpeedDisplay.textContent = "0 mph";
     this.circles.topRight.appendChild(windSpeedDisplay);
     document.body.appendChild(this.circles.topRight);
+  }
 
-    // Bottom-left: Power indicator circle
+  /**
+   * Build the power circle (bottom-left) showing swing power
+   */
+  buildPowerCircle() {
+    const scale = CONFIG.SCREEN.UI_SCALE;
+    const size = this.baseSize * scale;
+    const margin = 15 * scale;
+    const borderWidth = 6 * scale;
+    const borderColor = PALETTE.GREEN_DARK;
+    const bgColor = PALETTE.GREEN_LIGHT;
+    const shadow = "drop-shadow(0 2px 8px rgba(0,0,0,0.8))";
+
     this.circles.bottomLeft = document.createElement("div");
     this.circles.bottomLeft.id = "circlePower";
-    this.circles.bottomLeft.style.cssText = commonStyle(
-      null,
-      null,
-      margin,
-      margin,
-    );
+    this.circles.bottomLeft.style.cssText = `position:absolute;bottom:${margin}px;left:${margin}px;width:${size}px;height:${size}px;background:${bgColor};border:${borderWidth}px solid ${borderColor};border-radius:50%;z-index:1500;display:flex;flex-direction:column;align-items:center;justify-content:center;filter:${shadow};pointer-events:auto;`;
+
     // SVG arc fill: circumference of circle with r=(size/2 - stroke/2 - padding)
     const r = Math.round(size / 2 - borderWidth - 8 * scale);
     const circ = Math.round(2 * Math.PI * r);
     const cx = Math.round(size / 2);
     const cy = Math.round(size / 2);
     const strokeW = Math.round(8 * scale);
+
     this.circles.bottomLeft.innerHTML = `
       <svg id="powerSvg" width="${size}" height="${size}" style="position:absolute;top:0;left:0;transform:rotate(90deg);">
         <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="${strokeW}"/>
@@ -2768,8 +2834,20 @@ class CircleUIManager {
     this.powerPercent = document.getElementById("powerPercent");
     this.powerArc = document.getElementById("powerArc");
     this._powerCircumference = circ;
+  }
 
-    // Bottom-right: Club selector circle with buttons outside
+  /**
+   * Build the club selector circle (bottom-right) with +/- buttons
+   */
+  buildClubCircle() {
+    const scale = CONFIG.SCREEN.UI_SCALE;
+    const size = this.baseSize * scale;
+    const margin = 15 * scale;
+    const borderWidth = 6 * scale;
+    const borderColor = PALETTE.GREEN_DARK;
+    const bgColor = PALETTE.GREEN_LIGHT;
+    const shadow = "drop-shadow(0 2px 8px rgba(0,0,0,0.8))";
+
     const clubContainerWrapper = document.createElement("div");
     clubContainerWrapper.id = "clubSelectorWrapper";
     clubContainerWrapper.style.cssText = `position:absolute;bottom:${margin}px;right:${margin}px;z-index:1000;display:flex;flex-direction:column;align-items:center;gap:${12 * scale}px;`;
@@ -2921,7 +2999,10 @@ class UIManager {
 
   update() {
     const speed = this.golfBall.getSpeed() * UNITS.MS_TO_MPH;
-    const height = Math.max(0, (this.golfBall.getHeight() - 1) * UNITS.M_TO_FEET);
+    const height = Math.max(
+      0,
+      (this.golfBall.getHeight() - 1) * UNITS.M_TO_FEET,
+    );
     const distanceToPin = this.getDistanceToNearestPin() * UNITS.M_TO_YARDS;
     const spin = this.golfBall.pendingSpinAmount * 100;
 
@@ -2958,94 +3039,41 @@ class UIManager {
     }
 
     const ballPos = this.golfBall.getPosition();
+    const pinManager = this.game.scene.pinManager;
 
     // During AIM state, find pin most aligned with aim direction
     if (this.game.gameState === GameState.AIM && this.game.aimView) {
-      const aimDirection = this.game.aimView.cameraRotation;
-      // Aim direction is opposite camera direction (ball faces away from camera)
-      const aimVec = new BABYLON.Vector3(
-        Math.sin(aimDirection + Math.PI),
-        0,
-        Math.cos(aimDirection + Math.PI),
+      const { distance, pin } = pinManager.getTargetPin(
+        ballPos,
+        this.game.aimView.cameraRotation,
       );
-
-      let bestPin = null;
-      let smallestAngle = Math.PI;
-
-      for (let i = 0; i < this.game.scene.pinManager.pins.length; i++) {
-        const pin = this.game.scene.pinManager.pins[i];
-        const pinPos = pin.mesh.position;
-        const toPin = pinPos.subtract(ballPos);
-        const toPinFlat = toPin.clone();
-        toPinFlat.y = 0;
-
-        if (toPinFlat.length() === 0) continue;
-
-        toPinFlat.normalize();
-
-        // Calculate angle between aim direction and pin direction
-        const dotProd = BABYLON.Vector3.Dot(aimVec, toPinFlat);
-        const angle = Math.acos(Math.max(-1, Math.min(1, dotProd)));
-
-        if (angle < smallestAngle) {
-          smallestAngle = angle;
-          bestPin = pin;
-        }
-      }
-
-      // Return most-aligned pin's distance if within 90° cone (in front)
-      if (bestPin && smallestAngle < Math.PI / 2) {
-        const selectedDist = BABYLON.Vector3.Distance(
-          ballPos,
-          bestPin.mesh.position,
-        );
-        return selectedDist;
-      }
+      if (pin) return distance;
     }
 
     // During PLAY state, show nearest pin
-    const nearestPin = this.game.scene.pinManager.pins.reduce(
-      (nearest, pin) => {
-        const dist = BABYLON.Vector3.Distance(ballPos, pin.mesh.position);
-        return !nearest || dist < nearest.dist ? { dist, pin } : nearest;
-      },
-      null,
-    );
+    const nearestPin = pinManager.pins.reduce((nearest, pin) => {
+      const dist = BABYLON.Vector3.Distance(ballPos, pin.mesh.position);
+      return !nearest || dist < nearest.dist ? { dist, pin } : nearest;
+    }, null);
 
     return nearestPin ? nearestPin.dist : 0;
   }
 
   getTargetPin() {
     if (!this.game?.scene?.pinManager?.pins?.length) return null;
-    const pins = this.game.scene.pinManager.pins;
+    const pinManager = this.game.scene.pinManager;
     const ballPos = this.golfBall.getPosition();
 
     if (this.game.gameState === GameState.AIM && this.game.aimView) {
-      const aimDirection = this.game.aimView.cameraRotation;
-      const aimVec = new BABYLON.Vector3(
-        Math.sin(aimDirection + Math.PI),
-        0,
-        Math.cos(aimDirection + Math.PI),
+      const { index } = pinManager.getTargetPin(
+        ballPos,
+        this.game.aimView.cameraRotation,
       );
-      let bestIdx = null,
-        smallestAngle = Math.PI;
-      for (let i = 0; i < pins.length; i++) {
-        const toPin = pins[i].mesh.position.subtract(ballPos);
-        toPin.y = 0;
-        if (toPin.length() === 0) continue;
-        toPin.normalize();
-        const angle = Math.acos(
-          Math.max(-1, Math.min(1, BABYLON.Vector3.Dot(aimVec, toPin))),
-        );
-        if (angle < smallestAngle) {
-          smallestAngle = angle;
-          bestIdx = i;
-        }
-      }
-      if (bestIdx !== null && smallestAngle < Math.PI / 2) return bestIdx;
+      if (index !== -1) return index;
     }
 
     // Fallback: nearest pin
+    const pins = pinManager.pins;
     let nearestIdx = 0,
       nearestDist = Infinity;
     for (let i = 0; i < pins.length; i++) {
@@ -3330,6 +3358,238 @@ class PinManager {
         }, CONFIG.PINS.PIN_FLASH_DURATION_MS);
       }
     }
+  }
+
+  /**
+   * Find the target pin based on ball position and aim direction.
+   * Returns the pin most aligned with the aim direction (within 90° cone).
+   *
+   * @param {BABYLON.Vector3} ballPos - Current ball position
+   * @param {number} aimDirection - Aim direction angle (radians)
+   * @returns {{pin: Object|null, index: number, distance: number}}
+   *          pin: the pin object, index: position in pins array, distance: yardage to pin
+   */
+  getTargetPin(ballPos, aimDirection) {
+    if (!this.pins || this.pins.length === 0) {
+      return { pin: null, index: -1, distance: 0 };
+    }
+
+    // Convert aim direction to vector (opposite camera direction since ball faces away from camera)
+    const aimVec = new BABYLON.Vector3(
+      Math.sin(aimDirection + Math.PI),
+      0,
+      Math.cos(aimDirection + Math.PI),
+    );
+
+    let bestPin = null;
+    let bestIndex = -1;
+    let smallestAngle = Math.PI;
+
+    for (let i = 0; i < this.pins.length; i++) {
+      const pin = this.pins[i];
+      const pinPos = pin.mesh.position;
+      const toPin = pinPos.subtract(ballPos);
+      const toPinFlat = toPin.clone();
+      toPinFlat.y = 0;
+
+      if (toPinFlat.length() === 0) continue;
+
+      toPinFlat.normalize();
+
+      // Calculate angle between aim direction and pin direction
+      const dotProd = BABYLON.Vector3.Dot(aimVec, toPinFlat);
+      const angle = Math.acos(Math.max(-1, Math.min(1, dotProd)));
+
+      if (angle < smallestAngle) {
+        smallestAngle = angle;
+        bestPin = pin;
+        bestIndex = i;
+      }
+    }
+
+    // Return most-aligned pin's distance if within 90° cone (in front)
+    if (bestPin && smallestAngle < Math.PI / 2) {
+      const distance = BABYLON.Vector3.Distance(ballPos, bestPin.mesh.position);
+      return { pin: bestPin, index: bestIndex, distance };
+    }
+
+    return { pin: null, index: -1, distance: 0 };
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// COORDINATORS: Split responsibilities from GolfGame
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─── SWING COORDINATOR ───────────────────────────────────────────────────────
+/**
+ * Coordinates the swing flow: input hit → club animation → ball physics → camera recovery
+ */
+class SwingCoordinator {
+  constructor(game, clubSystem, golfBall, camera, ballTrail) {
+    this.game = game;
+    this.clubSystem = clubSystem;
+    this.golfBall = golfBall;
+    this.camera = camera;
+    this.ballTrail = ballTrail;
+  }
+
+  /**
+   * Execute a swing: animate club, apply impulse at contact, recover camera after
+   */
+  executeSwing(shotDirection, force, deltaX, deltaY) {
+    const currentClubId = this.game.aimView?.currentClub ?? 12;
+    const club = ClubData.getClub(currentClubId);
+
+    // Reset camera flag before starting swing
+    this.game.swingCameraRestored = false;
+
+    // Zoom camera out for swing view
+    this.camera.setOffsets(0, 14, 20, 7, 0);
+
+    // Trigger club swing animation (visual only, no physics pause)
+    if (this.clubSystem && this.clubSystem.isLoaded) {
+      const forceRatio = Math.min(
+        force / (CONFIG.GOLF_BALL.MAX_HIT_STRENGTH * 100),
+        1,
+      );
+
+      // Apply impulse at contact frame (frame 80/100 of the animation)
+      const onContactPoint = () => {
+        this.golfBall.landed = false;
+        this.golfBall.applyHit(
+          deltaX,
+          deltaY,
+          force,
+          shotDirection,
+          club.angle,
+          club.maxDistance,
+        );
+      };
+
+      // After follow-through completes, return camera
+      const onSwingEnd = () => {
+        this.camera.setPlayView();
+      };
+
+      const ballPos = this.golfBall.getPosition();
+      this.clubSystem.swing(
+        currentClubId,
+        forceRatio,
+        ballPos,
+        shotDirection,
+        onContactPoint,
+        onSwingEnd,
+      );
+    }
+
+    this.ballTrail.startTracing();
+    this.camera.setShotStartPosition(this.golfBall.getPosition());
+  }
+}
+
+// ─── CAMERA COORDINATOR ──────────────────────────────────────────────────────
+/**
+ * Coordinates camera view transitions and state
+ */
+class CameraCoordinator {
+  constructor(camera) {
+    this.camera = camera;
+  }
+
+  /**
+   * Transition to aim mode: reset angle and view
+   */
+  transitionToAim() {
+    this.camera.setCameraAngle(0);
+    this.camera.setPlayView();
+  }
+
+  /**
+   * Transition to play mode: set initial shot position
+   */
+  transitionToPlay(ballPosition, shotDirection) {
+    this.camera.setShotStartPosition(ballPosition);
+    this.camera.setCameraAngleImmediate(-shotDirection);
+    this.camera.setPlayView();
+  }
+
+  /**
+   * Transition to shot review (after ball lands)
+   */
+  transitionToShotReview() {
+    this.camera.setShotReviewView();
+  }
+}
+
+// ─── GAME STATE COORDINATOR ─────────────────────────────────────────────────
+/**
+ * Coordinates game state transitions, reset logic, and landing detection
+ */
+class GameStateCoordinator {
+  constructor(game) {
+    this.game = game;
+  }
+
+  /**
+   * Transition from AIM to PLAY state (ball is clicked)
+   */
+  transitionAimToPlay(shotDirection) {
+    this.game.aimedDirection = shotDirection;
+    this.game.gameState = GameState.PLAY;
+    this.game.justTransitioned = true;
+
+    // Disable orbit controls when entering play mode
+    if (this.game.aimView) {
+      this.game.aimView.removeOrbitControls();
+      this.game.aimView.deactivate();
+    }
+
+    this.game.golfBall.startSpinTransition();
+  }
+
+  /**
+   * Handle landing state change: transition to aim mode for next shot
+   */
+  handleBallLanded() {
+    this.game.gameState = GameState.LANDED;
+    this.game.justTransitioned = true;
+  }
+
+  /**
+   * Reset game: clear state, reset ball, re-activate aim view
+   */
+  resetGame() {
+    this.game.golfBall.reset();
+    this.game.ballTrail.clear();
+    this.game.ballTrail.setVisible(false);
+    this.game.gameState = GameState.AIM;
+    this.game.golfBallFacingCamera = false;
+    this.game.swingCameraRestored = false;
+
+    if (this.game.clubSystem) {
+      this.game.clubSystem.resetClubs();
+    }
+
+    if (this.game.aimView) {
+      this.game.aimView.cameraRotation = 0; // Reset camera to default angle
+      this.game.aimView.activate(); // Re-enable orbit controls
+    }
+  }
+
+  /**
+   * Handle hole sink: reset for next hole
+   */
+  handleHoleSink() {
+    this.resetGame();
+  }
+
+  /**
+   * Handle spin input during play
+   */
+  applySpin(spinAxis, spinAmount) {
+    if (this.game.gameState !== GameState.PLAY) return;
+    this.game.golfBall.applySpin(spinAxis, spinAmount);
   }
 }
 
@@ -3865,15 +4125,20 @@ class GolfGame {
     this.physicsViewer = null;
     this.swipeOverlay = null;
     this.wind = new Wind();
-    this.cloudSystem = null; // Will be initialized during scene setup
-    this.clubSystem = null; // Will be initialized during scene setup
-    this.swingCameraRestored = false; // Track swing camera state
+    this.cloudSystem = null;
+    this.clubSystem = null;
+    this.swingCameraRestored = false;
     this.golfBallFacingCamera = false;
 
     // Face state tracking
     this.lastBallVelocity = new BABYLON.Vector3(0, 0, 0);
     this.wasHit = false;
     this.hitCooldown = 0;
+
+    // Coordinators (initialized after scene setup)
+    this.swingCoordinator = null;
+    this.cameraCoordinator = null;
+    this.gameStateCoordinator = null;
   }
 
   normalizeAngle(angle) {
@@ -3921,7 +4186,6 @@ class GolfGame {
       this.canvas,
       this.circleUIManager,
     );
-    this.setupAimView();
     this.setupInput();
     this.setupUI();
     this.ballTrail = new BallTrail(
@@ -3933,6 +4197,21 @@ class GolfGame {
     this.cloudSystem = new CloudSystem(this.scene, this.camera);
     this.clubSystem = new ClubSystem(this.scene);
     await this.clubSystem.load(this.ballStartPosition);
+
+    // Initialize coordinators after all dependencies are set up
+    this.swingCoordinator = new SwingCoordinator(
+      this,
+      this.clubSystem,
+      this.golfBall,
+      this.camera,
+      this.ballTrail,
+    );
+    this.cameraCoordinator = new CameraCoordinator(this.camera);
+    this.gameStateCoordinator = new GameStateCoordinator(this);
+
+    // Setup AimView after coordinators are ready (it depends on them)
+    this.setupAimView();
+
     this.setupRenderLoop();
   }
 
@@ -4034,21 +4313,16 @@ class GolfGame {
     );
 
     this.eventManager.on("aimView:ballClicked", () => {
-      this.aimedDirection = this.aimView.cameraRotation;
-      this.gameState = GameState.PLAY;
-      this.justTransitioned = true;
-      // Disable orbit controls when entering play mode
-      if (this.aimView) {
-        this.aimView.removeOrbitControls();
-        this.aimView.deactivate();
-      }
+      // Use gameStateCoordinator to handle the transition
+      this.gameStateCoordinator.transitionAimToPlay(
+        this.aimView.cameraRotation,
+      );
+      // Use cameraCoordinator to update camera
+      this.cameraCoordinator.transitionToPlay(
+        this.golfBall.getPosition(),
+        this.aimedDirection,
+      );
       this.ballTrail.startTracing();
-      this.camera.setShotStartPosition(this.golfBall.getPosition());
-      this.camera.setCameraAngleImmediate(-this.aimedDirection);
-      this.camera.setPlayView();
-
-      // Enter play mode
-      this.golfBall.startSpinTransition();
     });
 
     this.aimView.activate();
@@ -4074,80 +4348,23 @@ class GolfGame {
       if (this.gameState !== GameState.PLAY) return;
 
       const shotDirection = this.getShotDirection();
-      this.aimedDirection = shotDirection;
-      const currentClubId = this.aimView?.currentClub ?? 12;
-      const club = ClubData.getClub(currentClubId);
 
-      // Reset camera flag before starting swing
-      this.swingCameraRestored = false;
-
-      // Zoom camera out for swing view
-      this.setupSwingCamera(shotDirection);
-
-      // Trigger club swing animation (visual only, no physics pause)
-      if (this.clubSystem && this.clubSystem.isLoaded) {
-        const forceRatio = Math.min(
-          data.force / (CONFIG.GOLF_BALL.MAX_HIT_STRENGTH * 100),
-          1,
-        );
-
-        // Apply impulse at contact frame (frame 80/100 of the animation)
-        const onContactPoint = () => {
-          this.golfBall.landed = false;
-          this.golfBall.applyHit(
-            data.deltaX,
-            data.deltaY,
-            data.force,
-            shotDirection,
-            club.angle,
-            club.maxDistance,
-          );
-        };
-
-        // After follow-through completes, return camera
-        const onSwingEnd = () => {
-          this.returnFromSwingCamera();
-        };
-
-        const ballPos = this.golfBall.getPosition();
-        this.clubSystem.swing(
-          currentClubId,
-          forceRatio,
-          ballPos,
-          shotDirection,
-          onContactPoint,
-          onSwingEnd,
-        );
-      } else {
-        // ClubSystem not loaded — no swing animation, ball still gets hit on next contact
-      }
-
-      this.ballTrail.startTracing();
-      this.camera.setShotStartPosition(this.golfBall.getPosition());
-      // Do NOT call setPlayView() here - camera stays in swing view until animation completes
+      // Use swingCoordinator to execute the swing
+      this.swingCoordinator.executeSwing(
+        shotDirection,
+        data.force,
+        data.deltaX,
+        data.deltaY,
+      );
     });
 
     this.eventManager.on("input:spin", (data) => {
-      if (this.gameState !== GameState.PLAY) return;
-      this.golfBall.applySpin(data.spinAxis, data.spinAmount);
+      this.gameStateCoordinator.applySpin(data.spinAxis, data.spinAmount);
     });
 
     this.eventManager.on("input:reset", () => {
-      this.golfBall.reset();
-      this.ballTrail.clear();
-      this.ballTrail.setVisible(false);
-      this.camera.setCameraAngle(0);
-      this.camera.setPlayView();
-      this.gameState = GameState.AIM;
-      this.golfBallFacingCamera = false;
-      this.swingCameraRestored = false; // Reset camera flag
-      if (this.clubSystem) {
-        this.clubSystem.resetClubs();
-      }
-      if (this.aimView) {
-        this.aimView.cameraRotation = this.aimedDirection;
-        this.aimView.activate(); // Re-enable orbit controls and setup
-      }
+      this.gameStateCoordinator.resetGame();
+      // gameStateCoordinator.resetGame() calls aimView.activate() which handles camera setup
     });
   }
 
@@ -4187,19 +4404,6 @@ class GolfGame {
     // Physics never pause - clubs are visual only
   }
 
-  setupSwingCamera(shotDirection) {
-    if (!this.camera) return;
-    // Camera needs to see the full club travel: club starts at Y≈13 (backswing) and sweeps down to Y≈0
-    // Set camera high and back, looking at mid-swing height (~Y+7 from ball)
-    this.camera.setOffsets(0, 14, 20, 7, 0);
-  }
-
-  returnFromSwingCamera() {
-    if (!this.camera) return;
-    // Restore play view using the camera's own offset system
-    this.camera.setPlayView();
-  }
-
   setupPins() {
     const pinManager = new PinManager(
       this.scene,
@@ -4229,21 +4433,8 @@ class GolfGame {
     });
 
     this.eventManager.on("pin:holesink", () => {
-      this.golfBall.reset();
-      this.ballTrail.clear();
-      this.ballTrail.setVisible(false);
-      this.camera.setCameraAngle(0);
-      this.camera.setPlayView();
-      this.gameState = GameState.AIM;
-      this.golfBallFacingCamera = false;
-      this.swingCameraRestored = false;
-      if (this.clubSystem) {
-        this.clubSystem.resetClubs();
-      }
-      if (this.aimView) {
-        this.aimView.cameraRotation = this.aimedDirection;
-        this.aimView.activate();
-      }
+      this.gameStateCoordinator.handleHoleSink();
+      // aimView.activate() (called in handleHoleSink) already sets up camera for AIM mode
     });
   }
 
