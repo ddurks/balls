@@ -16,6 +16,10 @@
         font-family: Arial, sans-serif;
         background-color: #87cfeb;
         position: relative;
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
       }
 
       #renderCanvas {
@@ -68,9 +72,12 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.8));
         pointer-events: auto;
         position: relative;
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
       }
 
       /* ── Positioned circles (hidden until JS shows them) ── */
@@ -104,20 +111,27 @@
         pointer-events: none;
       }
       #compassCircle {
-        border-width: 3px;
+        display: none;
         pointer-events: auto;
       }
       .compass-svg {
         width: var(--ui-size);
         height: var(--ui-size);
-        filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.8));
         pointer-events: auto;
         user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
       }
       .compass-label {
         fill: #ffeb3b;
         font-size: 28px;
         font-weight: bold;
+        filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.8));
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
       }
       .compass-center {
         fill: #ffeb3b;
@@ -133,6 +147,8 @@
         font-weight: bold;
         font-family: monospace;
         pointer-events: auto;
+        display: none;
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
       }
 
       /* ── Club selector wrapper (column: up btn + circle + down btn) ── */
@@ -146,6 +162,11 @@
         gap: var(--ui-gap);
         z-index: 1000;
       }
+      #clubUp,
+      #circleClub,
+      #clubDown {
+        display: none;
+      }
       .club-btn {
         width: var(--ui-btn-size);
         height: var(--ui-btn-size);
@@ -155,14 +176,23 @@
         cursor: pointer;
         font-weight: bold;
         font-size: var(--ui-club-btn-fs);
-        filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.8));
         touch-action: manipulation;
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
       }
       .club-btn-up {
         background: rgba(144, 200, 150, 0.7);
       }
+      .club-btn-up:active {
+        background: rgba(100, 160, 110, 0.95);
+      }
       .club-btn-down {
         background: rgba(200, 100, 100, 0.7);
+      }
+      .club-btn-down:active {
+        background: rgba(160, 60, 60, 0.95);
       }
 
       /* ── Stats circle content ── */
@@ -174,6 +204,10 @@
         color: white;
         font-family: monospace;
         text-align: center;
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
       }
       .flag-wrapper {
         position: relative;
@@ -184,8 +218,9 @@
       .flag-img {
         width: 100%;
         height: 100%;
-        object-fit: contain;
-        display: block;
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
       }
       .pin-number {
         position: absolute;
@@ -202,6 +237,7 @@
         color: #ffeb3b;
         font-weight: bold;
         font-size: var(--ui-yardage-fs);
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
       }
 
       /* ── Power circle content ── */
@@ -225,6 +261,10 @@
         justify-content: center;
         gap: var(--ui-power-gap);
         pointer-events: none;
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
       }
       .power-emoji {
         font-size: var(--ui-power-emoji-fs);
@@ -251,6 +291,10 @@
         text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
         font-family: monospace;
         text-align: center;
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
       }
       .club-icon {
         width: var(--ui-club-icon-fs);
@@ -261,12 +305,14 @@
         color: #ffeb3b;
         font-weight: bold;
         font-size: var(--ui-club-name-fs);
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
       }
       .club-dist-display {
         color: #ffeb3b;
         margin-top: var(--ui-mb-flag);
         font-size: var(--ui-club-dist-fs);
         font-weight: bold;
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
       }
 
       /* ── Glass bubble overlay ── */
@@ -299,7 +345,7 @@
           background 0.08s ease;
       }
       .glass-circle.pressed {
-        transform: scale(0.92);
+        background: rgba(100, 160, 110, 0.95) !important;
       }
       .glass-circle.pressed::after {
         top: 10%;
@@ -315,21 +361,66 @@
   <body>
     <canvas id="renderCanvas"></canvas>
 
-    <!-- Babylon.js -->
-    <script src="https://cdn.babylonjs.com/babylon.js"></script>
-    <!-- Babylon.js Loaders -->
-    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
-    <!-- Babylon.js Materials Library (for WaterMaterial) -->
-    <script src="https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js"></script>
-    <!-- Havok Physics UMD -->
-    <script src="https://cdn.babylonjs.com/havok/HavokPhysics_umd.js"></script>
-    <!-- Game Script -->
-    <script src="game.js"></script>
+    <!-- Babylon.js and dependencies (local with CDN fallback) -->
+    <script>
+      // Load scripts sequentially: Babylon → Havok → Game
+      const scriptChain = [
+        { local: 'babylon/babylon.js', cdn: 'https://cdn.babylonjs.com/babylon.js' },
+        { local: 'babylon/babylonjs.loaders.min.js', cdn: 'https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js' },
+        { local: 'babylon/babylonjs.materials.min.js', cdn: 'https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js' },
+          { local: 'babylon/HavokPhysics_umd.js', cdn: 'https://cdn.babylonjs.com/havok/HavokPhysics_umd.js' },
+      ];
+
+      let chainIndex = 0;
+
+      function loadNextInChain() {
+        if (chainIndex >= scriptChain.length) {
+          // All dependencies loaded, now load game script
+          loadGameScript();
+          return;
+        }
+
+        const { local, cdn } = scriptChain[chainIndex];
+        const script = document.createElement('script');
+        
+        script.onload = () => {
+          chainIndex++;
+          loadNextInChain();
+        };
+
+        script.onerror = () => {
+          if (local) {
+            console.log(`Local ${local} not found, using CDN...`);
+            script.src = cdn;
+            script.onerror = null;
+            script.onload = () => {
+              chainIndex++;
+              loadNextInChain();
+            };
+            document.head.appendChild(script);
+          } else {
+            console.error('Failed to load script', cdn);
+          }
+        };
+
+        script.src = local || cdn;
+        document.head.appendChild(script);
+      }
+
+      function loadGameScript() {
+        const gameScript = document.createElement('script');
+        gameScript.src = 'game.js';
+        document.head.appendChild(gameScript);
+      }
+
+      // Start the chain
+      loadNextInChain();
+    </script>
     <!-- Stats Circle (top-left): yardage to pin -->
     <div id="circleStats" class="ui-circle glass-circle">
       <div class="circle-content">
         <div class="flag-wrapper">
-          <img id="statsFlagImg" src="assets/flag/flag.png" class="flag-img" />
+          <div id="statsFlagImg" class="flag-img"></div>
           <div id="statsPinNumber" class="pin-number">1</div>
         </div>
         <div class="yardage-display"><span id="circleYardage">0</span>'</div>
@@ -340,16 +431,16 @@
     <div id="circleCompass" class="compass-wrapper">
       <div id="compassCircle" class="ui-circle glass-circle">
         <svg id="compassSvg" class="compass-svg" viewBox="0 0 120 120">
-          <text x="60" y="18" text-anchor="middle" class="compass-label">
+          <text x="60" y="18" text-anchor="middle" dominant-baseline="middle" class="compass-label">
             N
           </text>
-          <text x="102" y="65" text-anchor="middle" class="compass-label">
+          <text x="102" y="65" text-anchor="middle" dominant-baseline="middle" class="compass-label">
             E
           </text>
-          <text x="60" y="108" text-anchor="middle" class="compass-label">
+          <text x="60" y="108" text-anchor="middle" dominant-baseline="middle" class="compass-label">
             S
           </text>
-          <text x="18" y="65" text-anchor="middle" class="compass-label">
+          <text x="18" y="65" text-anchor="middle" dominant-baseline="middle" class="compass-label">
             W
           </text>
           <circle cx="60" cy="60" r="4" class="compass-center" />

@@ -29,6 +29,36 @@ npm start
 
 Then open `http://localhost:3000` in your browser.
 
+`npm install` now automatically vendors the Babylon and Havok browser files into `babylon/` via the `postinstall` script.
+
+## Updating Babylon and Havok
+
+This project vendors browser-ready runtime files into `babylon/` instead of loading them from a CDN.
+
+When you intentionally change Babylon or Havok versions, update the versions in `package.json` together and then run:
+
+```bash
+npm install
+```
+
+`npm install` runs `npm run vendor:babylon` automatically.
+
+If you need to refresh the vendored files without reinstalling dependencies, run:
+
+```bash
+npm run vendor:babylon
+```
+
+That copies these runtime files from `node_modules` into `babylon/`:
+
+- `babylon.js`
+- `babylonjs.loaders.min.js`
+- `babylonjs.materials.min.js`
+- `HavokPhysics_umd.js`
+- `HavokPhysics.wasm`
+
+Keep those versions aligned so the vendored browser files and installed packages do not drift.
+
 ### Option 2: Using Python 3
 
 ```bash

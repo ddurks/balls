@@ -970,6 +970,7 @@ class AimView {
     this.setupOrbitControls();
     this.trajectoryArrow.create();
     if (this.circleUIManager) {
+      this.circleUIManager.showClubCircle();
       this.circleUIManager.showCompassCircle();
       this.circleUIManager.hidePowerCircle();
     }
@@ -981,10 +982,6 @@ class AimView {
     this.camera.fov = CONFIG.CAMERA.FOV_PLAY;
     this.removeOrbitControls();
     this.trajectoryArrow.dispose();
-    if (this.circleUIManager) {
-      this.circleUIManager.showCompassCircle();
-      this.circleUIManager.showPowerCircle();
-    }
   }
 
   setupOrbitControls() {
@@ -2707,7 +2704,69 @@ class InputHandler {
 // ─── UNIFIED CIRCLE UI MANAGER ──────────────────────────────────────────────
 
 class CircleUIManager {
-  constructor() {
+  static FLAG_PATHS = [
+    "assets/flag/flag.png",
+    "assets/flag/flag-1.png",
+    "assets/flag/flag-2.png",
+    "assets/flag/flag-3.png",
+    "assets/flag/flag-4.png",
+    "assets/flag/flag-5.png",
+    "assets/flag/flag-6.png",
+  ];
+
+  static flagImages = new Map();
+  static flagDataUrls = new Map();
+  static flagAssetsPromise = null;
+
+  static ensureFlagAssetsLoaded() {
+    if (CircleUIManager.flagAssetsPromise) {
+      return CircleUIManager.flagAssetsPromise;
+    }
+
+    CircleUIManager.flagAssetsPromise = Promise.all(
+      CircleUIManager.FLAG_PATHS.map(
+        (path, index) =>
+          new Promise((resolve, reject) => {
+            const img = new Image();
+
+            img.onload = () => {
+              const canvas = document.createElement("canvas");
+              canvas.width = img.width;
+              canvas.height = img.height;
+              const ctx = canvas.getContext("2d");
+
+              if (!ctx) {
+                reject(new Error(`Failed to create flag canvas for ${path}`));
+                return;
+              }
+
+              ctx.drawImage(img, 0, 0);
+              CircleUIManager.flagImages.set(index, img);
+              CircleUIManager.flagDataUrls.set(
+                index,
+                canvas.toDataURL("image/png"),
+              );
+              resolve();
+            };
+
+            img.onerror = () => {
+              reject(new Error(`Failed to load flag asset: ${path}`));
+            };
+
+            img.src = path;
+          }),
+      ),
+    );
+
+    return CircleUIManager.flagAssetsPromise;
+  }
+
+  constructor(modeToggleCallback = null) {
+    this.modeToggleCallback = modeToggleCallback;
+
+    CircleUIManager.ensureFlagAssetsLoaded().catch((error) => {
+      console.warn(error.message);
+    });
     // Set CSS variables so scale-dependent sizes are correct
     const scale = CONFIG.SCREEN.UI_SCALE;
     const root = document.documentElement;
@@ -2740,6 +2799,7 @@ class CircleUIManager {
     this.clubButtonsContainer = document.getElementById("clubSelectorWrapper");
 
     this._statsFlagImg = document.getElementById("statsFlagImg");
+    this._lastFlagFrame = -1; // Track last frame to avoid unnecessary updates
     this._statsPinNumber = document.getElementById("statsPinNumber");
     this.powerPercent = document.getElementById("powerPercent");
     this.powerArc = document.getElementById("powerArc");
@@ -2752,6 +2812,14 @@ class CircleUIManager {
     this._attachPressEffect(document.getElementById("compassCircle"));
     this._attachPressEffect(this.circles.bottomLeft);
     this._attachPressEffect(this.circles.bottomRight);
+
+    // Add click handler for club circle to toggle between AIM and PLAY modes
+    const clubCircle = this.circles.bottomRight;
+    if (clubCircle && this.modeToggleCallback) {
+      clubCircle.addEventListener("click", () => {
+        this.modeToggleCallback();
+      });
+    }
   }
 
   _attachPressEffect(el) {
@@ -2762,16 +2830,30 @@ class CircleUIManager {
   }
 
   // Update stats circle (play mode) - just yardage
+  showStatsCircle() {
+    const stats = document.getElementById("circleStats");
+    if (stats) stats.style.display = "flex";
+  }
+
+  hideStatsCircle() {
+    const stats = document.getElementById("circleStats");
+    if (stats) stats.style.display = "none";
+  }
+
   updateStats(speed, spin, height, distance, flagFrame, pinNumber) {
     document.getElementById("circleYardage").textContent = distance.toFixed(0);
-    // Sync flag image
-    if (this._statsFlagImg) {
-      const src =
-        flagFrame > 0
-          ? `assets/flag/flag-${flagFrame}.png`
-          : "assets/flag/flag.png";
-      if (this._statsFlagImg.src !== src) this._statsFlagImg.src = src;
+
+    // Update flag via cached data URLs (no network requests, pure memory)
+    if (this._statsFlagImg && flagFrame !== this._lastFlagFrame) {
+      this._lastFlagFrame = flagFrame;
+      const frameIndex = Math.max(0, Math.min(flagFrame, 6)); // Clamp 0-6
+      const dataUrl = CircleUIManager.flagDataUrls.get(frameIndex);
+      
+      if (dataUrl) {
+        this._statsFlagImg.style.backgroundImage = `url('${dataUrl}')`;
+      }
     }
+
     // Show pin number
     if (this._statsPinNumber && pinNumber !== undefined) {
       this._statsPinNumber.textContent = pinNumber;
@@ -2809,20 +2891,6 @@ class CircleUIManager {
   }
 
   // Hide/show circles based on mode
-  showStatsCircle() {
-    if (this.circles.topLeft) this.circles.topLeft.style.display = "flex";
-  }
-  hideStatsCircle() {
-    if (this.circles.topLeft) this.circles.topLeft.style.display = "none";
-  }
-
-  showCompassCircle() {
-    if (this.circles.topRight) this.circles.topRight.style.display = "flex";
-  }
-  hideCompassCircle() {
-    if (this.circles.topRight) this.circles.topRight.style.display = "none";
-  }
-
   showPowerCircle() {
     if (this.circles.bottomLeft) this.circles.bottomLeft.style.display = "flex";
   }
@@ -2830,13 +2898,36 @@ class CircleUIManager {
     if (this.circles.bottomLeft) this.circles.bottomLeft.style.display = "none";
   }
 
-  showClubCircle() {
-    if (this.clubButtonsContainer)
-      this.clubButtonsContainer.style.display = "flex";
+  showCompassCircle() {
+    const circle = document.getElementById("compassCircle");
+    const wind = document.getElementById("windSpeedDisplay");
+    if (circle) circle.style.display = "flex";
+    if (wind) wind.style.display = "block";
   }
+
+  hideCompassCircle() {
+    const circle = document.getElementById("compassCircle");
+    const wind = document.getElementById("windSpeedDisplay");
+    if (circle) circle.style.display = "none";
+    if (wind) wind.style.display = "none";
+  }
+
+  showClubCircle() {
+    const up = document.getElementById("clubUp");
+    const circle = document.getElementById("circleClub");
+    const down = document.getElementById("clubDown");
+    if (up) up.style.display = "block";
+    if (circle) circle.style.display = "flex";
+    if (down) down.style.display = "block";
+  }
+
   hideClubCircle() {
-    if (this.clubButtonsContainer)
-      this.clubButtonsContainer.style.display = "none";
+    const up = document.getElementById("clubUp");
+    const circle = document.getElementById("circleClub");
+    const down = document.getElementById("clubDown");
+    if (up) up.style.display = "none";
+    if (circle) circle.style.display = "none";
+    if (down) down.style.display = "none";
   }
 
   // Get SVG compass element (for wind control setup)
@@ -2975,6 +3066,8 @@ class UIManager {
 // ─── PIN MANAGER ─────────────────────────────────────────────────────────────
 
 class PinManager {
+  static flagTexturesCache = null; // shared cache for all flag textures
+
   constructor(scene, golfBall, eventManager = null) {
     this.scene = scene;
     this.golfBall = golfBall;
@@ -2982,6 +3075,47 @@ class PinManager {
     this.pins = [];
     this.greens = [];
     this.currentFlagFrame = 0; // shared frame index (0=still, 1-6=animated)
+
+    // Initialize texture cache if this is the first PinManager instance
+    if (!PinManager.flagTexturesCache) {
+      PinManager.flagTexturesCache = this._initFlagTextureCache(scene);
+    }
+  }
+
+  _initFlagTextureCache(scene) {
+    const textures = CircleUIManager.FLAG_PATHS.map((_, index) => {
+      const t = new BABYLON.DynamicTexture(
+        `flagTexture_${index}`,
+        { width: 256, height: 128 },
+        scene,
+        true,
+      );
+      t.hasAlpha = true;
+      t.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
+      t.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
+      const ctx = t.getContext();
+      ctx.clearRect(0, 0, 256, 128);
+      t.update();
+      return t;
+    });
+
+    CircleUIManager.ensureFlagAssetsLoaded()
+      .then(() => {
+        textures.forEach((texture, index) => {
+          const image = CircleUIManager.flagImages.get(index);
+          if (!image) return;
+
+          const ctx = texture.getContext();
+          ctx.clearRect(0, 0, 256, 128);
+          ctx.drawImage(image, 0, 0, 256, 128);
+          texture.update();
+        });
+      })
+      .catch((error) => {
+        console.warn(error.message);
+      });
+
+    return textures;
   }
 
   addPin(position, scene) {
@@ -3057,7 +3191,8 @@ class PinManager {
     flagPlane.position = new BABYLON.Vector3(cfg.FLAG_WIDTH / 2, 0, 0);
 
     const flagMat = new BABYLON.StandardMaterial("flagMat", scene);
-    flagMat.diffuseTexture = new BABYLON.Texture("assets/flag/flag.png", scene);
+    // Use first texture from cache
+    flagMat.diffuseTexture = PinManager.flagTexturesCache[0];
     flagMat.diffuseTexture.hasAlpha = true;
     flagMat.useAlphaFromDiffuseTexture = true;
     flagMat.transparencyMode = BABYLON.Material.MATERIAL_ALPHATESTANDBLEND;
@@ -3066,22 +3201,8 @@ class PinManager {
     flagPlane.material = flagMat;
     flagPlane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_NONE;
 
-    // Preload all flag textures with alpha enabled
-    const flagTextures = [
-      "assets/flag/flag.png",
-      "assets/flag/flag-1.png",
-      "assets/flag/flag-2.png",
-      "assets/flag/flag-3.png",
-      "assets/flag/flag-4.png",
-      "assets/flag/flag-5.png",
-      "assets/flag/flag-6.png",
-    ].map((path) => {
-      const t = new BABYLON.Texture(path, scene);
-      t.hasAlpha = true;
-      t.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
-      t.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
-      return t;
-    });
+    // Use cached flag textures (already loaded once)
+    const flagTextures = PinManager.flagTexturesCache;
 
     // ── Hole in the green ──
     const hole = BABYLON.MeshBuilder.CreateDisc(
@@ -3426,6 +3547,14 @@ class GameStateCoordinator {
     this.game.gameState = GameState.PLAY;
     this.game.justTransitioned = true;
 
+    // Update UI for play mode
+    if (this.game.circleUIManager) {
+      this.game.circleUIManager.showStatsCircle();
+      this.game.circleUIManager.showPowerCircle();
+      this.game.circleUIManager.hideClubCircle();
+      this.game.circleUIManager.hideCompassCircle();
+    }
+
     // Disable orbit controls when entering play mode
     if (this.game.aimView) {
       this.game.aimView.removeOrbitControls();
@@ -3458,6 +3587,11 @@ class GameStateCoordinator {
       this.game.clubSystem.resetClubs();
     }
 
+    // Update UI for aim mode
+    if (this.game.circleUIManager) {
+      this.game.circleUIManager.hidePowerCircle();
+    }
+
     if (this.game.aimView) {
       this.game.aimView.cameraRotation = 0; // Face toward center from north side
       this.game.aimView.activate(); // Re-enable orbit controls
@@ -3472,6 +3606,22 @@ class GameStateCoordinator {
     setTimeout(() => {
       window.location.reload();
     }, 1000);
+  }
+
+  /**
+   * Toggle between AIM and PLAY modes (when clicking club circle)
+   */
+  toggleMode() {
+    if (this.game.gameState === GameState.AIM) {
+      // Click club circle while in AIM mode → go to PLAY (like clicking ball)
+      // But we need to know the aimed direction - use the current aimView camera rotation
+      if (this.game.aimView) {
+        this.transitionAimToPlay(this.game.aimView.cameraRotation);
+      }
+    } else if (this.game.gameState === GameState.PLAY) {
+      // Click club circle while in PLAY mode → reset game (go back to AIM)
+      this.resetGame();
+    }
   }
 
   /**
@@ -3543,16 +3693,16 @@ class SceneSetup {
     shadowGenerator.bias = 0.001;
     scene.shadowGenerator = shadowGenerator;
 
-    // Undulating terrain
-    this.createUndulatingTerrain(scene);
+    // Ground disc with distant horizon dressing
+    this.createGroundDisc(scene);
   }
 
-  static createUndulatingTerrain(scene) {
+  static createGroundDisc(scene) {
     const radius = 183; // 400 yard diameter (200 yard radius)
 
     // Create a large flat ground disc
     const ground = BABYLON.MeshBuilder.CreateDisc(
-      "undulatedGround",
+      "groundDisc",
       {
         radius: radius,
         tessellation: 64,
@@ -3566,7 +3716,7 @@ class SceneSetup {
 
     // Tiled terrain material using repeatable diffuse + normal textures
     const groundMat = Utils.createMaterial(
-      "undulatedMat",
+      "groundDiscMat",
       scene,
       new BABYLON.Color3(0.25, 0.5, 0.15),
       new BABYLON.Color3(0.02, 0.02, 0.02), // Much darker specular for matte
@@ -3607,10 +3757,79 @@ class SceneSetup {
     );
     scene.groundPhysicsBody = groundAggregate.body;
 
+    // Add a low-poly distant horizon just beyond the playable disc.
+    this.createRollingHillsRing(scene, radius);
+
     // Create water disc around the ground - larger radius, positioned lower to avoid z-fighting
     this.createWaterRing(scene, radius);
 
     return ground;
+  }
+
+  static createRollingHillsRing(scene, groundRadius) {
+    const segments = 32;
+    const innerRadius = groundRadius + 120;
+    const outerRadius = groundRadius + 320;
+    const baseHeight = -10;
+    const maxRise = 55;
+    const innerPath = [];
+    const outerPath = [];
+
+    for (let index = 0; index <= segments; index++) {
+      const angle = (index / segments) * Math.PI * 2;
+      const cosAngle = Math.cos(angle);
+      const sinAngle = Math.sin(angle);
+      const rollingHeight =
+        0.55 +
+        0.22 * Math.sin(angle * 2.3 + 0.4) +
+        0.15 * Math.sin(angle * 5.1 - 0.9) +
+        0.08 * Math.cos(angle * 9.2 + 0.7);
+
+      innerPath.push(
+        new BABYLON.Vector3(
+          cosAngle * innerRadius,
+          baseHeight + 6,
+          sinAngle * innerRadius,
+        ),
+      );
+
+      outerPath.push(
+        new BABYLON.Vector3(
+          cosAngle * outerRadius,
+          baseHeight + Math.max(0, rollingHeight) * maxRise,
+          sinAngle * outerRadius,
+        ),
+      );
+    }
+
+    const hillsRing = BABYLON.MeshBuilder.CreateRibbon(
+      "rollingHillsRing",
+      {
+        pathArray: [innerPath, outerPath],
+        closePath: true,
+        closeArray: false,
+        sideOrientation: BABYLON.Mesh.DOUBLESIDE,
+      },
+      scene,
+    );
+
+    hillsRing.convertToFlatShadedMesh();
+    hillsRing.receiveShadows = false;
+    hillsRing.isPickable = false;
+    hillsRing.alwaysSelectAsActiveMesh = true;
+
+    const hillsMaterial = Utils.createMaterial(
+      "rollingHillsMat",
+      scene,
+      new BABYLON.Color3(0.34, 0.47, 0.28),
+      BABYLON.Color3.Black(),
+      1,
+    );
+    hillsMaterial.backFaceCulling = false;
+
+    hillsRing.material = hillsMaterial;
+
+    return hillsRing;
   }
 
   static createWaterRing(scene, groundRadius) {
@@ -4132,6 +4351,10 @@ class GolfGame {
     );
     this.cameraCoordinator = new CameraCoordinator(this.camera);
     this.gameStateCoordinator = new GameStateCoordinator(this);
+
+    // Wire club circle click to mode toggle
+    this.circleUIManager.modeToggleCallback =
+      () => this.gameStateCoordinator.toggleMode();
 
     // Setup AimView after coordinators are ready (it depends on them)
     this.setupAimView();

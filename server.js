@@ -3,7 +3,24 @@ const path = require('path');
 const app = express();
 const PORT = 3000;
 
-// Serve static files from the current directory
+// Cache bundled runtime assets aggressively so the browser does not keep revalidating them.
+app.use(
+    '/assets',
+    express.static(path.join(__dirname, 'assets'), {
+        maxAge: '1y',
+        immutable: true,
+    })
+);
+
+app.use(
+    '/babylon',
+    express.static(path.join(__dirname, 'babylon'), {
+        maxAge: '1y',
+        immutable: true,
+    })
+);
+
+// Serve the remaining app files from the current directory.
 app.use(express.static(__dirname));
 
 // Serve index.html for root path
