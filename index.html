@@ -15,12 +15,300 @@
         padding: 0;
         font-family: Arial, sans-serif;
         background-color: #87cfeb;
+        position: relative;
       }
 
       #renderCanvas {
         width: 100%;
         height: 100%;
         display: block;
+      }
+
+      /* Swipe overlay canvas */
+      #swipeOverlay {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+        z-index: 10;
+      }
+
+      /* ── UI scale CSS variables (defaults for 1x; JS overrides for small screens) ── */
+      :root {
+        --ui-size: 150px;
+        --ui-margin: 15px;
+        --ui-border-width: 6px;
+        --ui-btn-size: 40px;
+        --ui-gap: 12px;
+        --ui-mb-flag: 4px;
+        --ui-flag-w: 112px;
+        --ui-flag-h: 88px;
+        --ui-pin-fs: 36px;
+        --ui-yardage-fs: 28px;
+        --ui-wind-fs: 32px;
+        --ui-power-emoji-fs: 44px;
+        --ui-power-fs: 26px;
+        --ui-power-gap: 2px;
+        --ui-club-btn-fs: 24px;
+        --ui-club-icon-fs: 64px;
+        --ui-club-name-fs: 24px;
+        --ui-club-dist-fs: 12px;
+      }
+
+      /* ── Shared circle shape ── */
+      .ui-circle {
+        width: var(--ui-size);
+        height: var(--ui-size);
+        background: rgba(144, 200, 150, 0.85);
+        border: var(--ui-border-width) solid #3a6b35;
+        border-radius: 50%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.8));
+        pointer-events: auto;
+        position: relative;
+      }
+
+      /* ── Positioned circles (hidden until JS shows them) ── */
+      #circleStats {
+        position: absolute;
+        top: var(--ui-margin);
+        left: var(--ui-margin);
+        z-index: 1500;
+      }
+      #circlePower {
+        position: absolute;
+        bottom: var(--ui-margin);
+        left: var(--ui-margin);
+        z-index: 1500;
+        display: none;
+      }
+      #circleClub {
+        z-index: 1000;
+      }
+
+      /* ── Compass wrapper (column: circle + wind speed) ── */
+      .compass-wrapper {
+        position: absolute;
+        top: var(--ui-margin);
+        right: var(--ui-margin);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: var(--ui-gap);
+        z-index: 1500;
+        pointer-events: none;
+      }
+      #compassCircle {
+        border-width: 3px;
+        pointer-events: auto;
+      }
+      .compass-svg {
+        width: var(--ui-size);
+        height: var(--ui-size);
+        filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.8));
+        pointer-events: auto;
+        user-select: none;
+      }
+      .compass-label {
+        fill: #ffeb3b;
+        font-size: 28px;
+        font-weight: bold;
+      }
+      .compass-center {
+        fill: #ffeb3b;
+      }
+      .wind-arrow-poly {
+        fill: #ff6b6b;
+        stroke: #ffeb3b;
+        stroke-width: 1.5;
+      }
+      #windSpeedDisplay {
+        color: #ffeb3b;
+        font-size: var(--ui-wind-fs);
+        font-weight: bold;
+        font-family: monospace;
+        pointer-events: auto;
+      }
+
+      /* ── Club selector wrapper (column: up btn + circle + down btn) ── */
+      .club-wrapper {
+        position: absolute;
+        bottom: var(--ui-margin);
+        right: var(--ui-margin);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: var(--ui-gap);
+        z-index: 1000;
+      }
+      .club-btn {
+        width: var(--ui-btn-size);
+        height: var(--ui-btn-size);
+        color: #fff;
+        border: none;
+        border-radius: 50%;
+        cursor: pointer;
+        font-weight: bold;
+        font-size: var(--ui-club-btn-fs);
+        filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.8));
+        touch-action: manipulation;
+      }
+      .club-btn-up {
+        background: rgba(144, 200, 150, 0.7);
+      }
+      .club-btn-down {
+        background: rgba(200, 100, 100, 0.7);
+      }
+
+      /* ── Stats circle content ── */
+      .circle-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-family: monospace;
+        text-align: center;
+      }
+      .flag-wrapper {
+        position: relative;
+        width: var(--ui-flag-w);
+        height: var(--ui-flag-h);
+        margin-bottom: var(--ui-mb-flag);
+      }
+      .flag-img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        display: block;
+      }
+      .pin-number {
+        position: absolute;
+        top: 20%;
+        left: 15%;
+        color: #ffeb3b;
+        font-weight: bold;
+        font-size: var(--ui-pin-fs);
+        text-shadow:
+          0 0 4px rgba(0, 0, 0, 0.9),
+          1px 1px 2px rgba(0, 0, 0, 1);
+      }
+      .yardage-display {
+        color: #ffeb3b;
+        font-weight: bold;
+        font-size: var(--ui-yardage-fs);
+      }
+
+      /* ── Power circle content ── */
+      .power-svg {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: var(--ui-size);
+        height: var(--ui-size);
+        transform: rotate(90deg);
+      }
+      #powerArc {
+        transition:
+          stroke-dashoffset 0.1s ease-out,
+          stroke 0.1s ease-out;
+      }
+      .power-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: var(--ui-power-gap);
+        pointer-events: none;
+      }
+      .power-emoji {
+        font-size: var(--ui-power-emoji-fs);
+        line-height: 1;
+      }
+      .power-text {
+        color: #ffeb3b;
+        font-weight: bold;
+        font-family: monospace;
+        font-size: var(--ui-power-fs);
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+      }
+
+      /* ── Club circle content ── */
+      .club-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
+        gap: var(--ui-power-gap);
+        color: white;
+        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+        font-family: monospace;
+        text-align: center;
+      }
+      .club-icon {
+        width: var(--ui-club-icon-fs);
+        height: var(--ui-club-icon-fs);
+        object-fit: contain;
+      }
+      .club-name-display {
+        color: #ffeb3b;
+        font-weight: bold;
+        font-size: var(--ui-club-name-fs);
+      }
+      .club-dist-display {
+        color: #ffeb3b;
+        margin-top: var(--ui-mb-flag);
+        font-size: var(--ui-club-dist-fs);
+        font-weight: bold;
+      }
+
+      /* ── Glass bubble overlay ── */
+      .glass-circle {
+        overflow: hidden;
+        transition:
+          transform 0.08s ease,
+          filter 0.08s ease;
+      }
+      .glass-circle::after {
+        content: "";
+        position: absolute;
+        top: 5%;
+        left: 10%;
+        width: 80%;
+        height: 50%;
+        border-radius: 50%;
+        background: radial-gradient(
+          ellipse at 38% 30%,
+          rgba(255, 255, 255, 0.62) 0%,
+          rgba(255, 255, 255, 0.28) 45%,
+          rgba(255, 255, 255, 0.06) 70%,
+          transparent 100%
+        );
+        pointer-events: none;
+        z-index: 20;
+        transform: rotate(-10deg);
+        transition:
+          top 0.08s ease,
+          background 0.08s ease;
+      }
+      .glass-circle.pressed {
+        transform: scale(0.92);
+      }
+      .glass-circle.pressed::after {
+        top: 10%;
+        background: radial-gradient(
+          ellipse at 38% 42%,
+          rgba(255, 255, 255, 0.35) 0%,
+          rgba(255, 255, 255, 0.12) 45%,
+          transparent 70%
+        );
       }
     </style>
   </head>
@@ -37,5 +325,94 @@
     <script src="https://cdn.babylonjs.com/havok/HavokPhysics_umd.js"></script>
     <!-- Game Script -->
     <script src="game.js"></script>
+    <!-- Stats Circle (top-left): yardage to pin -->
+    <div id="circleStats" class="ui-circle glass-circle">
+      <div class="circle-content">
+        <div class="flag-wrapper">
+          <img id="statsFlagImg" src="assets/flag/flag.png" class="flag-img" />
+          <div id="statsPinNumber" class="pin-number">1</div>
+        </div>
+        <div class="yardage-display"><span id="circleYardage">0</span>'</div>
+      </div>
+    </div>
+
+    <!-- Compass Circle (top-right): wind direction + speed -->
+    <div id="circleCompass" class="compass-wrapper">
+      <div id="compassCircle" class="ui-circle glass-circle">
+        <svg id="compassSvg" class="compass-svg" viewBox="0 0 120 120">
+          <text x="60" y="18" text-anchor="middle" class="compass-label">
+            N
+          </text>
+          <text x="102" y="65" text-anchor="middle" class="compass-label">
+            E
+          </text>
+          <text x="60" y="108" text-anchor="middle" class="compass-label">
+            S
+          </text>
+          <text x="18" y="65" text-anchor="middle" class="compass-label">
+            W
+          </text>
+          <circle cx="60" cy="60" r="4" class="compass-center" />
+          <g id="windArrow">
+            <polygon
+              id="windArrowPolygon"
+              points="60,28 55,48 58,45 58,60 62,60 62,45 65,48"
+              class="wind-arrow-poly"
+            />
+          </g>
+        </svg>
+      </div>
+      <div id="windSpeedDisplay" class="wind-speed">0 mph</div>
+    </div>
+
+    <!-- Power Circle (bottom-left): swing power arc -->
+    <div id="circlePower" class="ui-circle glass-circle">
+      <svg id="powerSvg" class="power-svg" viewBox="0 0 150 150">
+        <circle
+          cx="75"
+          cy="75"
+          r="61"
+          fill="none"
+          stroke="rgba(255,255,255,0.15)"
+          stroke-width="8"
+        />
+        <circle
+          id="powerArc"
+          cx="75"
+          cy="75"
+          r="61"
+          fill="none"
+          stroke="#ffeb3b"
+          stroke-width="8"
+          stroke-linecap="round"
+          stroke-dasharray="383"
+          stroke-dashoffset="383"
+        />
+      </svg>
+      <div class="power-content">
+        <div class="power-emoji">💪</div>
+        <div class="power-text"><span id="powerPercent">0</span>%</div>
+      </div>
+    </div>
+
+    <!-- Club Selector (bottom-right): club up/down buttons + circle -->
+    <div id="clubSelectorWrapper" class="club-wrapper">
+      <button id="clubUp" class="club-btn club-btn-up">↑</button>
+      <div id="circleClub" class="ui-circle glass-circle">
+        <div id="clubSelectorContent" class="club-content">
+          <img
+            id="clubIcon"
+            class="club-icon"
+            src="assets/clubs/driver.png"
+            alt="club icon"
+          />
+          <div class="club-name-display"><span id="clubName">Driver</span></div>
+          <div class="club-dist-display">
+            ~<span id="clubDistance">306</span>'
+          </div>
+        </div>
+      </div>
+      <button id="clubDown" class="club-btn club-btn-down">↓</button>
+    </div>
   </body>
 </html>

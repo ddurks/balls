@@ -41,7 +41,7 @@ const CONFIG = {
     UI_SCALE: window.innerWidth < 1024 ? 2 / 3 : 1.0,
   },
   ENVIRONMENT: {
-    ENV_TEXTURE_PATH: "assets/puresky.env",
+    ENV_TEXTURE_PATH: "assets/3d/puresky.env",
     SKYBOX_ENABLED: true,
     SKYBOX_SIZE: 1000,
     SKYBOX_PBRBRIGHT: 0,
@@ -52,8 +52,8 @@ const CONFIG = {
     SUBDIVISIONS: 50,
     FRICTION: 0.4,
     RESTITUTION: 0.3,
-    TEXTURE_PATH: "assets/ground.png",
-    NORMAL_MAP_PATH: "assets/groundnormals.png",
+    TEXTURE_PATH: "assets/texture/ground.png",
+    NORMAL_MAP_PATH: "assets/texture/groundnormals.png",
     UV_TILING: 500,
   },
   BALL: {
@@ -149,9 +149,9 @@ const CONFIG = {
     PIN_HEIGHT: 12.0,
     PIN_DIAMETER: 0.2,
     PIN_Y_OFFSET: 6.0,
-    GREEN_Y_OFFSET: 0.5,
-    GREEN_TEXTURE_PATH: "assets/puttingground.png",
-    GREEN_NORMAL_MAP_PATH: "assets/puttinggroundnormals.png",
+    GREEN_Y_OFFSET: 0.001,
+    GREEN_TEXTURE_PATH: "assets/texture/puttingground.png",
+    GREEN_NORMAL_MAP_PATH: "assets/texture/puttinggroundnormals.png",
     GREEN_UV_TILING: 10,
     PIN_COLLISION_RADIUS: 0.3,
     PIN_COLLISION_MIN_SPEED: 0.5,
@@ -160,7 +160,7 @@ const CONFIG = {
     FLAG_WIDTH: 4.0,
     FLAG_HEIGHT: 2.4,
     HOLE_RADIUS: 0.8,
-    HOLE_Y_OFFSET: 0.52,
+    HOLE_Y_OFFSET: 0.35,
     FLAG_WIND_THRESHOLD: 2.235, // ~5 mph in m/s
   },
   TRAIL: {
@@ -514,7 +514,7 @@ class TrajectoryArrow {
     try {
       const result = await BABYLON.SceneLoader.ImportMeshAsync(
         "",
-        "assets/",
+        "assets/3d/",
         "arrow.glb",
         this.scene,
       );
@@ -540,6 +540,15 @@ class TrajectoryArrow {
     if (!this.isLoaded || !this.arrowTemplate) return;
 
     if (this.arrow) {
+      // Remove from shadow casters before disposing
+      if (this.scene.shadowGenerator) {
+        const meshes = [this.arrow, ...this.arrow.getChildMeshes()];
+        meshes.forEach((mesh) => {
+          if (mesh) {
+            this.scene.shadowGenerator.removeShadowCaster(mesh, true);
+          }
+        });
+      }
       this.arrow.dispose();
     }
 
@@ -561,6 +570,16 @@ class TrajectoryArrow {
       this.currentColor = this.pendingColor;
       this.pendingColor = null;
       this.applyColor();
+    }
+
+    // Register arrow as shadow caster (after material is applied)
+    if (this.scene.shadowGenerator) {
+      const meshes = [this.arrow, ...this.arrow.getChildMeshes()];
+      meshes.forEach((mesh) => {
+        if (mesh) {
+          this.scene.shadowGenerator.addShadowCaster(mesh, true);
+        }
+      });
     }
 
     // Store angle for tilt calculation
@@ -620,13 +639,14 @@ class TrajectoryArrow {
     // Get all meshes in the arrow hierarchy
     try {
       const meshes = [this.arrow, ...this.arrow.getChildMeshes()];
+      const color = this.currentColor.clone();
 
       meshes.forEach((mesh) => {
         if (!mesh) return;
 
         // Create or update material
         let mat = mesh.material;
-        if (!mat) {
+        if (!mat || !(mat instanceof BABYLON.StandardMaterial)) {
           mat = new BABYLON.StandardMaterial(
             "arrowMat_" + Math.random(),
             this.scene,
@@ -634,23 +654,18 @@ class TrajectoryArrow {
           mesh.material = mat;
         }
 
-        // Apply color to multiple channels for visibility
-        const color = this.currentColor.clone();
+        // ─── CEL SHADING ──────────────────────────────────────────────
+        // Flat, cartoon-like appearance with reduced specular highlights
+        mat.diffuseColor = color;
+        mat.specularColor = new BABYLON.Color3(0, 0, 0); // No specular
+        mat.ambientColor = new BABYLON.Color3(0.6, 0.6, 0.6); // Muted ambient
+        mat.emissiveColor = color.scale(0.3); // Subtle glow for depth
 
-        // Set diffuse color (main surface color)
-        if (mat.diffuseColor !== undefined) {
-          mat.diffuseColor = color;
-        }
-
-        // Set emissive color at full brightness
-        if (mat.emissiveColor !== undefined) {
-          mat.emissiveColor = color.clone();
-        }
-
-        // Set specular for extra visibility
-        if (mat.specularColor !== undefined) {
-          mat.specularColor = color.clone();
-        }
+        // ─── OUTLINE ──────────────────────────────────────────────────
+        // Black outline for cel-shaded effect
+        mesh.outlineWidth = 0.15;
+        mesh.outlineColor = new BABYLON.Color3(0, 0, 0);
+        mat.backFaceCulling = false; // Needed for outline rendering
       });
     } catch (error) {
       console.warn("Error applying arrow color:", error);
@@ -813,7 +828,7 @@ class AimView {
     this.isActive = false;
     this.cameraDistance = CONFIG.AIM_VIEW.CAMERA_DISTANCE;
     this.cameraHeight = CONFIG.AIM_VIEW.CAMERA_HEIGHT;
-    this.cameraRotation = 0;
+    this.cameraRotation = 0; // Face toward center from north side
 
     // Use ClubSelector to manage club logic
     this.clubSelector = new ClubSelector(circleUIManager);
@@ -955,7 +970,6 @@ class AimView {
     this.setupOrbitControls();
     this.trajectoryArrow.create();
     if (this.circleUIManager) {
-      this.circleUIManager.showClubCircle();
       this.circleUIManager.showCompassCircle();
       this.circleUIManager.hidePowerCircle();
     }
@@ -968,8 +982,6 @@ class AimView {
     this.removeOrbitControls();
     this.trajectoryArrow.dispose();
     if (this.circleUIManager) {
-      this.circleUIManager.hideClubCircle();
-      this.circleUIManager.showStatsCircle();
       this.circleUIManager.showCompassCircle();
       this.circleUIManager.showPowerCircle();
     }
@@ -1666,7 +1678,7 @@ class FollowCamera {
   configure() {
     this.camera.fov = CONFIG.CAMERA.FOV_PLAY;
     this.camera.minZ = 0.01; // Allow rendering objects very close to camera
-    this.camera.maxZ = 1000; // Limit far clip to preserve depth-buffer precision
+    this.camera.maxZ = 3000; // Increased for better shot overview visibility
     this.camera.inertia = 0;
     this.camera.angularSensibility = 0;
     this.camera.keysUp = [];
@@ -1911,16 +1923,19 @@ class GrassSystem {
     return instance;
   }
 
-  scatter(groundSize = 200, density = 5, greenPositions = []) {
-    // Scatter grass blades across terrain, avoiding greens
+  scatter(discRadius = 200, density = 5, greenPositions = []) {
+    // Scatter grass blades across circular terrain, avoiding greens
     const greenRadius = 30;
-    const bladeCount = Math.floor((groundSize * groundSize) / 20); // ~3000 blades
+    const bladeCount = Math.floor((discRadius * discRadius * Math.PI) / 20); // ~3000 blades for circular area
     const clumpSize = 8;
     const clumpCount = Math.ceil(bladeCount / clumpSize);
 
     for (let c = 0; c < clumpCount; c++) {
-      const clumpCenterX = (Math.random() - 0.5) * groundSize;
-      const clumpCenterZ = (Math.random() - 0.5) * groundSize;
+      // Generate random position within circular disc
+      const angle = Math.random() * Math.PI * 2;
+      const distance = Math.random() * discRadius;
+      const clumpCenterX = Math.cos(angle) * distance;
+      const clumpCenterZ = Math.sin(angle) * distance;
 
       let tooCloseToGreen = false;
       for (const greenPos of greenPositions) {
@@ -1941,7 +1956,10 @@ class GrassSystem {
         const x = clumpCenterX + Math.cos(angle) * radius;
         const z = clumpCenterZ + Math.sin(angle) * radius;
 
-        this.createGrassBlade(new BABYLON.Vector3(x, 0, z));
+        // Only create grass if within disc
+        if (Math.sqrt(x * x + z * z) <= discRadius) {
+          this.createGrassBlade(new BABYLON.Vector3(x, 0, z));
+        }
       }
     }
   }
@@ -2119,20 +2137,8 @@ class SwipeArrowOverlay {
   }
 
   setupCanvas() {
-    const parent = this.renderCanvas.parentElement;
-    if (!parent) return;
-    if (window.getComputedStyle(parent).position === "static") {
-      parent.style.position = "relative";
-    }
-
-    this.overlayCanvas.style.position = "absolute";
-    this.overlayCanvas.style.left = "0";
-    this.overlayCanvas.style.top = "0";
-    this.overlayCanvas.style.width = "100%";
-    this.overlayCanvas.style.height = "100%";
-    this.overlayCanvas.style.pointerEvents = "none";
-    this.overlayCanvas.style.zIndex = "10";
-    parent.appendChild(this.overlayCanvas);
+    this.overlayCanvas.id = "swipeOverlay";
+    this.renderCanvas.parentElement.appendChild(this.overlayCanvas);
   }
 
   resize() {
@@ -2702,187 +2708,57 @@ class InputHandler {
 
 class CircleUIManager {
   constructor() {
-    this.circles = {
-      topLeft: null, // Stats (play mode)
-      topRight: null, // Compass
-      bottomLeft: null, // Power indicator
-      bottomRight: null, // Club selector (aim mode)
-    };
-    this.clubButtonsContainer = null; // Container for club +/- buttons
-    this.baseSize = 150; // Base circle size in px
-    this.createAllCircles();
-  }
-
-  createAllCircles() {
-    // Remove any existing circles
-    Object.values(this.circles).forEach((circle) => {
-      if (circle) circle.remove();
-    });
-
-    // Build each circle
-    this.buildStatsCircle();
-    this.buildCompassCircle();
-    this.buildPowerCircle();
-    this.buildClubCircle();
-  }
-
-  /**
-   * Build the stats circle (top-left) showing yardage to pin
-   */
-  buildStatsCircle() {
+    // Set CSS variables so scale-dependent sizes are correct
     const scale = CONFIG.SCREEN.UI_SCALE;
-    const size = this.baseSize * scale;
-    const margin = 15 * scale;
-    const borderWidth = 6 * scale;
-    const borderColor = PALETTE.GREEN_DARK;
-    const bgColor = PALETTE.GREEN_LIGHT;
-    const shadow = "drop-shadow(0 2px 8px rgba(0,0,0,0.8))";
+    const root = document.documentElement;
+    root.style.setProperty("--ui-size", 150 * scale + "px");
+    root.style.setProperty("--ui-margin", 15 * scale + "px");
+    root.style.setProperty("--ui-border-width", 6 * scale + "px");
+    root.style.setProperty("--ui-btn-size", 40 * scale + "px");
+    root.style.setProperty("--ui-gap", 12 * scale + "px");
+    root.style.setProperty("--ui-mb-flag", 4 * scale + "px");
+    root.style.setProperty("--ui-flag-w", 112 * scale + "px");
+    root.style.setProperty("--ui-flag-h", 88 * scale + "px");
+    root.style.setProperty("--ui-pin-fs", 36 * scale + "px");
+    root.style.setProperty("--ui-yardage-fs", 28 * scale + "px");
+    root.style.setProperty("--ui-wind-fs", 32 * scale + "px");
+    root.style.setProperty("--ui-power-emoji-fs", 44 * scale + "px");
+    root.style.setProperty("--ui-power-fs", 26 * scale + "px");
+    root.style.setProperty("--ui-power-gap", 2 * scale + "px");
+    root.style.setProperty("--ui-club-btn-fs", 24 * scale + "px");
+    root.style.setProperty("--ui-club-icon-fs", 64 * scale + "px");
+    root.style.setProperty("--ui-club-name-fs", 24 * scale + "px");
+    root.style.setProperty("--ui-club-dist-fs", 12 * scale + "px");
 
-    this.circles.topLeft = document.createElement("div");
-    this.circles.topLeft.id = "circleStats";
-    this.circles.topLeft.style.cssText = `position:absolute;top:${margin}px;left:${margin}px;width:${size}px;height:${size}px;background:${bgColor};border:${borderWidth}px solid ${borderColor};border-radius:50%;z-index:1500;display:flex;flex-direction:column;align-items:center;justify-content:center;filter:${shadow};pointer-events:auto;`;
-    this.circles.topLeft.innerHTML = `
-      <div style="position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;color:white;font-family:monospace;text-align:center;">
-        <div style="position:relative;width:${112 * scale}px;height:${88 * scale}px;margin-bottom:${4 * scale}px;">
-          <img id="statsFlagImg" src="assets/flag/flag.png" style="width:100%;height:100%;object-fit:contain;display:block;">
-          <div id="statsPinNumber" style="position:absolute;top:20%;left:15%;color:${PALETTE.YELLOW};font-weight:bold;font-size:${36 * scale}px;text-shadow:0 0 4px rgba(0,0,0,0.9),1px 1px 2px rgba(0,0,0,1);">1</div>
-        </div>
-        <div style="color:${PALETTE.YELLOW};font-weight:bold;font-size:${28 * scale}px;"><span id="circleYardage">0</span>'</div>
-      </div>
-    `;
-    document.body.appendChild(this.circles.topLeft);
+    // Wire up to pre-existing DOM elements from index.html
+    this.circles = {
+      topLeft: document.getElementById("circleStats"),
+      topRight: document.getElementById("circleCompass"),
+      bottomLeft: document.getElementById("circlePower"),
+      bottomRight: document.getElementById("circleClub"),
+    };
+    this.clubButtonsContainer = document.getElementById("clubSelectorWrapper");
+
     this._statsFlagImg = document.getElementById("statsFlagImg");
     this._statsPinNumber = document.getElementById("statsPinNumber");
-  }
-
-  /**
-   * Build the compass circle (top-right) showing wind direction
-   */
-  buildCompassCircle() {
-    const scale = CONFIG.SCREEN.UI_SCALE;
-    const size = this.baseSize * scale;
-    const margin = 15 * scale;
-    const borderColor = PALETTE.GREEN_DARK;
-    const bgColor = PALETTE.GREEN_LIGHT;
-    const shadow = "drop-shadow(0 2px 8px rgba(0,0,0,0.8))";
-
-    this.circles.topRight = document.createElement("div");
-    this.circles.topRight.id = "circleCompass";
-    this.circles.topRight.style.cssText = `position:absolute;top:${margin}px;right:${margin}px;display:flex;flex-direction:column;align-items:center;gap:${12 * scale}px;z-index:1500;pointer-events:none;`;
-
-    const compassCircle = document.createElement("div");
-    compassCircle.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;background:${bgColor};border:3px solid ${borderColor};display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 2px 8px rgba(0,0,0,0.8));pointer-events:auto;`;
-    compassCircle.innerHTML = `
-      <svg id="compassSvg" width="${size}" height="${size}" viewBox="0 0 120 120" style="filter:${shadow};pointer-events:auto;user-select:none;">
-        <text x="60" y="18" text-anchor="middle" fill="${PALETTE.YELLOW}" font-size="28" font-weight="bold">N</text>
-        <text x="102" y="65" text-anchor="middle" fill="${PALETTE.YELLOW}" font-size="28" font-weight="bold">E</text>
-        <text x="60" y="108" text-anchor="middle" fill="${PALETTE.YELLOW}" font-size="28" font-weight="bold">S</text>
-        <text x="18" y="65" text-anchor="middle" fill="${PALETTE.YELLOW}" font-size="28" font-weight="bold">W</text>
-        <circle cx="60" cy="60" r="4" fill="${PALETTE.YELLOW}"/>
-        <g id="windArrow">
-          <polygon points="60,28 55,48 58,45 58,60 62,60 62,45 65,48" fill="#ff6b6b" stroke="${PALETTE.YELLOW}" stroke-width="1.5"/>
-        </g>
-      </svg>
-    `;
-    this.circles.topRight.appendChild(compassCircle);
-
-    const windSpeedDisplay = document.createElement("div");
-    windSpeedDisplay.id = "windSpeedDisplay";
-    windSpeedDisplay.style.cssText = `color:${PALETTE.YELLOW};font-size:${32 * scale}px;font-weight:bold;font-family:monospace;pointer-events:auto;`;
-    windSpeedDisplay.textContent = "0 mph";
-    this.circles.topRight.appendChild(windSpeedDisplay);
-    document.body.appendChild(this.circles.topRight);
-  }
-
-  /**
-   * Build the power circle (bottom-left) showing swing power
-   */
-  buildPowerCircle() {
-    const scale = CONFIG.SCREEN.UI_SCALE;
-    const size = this.baseSize * scale;
-    const margin = 15 * scale;
-    const borderWidth = 6 * scale;
-    const borderColor = PALETTE.GREEN_DARK;
-    const bgColor = PALETTE.GREEN_LIGHT;
-    const shadow = "drop-shadow(0 2px 8px rgba(0,0,0,0.8))";
-
-    this.circles.bottomLeft = document.createElement("div");
-    this.circles.bottomLeft.id = "circlePower";
-    this.circles.bottomLeft.style.cssText = `position:absolute;bottom:${margin}px;left:${margin}px;width:${size}px;height:${size}px;background:${bgColor};border:${borderWidth}px solid ${borderColor};border-radius:50%;z-index:1500;display:flex;flex-direction:column;align-items:center;justify-content:center;filter:${shadow};pointer-events:auto;`;
-
-    // SVG arc fill: circumference of circle with r=(size/2 - stroke/2 - padding)
-    const r = Math.round(size / 2 - borderWidth - 8 * scale);
-    const circ = Math.round(2 * Math.PI * r);
-    const cx = Math.round(size / 2);
-    const cy = Math.round(size / 2);
-    const strokeW = Math.round(8 * scale);
-
-    this.circles.bottomLeft.innerHTML = `
-      <svg id="powerSvg" width="${size}" height="${size}" style="position:absolute;top:0;left:0;transform:rotate(90deg);">
-        <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="${strokeW}"/>
-        <circle id="powerArc" cx="${cx}" cy="${cy}" r="${r}" fill="none"
-          stroke="${PALETTE.YELLOW}" stroke-width="${strokeW}" stroke-linecap="round"
-          stroke-dasharray="${circ}" stroke-dashoffset="${circ}"
-          style="transition:stroke-dashoffset 0.1s ease-out,stroke 0.1s ease-out;"/>
-      </svg>
-      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${2 * scale}px;pointer-events:none;">
-        <div style="font-size:${44 * scale}px;line-height:1;">💪</div>
-        <div style="color:${PALETTE.YELLOW};font-weight:bold;font-family:monospace;font-size:${26 * scale}px;text-shadow:0 1px 4px rgba(0,0,0,0.8);"><span id="powerPercent">0</span>%</div>
-      </div>
-    `;
-    document.body.appendChild(this.circles.bottomLeft);
     this.powerPercent = document.getElementById("powerPercent");
     this.powerArc = document.getElementById("powerArc");
-    this._powerCircumference = circ;
-  }
-
-  /**
-   * Build the club selector circle (bottom-right) with +/- buttons
-   */
-  buildClubCircle() {
-    const scale = CONFIG.SCREEN.UI_SCALE;
-    const size = this.baseSize * scale;
-    const margin = 15 * scale;
-    const borderWidth = 6 * scale;
-    const borderColor = PALETTE.GREEN_DARK;
-    const bgColor = PALETTE.GREEN_LIGHT;
-    const shadow = "drop-shadow(0 2px 8px rgba(0,0,0,0.8))";
-
-    const clubContainerWrapper = document.createElement("div");
-    clubContainerWrapper.id = "clubSelectorWrapper";
-    clubContainerWrapper.style.cssText = `position:absolute;bottom:${margin}px;right:${margin}px;z-index:1000;display:flex;flex-direction:column;align-items:center;gap:${12 * scale}px;`;
-
-    const btnSize = 40 * scale;
-    const upBtn = document.createElement("button");
-    upBtn.id = "clubUp";
-    upBtn.textContent = "+";
-    upBtn.style.cssText = `width:${btnSize}px;height:${btnSize}px;background:rgba(144,200,150,0.7);color:#fff;border:none;border-radius:50%;cursor:pointer;font-weight:bold;font-size:${24 * scale}px;filter:${shadow};touch-action:manipulation;`;
-    clubContainerWrapper.appendChild(upBtn);
-
-    this.circles.bottomRight = document.createElement("div");
-    this.circles.bottomRight.id = "circleClub";
-    this.circles.bottomRight.style.cssText = `position:relative;width:${size}px;height:${size}px;background:${bgColor};border:${borderWidth}px solid ${borderColor};border-radius:50%;z-index:1000;display:flex;flex-direction:column;align-items:center;justify-content:center;filter:${shadow};`;
-    this.circles.bottomRight.innerHTML = `
-      <div id="clubSelectorContent" style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;height:100%;gap:${2 * scale}px;color:white;text-shadow:2px 2px 4px rgba(0,0,0,0.8);font-family:monospace;text-align:center;">
-        <div style="font-size:${64 * scale}px;">⛳</div>
-        <div style="color:${PALETTE.YELLOW};font-weight:bold;font-size:${24 * scale}px;"><span id="clubName">Driver</span></div>
-        <div style="color:${PALETTE.YELLOW};margin-top:${4 * scale}px;font-size:${12 * scale}px;font-weight:bold;">~<span id="clubDistance">306</span>'</div>
-      </div>
-    `;
-    clubContainerWrapper.appendChild(this.circles.bottomRight);
-
-    const downBtn = document.createElement("button");
-    downBtn.id = "clubDown";
-    downBtn.textContent = "−";
-    downBtn.style.cssText = `width:${btnSize}px;height:${btnSize}px;background:rgba(200,100,100,0.7);color:#fff;border:none;border-radius:50%;cursor:pointer;font-weight:bold;font-size:${24 * scale}px;filter:${shadow};touch-action:manipulation;`;
-    clubContainerWrapper.appendChild(downBtn);
-
-    this.clubButtonsContainer = clubContainerWrapper;
-    document.body.appendChild(clubContainerWrapper);
-
-    // Store direct references to club elements AFTER appending to DOM
+    this._powerCircumference = 383; // 2π * 61, fixed for viewBox="0 0 150 150"
     this.clubName = document.getElementById("clubName");
     this.clubDistance = document.getElementById("clubDistance");
+    this.clubIcon = document.getElementById("clubIcon");
+
+    this._attachPressEffect(this.circles.topLeft);
+    this._attachPressEffect(document.getElementById("compassCircle"));
+    this._attachPressEffect(this.circles.bottomLeft);
+    this._attachPressEffect(this.circles.bottomRight);
+  }
+
+  _attachPressEffect(el) {
+    el.addEventListener("pointerdown", () => el.classList.add("pressed"));
+    el.addEventListener("pointerup", () => el.classList.remove("pressed"));
+    el.addEventListener("pointerleave", () => el.classList.remove("pressed"));
+    el.addEventListener("pointercancel", () => el.classList.remove("pressed"));
   }
 
   // Update stats circle (play mode) - just yardage
@@ -2919,6 +2795,17 @@ class CircleUIManager {
     if (this.clubName) this.clubName.textContent = clubName;
     if (this.clubDistance)
       this.clubDistance.textContent = estimatedDistance.toFixed(0);
+
+    // Update club icon based on club type
+    if (this.clubIcon) {
+      let iconPath = "assets/clubs/iron.png"; // default
+      if (clubName.includes("Driver") || clubName.includes("Wood")) {
+        iconPath = "assets/clubs/driver.png";
+      } else if (clubName.includes("Putter")) {
+        iconPath = "assets/clubs/putter.png";
+      }
+      this.clubIcon.src = iconPath;
+    }
   }
 
   // Hide/show circles based on mode
@@ -2969,16 +2856,10 @@ class CircleUIManager {
   // Clean up
   destroy() {
     Object.values(this.circles).forEach((circle) => {
-      if (circle) circle.remove();
+      if (circle) circle.style.display = "none";
     });
-    if (this.clubButtonsContainer) this.clubButtonsContainer.remove();
-    this.circles = {
-      topLeft: null,
-      topRight: null,
-      bottomLeft: null,
-      bottomRight: null,
-    };
-    this.clubButtonsContainer = null;
+    if (this.clubButtonsContainer)
+      this.clubButtonsContainer.style.display = "none";
   }
 }
 
@@ -3230,20 +3111,23 @@ class PinManager {
   }
 
   addGreen(centerPos, radius, scene) {
-    const green = BABYLON.MeshBuilder.CreateDisc(
+    // Create a slightly concave green using a squashed sphere
+    const green = BABYLON.MeshBuilder.CreateSphere(
       "green",
-      { radius: radius },
+      { diameter: radius * 2, segments: 32 },
       scene,
     );
+    // Squash vertically to create a subtle bowl shape
+    green.scaling = new BABYLON.Vector3(1, 0.01, 1);
     green.position = centerPos.clone();
-    green.position.y = CONFIG.PINS.GREEN_Y_OFFSET;
-    green.rotation.x = Math.PI / 2;
+    green.position.y = 0.001; // Flush with ground
 
     const greenMat = Utils.createMaterial(
       `greenMat_${Math.random()}`,
       scene,
       new BABYLON.Color3(0.38, 0.72, 0.18),
-      new BABYLON.Color3(0.03, 0.06, 0.01),
+      new BABYLON.Color3(0.01, 0.02, 0.005), // Very low specular for matte grass
+      2, // Very low power for natural grass finish
     );
     const greenDiffuse = new BABYLON.Texture(
       CONFIG.PINS.GREEN_TEXTURE_PATH,
@@ -3266,7 +3150,7 @@ class PinManager {
     const greenPhysics = new BABYLON.PhysicsAggregate(
       green,
       BABYLON.PhysicsShapeType.MESH,
-      { mass: 0, friction: 0.7, restitution: 0.2 },
+      { mass: 0, friction: 3.0, restitution: 0.1 },
       scene,
     );
 
@@ -3332,7 +3216,7 @@ class PinManager {
         this.golfBall.body.setAngularVelocity(BABYLON.Vector3.Zero());
         this.golfBall.mesh.position.x = holePos.x;
         this.golfBall.mesh.position.z = holePos.z;
-        this.golfBall.mesh.position.y = CONFIG.PINS.HOLE_Y_OFFSET - 0.2;
+        this.golfBall.mesh.position.y = CONFIG.PINS.HOLE_Y_OFFSET - 0.25;
         this.golfBall.landed = true;
         this.eventManager.emit("pin:holesink", holePos);
       }
@@ -3510,7 +3394,10 @@ class CameraCoordinator {
    */
   transitionToPlay(ballPosition, shotDirection) {
     this.camera.setShotStartPosition(ballPosition);
-    this.camera.setCameraAngleImmediate(-shotDirection);
+    // Camera angle convention is opposite to aimView, so negate it
+    const cameraAngle = -shotDirection;
+    this.camera.setCameraAngleImmediate(cameraAngle);
+    this.camera.targetCameraAngle = cameraAngle;
     this.camera.setPlayView();
   }
 
@@ -3572,7 +3459,7 @@ class GameStateCoordinator {
     }
 
     if (this.game.aimView) {
-      this.game.aimView.cameraRotation = 0; // Reset camera to default angle
+      this.game.aimView.cameraRotation = 0; // Face toward center from north side
       this.game.aimView.activate(); // Re-enable orbit controls
     }
   }
@@ -3580,8 +3467,11 @@ class GameStateCoordinator {
   /**
    * Handle hole sink: reset for next hole
    */
-  handleHoleSink() {
-    this.resetGame();
+  handleHoleSink(holePos) {
+    // Reload page to reset game
+    setTimeout(() => {
+      window.location.reload();
+    }, 1000);
   }
 
   /**
@@ -3658,32 +3548,35 @@ class SceneSetup {
   }
 
   static createUndulatingTerrain(scene) {
-    const radius = 400; // Disc radius in meters (reduced from 1250 to improve performance)
+    const radius = 183; // 400 yard diameter (200 yard radius)
 
-    // Create cylinder with thin height to act like a disc with collision
-    const ground = BABYLON.MeshBuilder.CreateCylinder(
+    // Create a large flat ground disc
+    const ground = BABYLON.MeshBuilder.CreateDisc(
       "undulatedGround",
       {
-        height: 0.5, // Thin disc to prevent z-fighting
-        diameter: radius * 2,
-        tessellation: 32, // Reduced tessellation for performance
+        radius: radius,
+        tessellation: 64,
       },
       scene,
     );
+
+    // Lay it flat
+    ground.rotation.x = Math.PI / 2;
+    ground.position.y = 0;
 
     // Tiled terrain material using repeatable diffuse + normal textures
     const groundMat = Utils.createMaterial(
       "undulatedMat",
       scene,
       new BABYLON.Color3(0.25, 0.5, 0.15),
-      new BABYLON.Color3(0.1, 0.1, 0.1),
-      16,
+      new BABYLON.Color3(0.02, 0.02, 0.02), // Much darker specular for matte
+      4, // Lower power for matte finish
     );
 
     const diffuseTex = new BABYLON.Texture(CONFIG.TERRAIN.TEXTURE_PATH, scene);
     diffuseTex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
     diffuseTex.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
-    diffuseTex.uScale = 50; // Reduce from CONFIG.TERRAIN.UV_TILING to prevent shimmer
+    diffuseTex.uScale = 50;
     diffuseTex.vScale = 50;
     groundMat.diffuseTexture = diffuseTex;
 
@@ -3693,17 +3586,18 @@ class SceneSetup {
     );
     normalTex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
     normalTex.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
-    normalTex.uScale = 50; // Reduce from CONFIG.TERRAIN.UV_TILING to prevent shimmer
+    normalTex.uScale = 50;
     normalTex.vScale = 50;
     groundMat.bumpTexture = normalTex;
 
     ground.material = groundMat;
     ground.receiveShadows = true;
 
-    // Physics for terrain - use CYLINDER shape which works better for disc collision
+    // Physics for terrain - use BOX (cube) shape for reliable flat ground collision
+    // Make it a large thin box that covers the entire disc area
     const groundAggregate = new BABYLON.PhysicsAggregate(
       ground,
-      BABYLON.PhysicsShapeType.CYLINDER,
+      BABYLON.PhysicsShapeType.BOX,
       {
         mass: 0,
         friction: CONFIG.TERRAIN.FRICTION,
@@ -3713,59 +3607,85 @@ class SceneSetup {
     );
     scene.groundPhysicsBody = groundAggregate.body;
 
-    // Create water ring around the disc
+    // Create water disc around the ground - larger radius, positioned lower to avoid z-fighting
     this.createWaterRing(scene, radius);
 
     return ground;
   }
 
-  static createWaterRing(scene, innerRadius) {
-    // Create a flat disc for water - 1.5x the size of ground disc, scaled smaller
+  static createWaterRing(scene, groundRadius) {
+    // Create a large water disc extending to horizon
+    const waterRadius = 1500;
+
     const waterDisc = BABYLON.MeshBuilder.CreateDisc(
       "waterRing",
       {
-        radius: innerRadius * 1.5,
-        tessellation: 64,
+        radius: waterRadius,
+        tessellation: 128,
       },
       scene,
     );
 
-    waterDisc.position.y = -0.5; // Lower below ground
-    waterDisc.rotation.x = Math.PI / 2; // Lay flat
+    // Lay it flat, separated to avoid z-fighting
+    waterDisc.rotation.x = Math.PI / 2;
+    waterDisc.position.y = -2.0;
 
-    // Water material
-    const water = new BABYLON.WaterMaterial(
-      "waterMaterial",
+    // Custom water material with diffuse and normal maps
+    const waterMat = new BABYLON.PBRMaterial("sonicWater", scene);
+
+    // Load textures
+    const diffuseTex = new BABYLON.Texture("./assets/texture/water.png", scene);
+    diffuseTex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
+    diffuseTex.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
+    diffuseTex.uScale = 4;
+    diffuseTex.vScale = 4;
+    waterMat.albedoTexture = diffuseTex;
+
+    const normalTex = new BABYLON.Texture(
+      "./assets/texture/waternormals.png",
       scene,
-      new BABYLON.Vector2(512, 512),
     );
-    water.backFaceCulling = false;
+    normalTex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
+    normalTex.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
+    normalTex.uScale = 4;
+    normalTex.vScale = 4;
+    waterMat.bumpTexture = normalTex;
 
-    // Set up bump texture with proper wrapping
-    water.bumpTexture = new BABYLON.Texture("./assets/waterbump.png", scene);
-    water.bumpTexture.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
-    water.bumpTexture.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
-    water.bumpTexture.uScale = 4;
-    water.bumpTexture.vScale = 4;
+    // PBR water: high metallic and low roughness for Sonic water shine
+    waterMat.metallic = 0.8;
+    waterMat.roughness = 0.2;
+    waterMat.alpha = 0.85;
+    waterMat.backFaceCulling = false;
 
-    water.windForce = -3; // Slower waves
-    water.waveHeight = 0.08; // Smaller waves
-    water.windDirection = new BABYLON.Vector2(1, 1);
-    water.waterColor = new BABYLON.Color3(0.15, 0.35, 0.55);
-    water.colorBlendFactor = 0.4;
-    water.waveLength = 0.5; // Slower wave frequency
-
-    // Add reflection of ground and skybox
-    const groundMesh = scene.getMeshByName("undulatedGround");
-    const skybox = scene.getMeshByName("hdrSkyBox");
-    if (groundMesh) water.addToRenderList(groundMesh);
-    if (skybox) water.addToRenderList(skybox);
-
-    waterDisc.material = water;
-
+    waterDisc.material = waterMat;
     scene.waterRing = waterDisc;
+
+    // Animate water with floating/swaying motion instead of constant flow
+    let time = 0;
+    scene.registerBeforeRender(() => {
+      time += 0.005;
+
+      // Create floating motion using sine waves for natural sway
+      const sway1 = Math.sin(time * 0.5) * 0.1;
+      const sway2 = Math.sin(time * 0.3 + Math.PI / 4) * 0.08;
+
+      // Update texture offset for floating effect
+      if (diffuseTex) {
+        diffuseTex.uOffset = sway1;
+        diffuseTex.vOffset = sway2;
+      }
+      if (normalTex) {
+        normalTex.uOffset = sway1 * 0.5;
+        normalTex.vOffset = sway2 * 0.5;
+      }
+    });
+
+    // Add fog for mist effect on the outer water ring
+    scene.fogMode = BABYLON.Scene.FOGMODE_NONE;
   }
 }
+
+// ─── MONEY PARTICLE SYSTEM ───────────────────────────────────────────────────
 
 // ─── BALL TRAIL ──────────────────────────────────────────────────────────────
 
@@ -3884,7 +3804,7 @@ class ClubSystem {
     try {
       const result = await BABYLON.SceneLoader.ImportMeshAsync(
         "",
-        "assets/",
+        "assets/3d/",
         "clubs.glb",
         this.scene,
       );
@@ -4118,7 +4038,7 @@ class GolfGame {
     this.ballTrail = null;
     this.aimView = null;
     this.gameState = GameState.AIM;
-    this.ballStartPosition = new BABYLON.Vector3(0, 0.425, 10);
+    this.ballStartPosition = new BABYLON.Vector3(0, 0.425, 150);
     this.aimedDirection = 0;
     this.justTransitioned = false;
     this.physicsDebugEnabled = false;
@@ -4138,6 +4058,10 @@ class GolfGame {
     // Coordinators (initialized after scene setup)
     this.swingCoordinator = null;
     this.cameraCoordinator = null;
+
+    // Compass transition tracking for smooth mode switches
+    this.compassTransitionFrames = 0;
+    this.compassTransitionDuration = 3; // frames to blend rotation sources
     this.gameStateCoordinator = null;
   }
 
@@ -4244,7 +4168,7 @@ class GolfGame {
   async loadCharacter() {
     const result = await BABYLON.SceneLoader.ImportMeshAsync(
       "",
-      "assets/",
+      "assets/3d/",
       "gball.glb",
       this.scene,
     );
@@ -4322,6 +4246,12 @@ class GolfGame {
         this.golfBall.getPosition(),
         this.aimedDirection,
       );
+      // Start compass transition blend
+      this.compassTransitionFrames = 0;
+      // Ensure aimView is fully deactivated after transitioning
+      setTimeout(() => {
+        this.aimView.isActive = false;
+      }, 0);
       this.ballTrail.startTracing();
     });
 
@@ -4411,13 +4341,43 @@ class GolfGame {
       this.eventManager,
     );
 
-    const greenPositions = [
-      new BABYLON.Vector3(-150, 0, -100),
-      new BABYLON.Vector3(-40, 0, -200),
-      new BABYLON.Vector3(80, 0, -80),
-      new BABYLON.Vector3(40, 0, -280),
-      new BABYLON.Vector3(-100, 0, -350),
-    ];
+    // Generate random pin positions outside a 100-yard radius from player
+    const playerPos = this.ballStartPosition; // (0, 0, 150)
+    const minDistance = 91.44; // 100 yards in meters
+    const discRadius = 183; // Match ground disc radius
+    const numPins = 5;
+    const greenPositions = [];
+
+    while (greenPositions.length < numPins) {
+      // Random angle and distance from origin
+      const angle = Math.random() * Math.PI * 2;
+      const maxDistance = discRadius - 25; // 25m buffer from edge
+      const distance =
+        minDistance + Math.random() * (maxDistance - minDistance - 30); // Leave buffer for green radius
+
+      const x = Math.cos(angle) * distance;
+      const z = Math.sin(angle) * distance;
+      const pos = new BABYLON.Vector3(x, 0, z);
+
+      // Check if far enough from player
+      if (BABYLON.Vector3.Distance(pos, playerPos) < minDistance) {
+        continue;
+      }
+
+      // Check if far enough from all existing greens (60m minimum = 2 x green radius of 30)
+      const minGreenDistance = 60;
+      let tooClose = false;
+      for (const existingPin of greenPositions) {
+        if (BABYLON.Vector3.Distance(pos, existingPin) < minGreenDistance) {
+          tooClose = true;
+          break;
+        }
+      }
+
+      if (!tooClose) {
+        greenPositions.push(pos);
+      }
+    }
 
     this.greenPositions = greenPositions;
 
@@ -4432,8 +4392,8 @@ class GolfGame {
       // Handle pin hit if needed
     });
 
-    this.eventManager.on("pin:holesink", () => {
-      this.gameStateCoordinator.handleHoleSink();
+    this.eventManager.on("pin:holesink", (holePos) => {
+      this.gameStateCoordinator.handleHoleSink(holePos);
       // aimView.activate() (called in handleHoleSink) already sets up camera for AIM mode
     });
   }
@@ -4443,9 +4403,9 @@ class GolfGame {
     this.grassSystem = new GrassSystem(this.scene, this);
 
     try {
-      await this.grassSystem.loadFrames(CONFIG.GRASS.FRAME_COUNT); // Load animation frames from config
-      // Scatter grass - instancing is efficient enough for 10x density now
-      this.grassSystem.scatter(300, 12, this.greenPositions); // Lower density for perf
+      await this.grassSystem.loadFrames(CONFIG.GRASS.FRAME_COUNT);
+      // Scatter grass across circular disc (183m radius)
+      this.grassSystem.scatter(183, 12, this.greenPositions);
     } catch (err) {
       // Silently fail if grass frames not found
     }
@@ -4649,14 +4609,33 @@ class GolfGame {
         (180 - (this.wind.direction * 180) / Math.PI + 360) % 360;
       arrow.setAttribute("transform", `rotate(${compassAngle} 60 60)`);
 
-      // Rotate entire compass to match camera angle (different for aim vs play mode)
+      // Determine rotation source with smooth transition between modes
       let cameraAngleDeg = 0;
-      if (this.aimView && this.aimView.isActive) {
+      const isTransitioning =
+        this.compassTransitionFrames < this.compassTransitionDuration;
+
+      if (isTransitioning) {
+        // During transition, blend between aimView and camera angle
+        // Note: camera.cameraAngle is negated relative to aimView.cameraRotation
+        const aimDeg = this.aimView
+          ? ((this.aimView.cameraRotation * 180) / Math.PI) % 360
+          : 0;
+        const cameraDeg =
+          this.camera && Number.isFinite(this.camera.cameraAngle)
+            ? ((-this.camera.cameraAngle * 180) / Math.PI) % 360
+            : aimDeg;
+
+        // Blend factor: 0 at start (use aim), 1 at end (use camera)
+        const blendFactor =
+          this.compassTransitionFrames / this.compassTransitionDuration;
+        cameraAngleDeg = aimDeg + (cameraDeg - aimDeg) * blendFactor;
+        this.compassTransitionFrames++;
+      } else if (this.aimView && this.aimView.isActive) {
         // In aim view, use aimView's camera rotation
         cameraAngleDeg = ((this.aimView.cameraRotation * 180) / Math.PI) % 360;
       } else if (this.camera && Number.isFinite(this.camera.cameraAngle)) {
-        // In play view, use the FollowCamera's angle (only if valid)
-        cameraAngleDeg = ((this.camera.cameraAngle * 180) / Math.PI) % 360;
+        // In play view, negate camera angle to match compass convention
+        cameraAngleDeg = ((-this.camera.cameraAngle * 180) / Math.PI) % 360;
       }
       compassSvg.style.transform = `rotate(${-cameraAngleDeg}deg)`;
 
