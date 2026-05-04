@@ -20,8 +20,8 @@ const GameState = { AIM: "aim", PLAY: "play", LANDED: "landed" };
 const CameraViewMode = { PLAY: "play", SHOT_REVIEW: "shotReview" };
 
 const PALETTE = {
-  YELLOW: "#ffeb3b",
-  GREEN_DARK: "#3a6b35",
+  YELLOW: "#E1E44E",
+  GREEN_DARK: "#476A23",
   GREEN_LIGHT: "rgba(144,200,150,0.85)",
 };
 
@@ -72,12 +72,15 @@ const CONFIG = {
     ANGLE_LERP_SPEED: 0.08,
   },
   GRASS: {
-    VIEW_RADIUS: 60,
+    VIEW_RADIUS: 30,
     UPDATE_THRESHOLD: 5,
     FRAME_COUNT: 5,
     BILLBOARD_MODE: BABYLON.Mesh.BILLBOARDMODE_ALL,
-    BLADE_DENSITY: 8,
-    CLUMP_SIZE: 5,
+    BLADES_PER_CELL: 250, // 200 blades per 25-unit cell
+    CELL_SIZE: 25, // Smaller cells = more density
+    GREEN_EXCLUSION_RADIUS: 31, // Don't spawn within 35 units of pins
+    TERRAIN_RADIUS: 183, // Match ground disc radius
+    CLUMP_SIZE: 15,
   },
   LIGHTING: {
     AMBIENT_INTENSITY: 0.75,
@@ -332,7 +335,7 @@ class CloudSystem {
     );
 
     cloud.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
-    cloud.alwaysSelectAsActiveMesh = true;
+    cloud.isPickable = false; // Clouds are decorative, don't need picking
 
     const mat = new BABYLON.StandardMaterial(`cloudMat_${index}`, this.scene);
 
@@ -449,6 +452,8 @@ class Boid3D {
       scene,
     );
     this.mesh.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+    this.mesh.isPickable = false; // Disable picking - birds are decorative
+    this.mesh.alwaysSelectAsActiveMesh = false; // Use frustum culling for performance
 
     // Load bird sprite frames (0-indexed: 0, 1, 2, 3)
     this.spriteFrames = [];
@@ -1036,7 +1041,7 @@ class TrajectoryArrow {
     this.arrowTemplate = null; // Master template loaded from arrow.glb
     this.lastArrowAngle = -1;
     this.isLoaded = false;
-    this.currentColor = new BABYLON.Color3(1, 1, 0); // Default yellow
+    this.currentColor = new BABYLON.Color3(0xe1 / 255, 0xe4 / 255, 0x4e / 255); // Default yellow #E1E44E
     this.pendingColor = null; // Color to apply after arrow is created
     this.loadArrowModel();
   }
@@ -1523,7 +1528,9 @@ class AimView {
       const ballPos = this.ballMesh.position;
       const pinPos = this.game.currentHolePin.holePosition;
       const direction = pinPos.subtract(ballPos);
-      this.cameraRotation = Math.atan2(direction.x, -direction.z);
+      const angleToPin = Math.atan2(direction.x, direction.z);
+      this.golfBallGuy.targetRotation = angleToPin; // Character faces pin directly
+      this.cameraRotation = angleToPin + Math.PI; // Camera behind ball looking at pin
     }
 
     if (this.circleUIManager) {
@@ -1642,7 +1649,7 @@ class AimView {
 
     if (Math.abs(difference) <= tolerance) {
       // On target - GREEN
-      return new BABYLON.Color3(0, 1, 0);
+      return new BABYLON.Color3(0x68 / 255, 0x8d / 255, 0x46 / 255); // #688D46
     } else if (difference < -tolerance) {
       // Too short - YELLOW
       return new BABYLON.Color3(1, 1, 0);
@@ -2404,278 +2411,247 @@ class FollowCamera {
   }
 }
 
+// ─── SPATIAL GRID (REUSABLE PARTITIONING SYSTEM) ──────────────────────────────
+// Efficient spatial partitioning for culling and querying objects by proximity.
+// Can be used by any system: grass, particles, NPCs, etc.
+
+class SpatialGrid {
+  constructor(worldSize, cellSize) {
+    this.worldSize = worldSize; // Terrain width/height (e.g., 2500)
+    this.cellSize = cellSize; // Individual cell size (e.g., 50)
+    this.grid = new Map(); // cellId -> Set of objects
+  }
+
+  getCellId(x, z) {
+    const cellX = Math.floor(x / this.cellSize);
+    const cellZ = Math.floor(z / this.cellSize);
+    return `${cellX},${cellZ}`;
+  }
+
+  insert(obj) {
+    const cellId = this.getCellId(obj.position.x, obj.position.z);
+    if (!this.grid.has(cellId)) {
+      this.grid.set(cellId, new Set());
+    }
+    this.grid.get(cellId).add(obj);
+    obj._gridCell = cellId; // Store for fast removal
+  }
+
+  remove(obj) {
+    if (obj._gridCell && this.grid.has(obj._gridCell)) {
+      this.grid.get(obj._gridCell).delete(obj);
+    }
+  }
+
+  // Update object position in grid (call when object moves significantly)
+  update(obj, oldPos) {
+    const oldCellId = this.getCellId(oldPos.x, oldPos.z);
+    const newCellId = this.getCellId(obj.position.x, obj.position.z);
+
+    if (oldCellId !== newCellId) {
+      this.remove(obj);
+      this.insert(obj);
+    }
+  }
+
+  // Query all objects within radius of center point
+  queryRadius(centerPos, radius) {
+    const results = [];
+    const cellRadius = Math.ceil(radius / this.cellSize);
+    const centerCellX = Math.floor(centerPos.x / this.cellSize);
+    const centerCellZ = Math.floor(centerPos.z / this.cellSize);
+
+    for (let dx = -cellRadius; dx <= cellRadius; dx++) {
+      for (let dz = -cellRadius; dz <= cellRadius; dz++) {
+        const cellId = `${centerCellX + dx},${centerCellZ + dz}`;
+        if (this.grid.has(cellId)) {
+          results.push(...this.grid.get(cellId));
+        }
+      }
+    }
+
+    return results;
+  }
+
+  clear() {
+    this.grid.clear();
+  }
+}
+
 // ─── GRASS SYSTEM ──────────────────────────────────────────────────────────
-// Manages grass blades with periodic wind-like animations.
+// Dynamic instanced mesh rendering with spatial grid culling.
+// Spawns/despawns grass around ball position only within terrain bounds.
 
 class GrassSystem {
-  constructor(scene, game = null) {
+  constructor(scene) {
     this.scene = scene;
-    this.game = game;
-    this.grassFrames = [];
-    this.grassBlades = [];
-    this.baseBlades = [];
-    this.ballPosition = new BABYLON.Vector3(0, 0, 0);
-    this.grassViewRadius = CONFIG.GRASS.VIEW_RADIUS;
-    this.lastUpdatePos = new BABYLON.Vector3(0, 0, 0);
-    this.updateThreshold = CONFIG.GRASS.UPDATE_THRESHOLD;
-
-    // Animation state
-    this.animationTimer = 0;
-    this.animationInterval = 1.0; // 1 second between new animations
-    this.bladeAnimations = new Map(); // blade -> { time, duration }
-  }
-
-  async loadFrames(frameCount = 5) {
-    for (let i = 1; i <= frameCount; i++) {
-      const texture = new BABYLON.Texture(
-        `assets/grass/grass${i}.png`,
-        this.scene,
-      );
-      texture.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
-      texture.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
-      texture.hasAlpha = true;
-      this.grassFrames.push(texture);
-
-      // Create base blade with this frame's material
-      const mat = Utils.createMaterial(
-        `grassMaterial_${i}`,
-        this.scene,
-        new BABYLON.Color3(1, 1, 1),
-      );
-      mat.specularColor = new BABYLON.Color3(0, 0, 0);
-      mat.specularPower = 1;
-      mat.backFaceCulling = false;
-      mat.alphaMode = BABYLON.Engine.ALPHA_BLEND;
-      mat.diffuseTexture = texture;
-
-      const blade = BABYLON.MeshBuilder.CreatePlane(
-        `grassBladeBase_${i}`,
-        { width: 0.4, height: 1.2 },
-        this.scene,
-      );
-      blade.position.y = 0.6;
-      blade.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
-      blade.material = mat;
-      this.baseBlades.push(blade);
-    }
-  }
-
-  createGrassBlade(position) {
-    // Randomly select which base blade to instance from
-    const baseIndex = Math.floor(Math.random() * this.baseBlades.length);
-    const instance = this.baseBlades[baseIndex].createInstance(
-      `grassBlade_${this.grassBlades.length}`,
+    this.grassBaseMeshes = [];
+    this.grassInstances = new Map(); // cellKey -> instances array
+    this.lastGrassGridPos = null;
+    this.spatialGrid = new SpatialGrid(
+      CONFIG.TERRAIN.WIDTH,
+      CONFIG.GRASS.CELL_SIZE,
     );
-    instance.position = position.clone();
-    instance.position.y = 0.6;
-    instance.billboardMode = CONFIG.GRASS.BILLBOARD_MODE;
-    this.grassBlades.push(instance);
-    return instance;
   }
 
-  scatter(discRadius = 200, density = 5, greenPositions = []) {
-    // Scatter grass blades across circular terrain, avoiding greens
-    const greenRadius = 30;
-    const bladeCount = Math.floor(
-      (discRadius * discRadius * Math.PI) / CONFIG.GRASS.BLADE_DENSITY,
-    );
-    const clumpSize = CONFIG.GRASS.CLUMP_SIZE;
-    const clumpCount = Math.ceil(bladeCount / clumpSize);
+  async initialize() {
+    // Load 3 grass textures
+    const textureVariants = [];
+    for (let i = 1; i <= 3; i++) {
+      const tex = new BABYLON.Texture(
+        `./assets/grass/grass${i}.png`,
+        this.scene,
+      );
+      tex.hasAlpha = true;
+      tex.uWrapMode = BABYLON.Texture.CLAMP_ADDRESSMODE;
+      tex.vWrapMode = BABYLON.Texture.CLAMP_ADDRESSMODE;
+      tex.uOffset = 0.01;
+      tex.vOffset = 0.01;
+      tex.uScale = 0.98;
+      tex.vScale = 0.98;
+      textureVariants.push(tex);
+    }
 
-    for (let c = 0; c < clumpCount; c++) {
-      // Generate random position within circular disc
-      const angle = Math.random() * Math.PI * 2;
-      const distance = Math.random() * discRadius;
-      const clumpCenterX = Math.cos(angle) * distance;
-      const clumpCenterZ = Math.sin(angle) * distance;
-
-      let tooCloseToGreen = false;
-      for (const greenPos of greenPositions) {
-        const dist = Math.sqrt(
-          (clumpCenterX - greenPos.x) ** 2 + (clumpCenterZ - greenPos.z) ** 2,
+    // Create 6 base blades (3 textures × 2 flips)
+    for (let i = 0; i < 3; i++) {
+      for (let flip = 0; flip < 2; flip++) {
+        const baseBlade = BABYLON.MeshBuilder.CreatePlane(
+          `grassBlade_${i}_${flip}`,
+          {
+            width: 0.5,
+            height: 0.5,
+          },
+          this.scene,
         );
-        if (dist < greenRadius * 1.5) {
-          tooCloseToGreen = true;
-          break;
-        }
-      }
 
-      if (tooCloseToGreen) continue;
+        const mat = new BABYLON.StandardMaterial(
+          `grassMat_${i}_${flip}`,
+          this.scene,
+        );
+        mat.diffuse = new BABYLON.Color3(1, 1, 1);
+        mat.diffuseTexture = textureVariants[i];
+        mat.diffuseTexture.uScale =
+          flip === 0 ? mat.diffuseTexture.uScale : -mat.diffuseTexture.uScale;
+        mat.backFaceCulling = false;
+        mat.alphaMode = BABYLON.Engine.ALPHA_BLEND;
 
-      for (let i = 0; i < clumpSize; i++) {
-        const angle = Math.random() * Math.PI * 2;
-        const radius = Math.abs(Math.random() + Math.random()) * 2;
-        const x = clumpCenterX + Math.cos(angle) * radius;
-        const z = clumpCenterZ + Math.sin(angle) * radius;
+        baseBlade.material = mat;
+        baseBlade.isPickable = false;
+        baseBlade.position.y = 0.25;
 
-        // Only create grass if within disc
-        if (Math.sqrt(x * x + z * z) <= discRadius) {
-          this.createGrassBlade(new BABYLON.Vector3(x, 0, z));
-        }
+        this.grassBaseMeshes.push(baseBlade);
       }
     }
   }
 
-  scatterGreenGrass(greenPositions = []) {
-    // Add small, dense grass on the greens
-    const greenRadius = 30;
-    const smallScale = 0.25;
+  update(ballPos, pinPositions = []) {
+    // Only update if ball position changed significantly
+    const minDist = CONFIG.GRASS.UPDATE_THRESHOLD;
 
-    for (const greenPos of greenPositions) {
-      const bladesPerGreen = 80;
-
-      for (let i = 0; i < bladesPerGreen; i++) {
-        const angle = Math.random() * Math.PI * 2;
-        const radius = Math.random() * greenRadius * 0.9;
-        const x = greenPos.x + Math.cos(angle) * radius;
-        const z = greenPos.z + Math.sin(angle) * radius;
-
-        const instance = this.createGrassBlade(new BABYLON.Vector3(x, 0, z));
-        instance.scaling = new BABYLON.Vector3(
-          smallScale,
-          smallScale,
-          smallScale,
-        );
-      }
-    }
-  }
-
-  updateAnimations(deltaTime) {
-    // Early exit if no active animations
-    if (this.bladeAnimations.size === 0) {
-      this.animationTimer += deltaTime;
-      if (this.animationTimer < this.animationInterval) return;
-      this.animationTimer = 0;
-      this.startRandomAnimation();
+    if (
+      this.lastGrassGridPos &&
+      BABYLON.Vector3.Distance(ballPos, this.lastGrassGridPos) < minDist
+    ) {
       return;
     }
 
-    this.animationTimer += deltaTime;
+    this.lastGrassGridPos = ballPos.clone();
+    const viewRadius = CONFIG.GRASS.VIEW_RADIUS;
+    const cellSize = CONFIG.GRASS.CELL_SIZE;
+    const cellRadius = Math.ceil(viewRadius / cellSize);
+    const centerCellX = Math.floor(ballPos.x / cellSize);
+    const centerCellZ = Math.floor(ballPos.z / cellSize);
 
-    // Periodically start new blade animations
-    if (this.animationTimer >= this.animationInterval) {
-      this.animationTimer = 0;
-      this.startRandomAnimation();
+    const cellKeys = new Set();
+    const greenExclusionRadius = CONFIG.GRASS.GREEN_EXCLUSION_RADIUS;
+
+    // Create instances for cells within view radius
+    for (let dx = -cellRadius; dx <= cellRadius; dx++) {
+      for (let dz = -cellRadius; dz <= cellRadius; dz++) {
+        const cellX = centerCellX + dx;
+        const cellZ = centerCellZ + dz;
+        const key = `${cellX},${cellZ}`;
+        cellKeys.add(key);
+
+        if (!this.grassInstances.has(key)) {
+          const instances = [];
+          const density = CONFIG.GRASS.BLADES_PER_CELL;
+
+          for (let i = 0; i < density; i++) {
+            const posX = cellX * cellSize + (Math.random() - 0.5) * cellSize;
+            const posZ = cellZ * cellSize + (Math.random() - 0.5) * cellSize;
+            const pos = new BABYLON.Vector3(posX, 0.25, posZ);
+
+            // Skip if near any pin/green
+            let tooCloseToGreen = false;
+            for (const pinPos of pinPositions) {
+              if (
+                BABYLON.Vector3.Distance(pos, pinPos) < greenExclusionRadius
+              ) {
+                tooCloseToGreen = true;
+                break;
+              }
+            }
+
+            if (tooCloseToGreen) {
+              continue;
+            }
+
+            // Skip if outside terrain disc (distance from center)
+            const distFromCenter = Math.sqrt(posX * posX + posZ * posZ);
+            if (distFromCenter > CONFIG.GRASS.TERRAIN_RADIUS) {
+              continue;
+            }
+
+            const baseMesh =
+              this.grassBaseMeshes[
+                Math.floor(Math.random() * this.grassBaseMeshes.length)
+              ];
+            const instance = baseMesh.createInstance(`grass_${key}_${i}`);
+            instance.position = pos;
+            instance.billboardMode = BABYLON.Mesh.BILLBOARDMODE_Y;
+            instance.isPickable = false;
+
+            this.spatialGrid.insert(instance);
+            instances.push(instance);
+          }
+
+          if (instances.length > 0) {
+            this.grassInstances.set(key, instances);
+          }
+        }
+      }
     }
 
-    // Update active animations
-    const finishedBlades = [];
-    for (const [blade, animState] of this.bladeAnimations) {
-      animState.time += deltaTime;
-      const progress = Math.min(animState.time / animState.duration, 1);
-
-      // Ping-pong through frames: 0,1,2,3,4,3,2,1 (no repeat of 0)
-      const totalFrames = this.grassFrames.length * 2 - 2;
-      const normalizedPos = progress * totalFrames;
-
-      let frameIndex;
-      if (normalizedPos <= this.grassFrames.length - 1) {
-        frameIndex = Math.floor(normalizedPos);
-      } else {
-        frameIndex = Math.max(1, Math.floor(totalFrames - normalizedPos));
-      }
-
-      // Apply frame by swapping texture (instances can't change material, only properties)
-      if (blade.material) {
-        blade.material.diffuseTexture = this.grassFrames[frameIndex];
-      }
-
-      if (progress >= 1) {
-        finishedBlades.push(blade);
-      }
-    }
-
-    // Clean up finished animations and set to random frame
-    for (const blade of finishedBlades) {
-      const randomFrameIdx = Math.floor(
-        Math.random() * this.grassFrames.length,
-      );
-      if (blade.material) {
-        blade.material.diffuseTexture = this.grassFrames[randomFrameIdx];
-      }
-      this.bladeAnimations.delete(blade);
-    }
-  }
-
-  startRandomAnimation() {
-    // Pick random blade (more efficient than filtering all blades)
-    const attempts = 5;
-    for (let i = 0; i < attempts; i++) {
-      const randomIdx = Math.floor(Math.random() * this.grassBlades.length);
-      const blade = this.grassBlades[randomIdx];
-
-      if (blade.isVisible && !this.bladeAnimations.has(blade)) {
-        this.bladeAnimations.set(blade, {
-          time: 0,
-          duration: 2.0 + Math.random() * 1.0,
+    // Dispose instances for cells outside view radius
+    const toDelete = [];
+    for (const [key, instances] of this.grassInstances) {
+      if (!cellKeys.has(key)) {
+        instances.forEach((inst) => {
+          this.spatialGrid.remove(inst);
+          inst.dispose();
         });
-        return;
+        toDelete.push(key);
       }
     }
-  }
 
-  update(deltaTime) {
-    // Hide grass in overview mode
-    if (this.game?.camera?.overviewOrbiting) {
-      for (const blade of this.grassBlades) {
-        blade.isVisible = false;
-      }
-      return;
-    }
-
-    // Skip expensive grass animations and culling during PLAY mode (ball moving fast)
-    // Only animate grass in AIM mode (idle)
-    if (this.game?.gameState === GameState.PLAY) {
-      // Clear animations during play for better performance
-      this.bladeAnimations.clear();
-      this.animationTimer = 0;
-      
-      // Skip culling during play - keep blades visible as-is
-      // They'll be re-culled when ball lands
-      return;
-    }
-
-    // Update animations only in AIM mode
-    this.updateAnimations(deltaTime);
-
-    // Only recull when ball moves significantly
-    const moved = BABYLON.Vector3.Distance(
-      this.ballPosition,
-      this.lastUpdatePos,
-    );
-
-    if (moved < this.updateThreshold) {
-      return; // Skip expensive distance checks if ball barely moved
-    }
-
-    this.lastUpdatePos.copyFrom(this.ballPosition);
-    const radiusSq = this.grassViewRadius * this.grassViewRadius;
-
-    // Cull grass instances based on distance from ball
-    for (const blade of this.grassBlades) {
-      const dx = blade.position.x - this.ballPosition.x;
-      const dz = blade.position.z - this.ballPosition.z;
-      const distSq = dx * dx + dz * dz;
-      blade.isVisible = distSq < radiusSq;
-    }
+    toDelete.forEach((key) => this.grassInstances.delete(key));
   }
 
   dispose() {
     // Dispose all instances
-    for (const blade of this.grassBlades) {
-      blade.dispose();
+    for (const [, instances] of this.grassInstances) {
+      instances.forEach((inst) => inst.dispose());
     }
-    this.grassBlades = [];
+    this.grassInstances.clear();
 
-    // Dispose all base blades
-    for (const baseBlade of this.baseBlades) {
-      baseBlade.dispose();
+    // Dispose base meshes
+    for (const baseMesh of this.grassBaseMeshes) {
+      baseMesh.dispose();
     }
-    this.baseBlades = [];
+    this.grassBaseMeshes = [];
 
-    // Clear animation tracking
-    this.bladeAnimations.clear();
-    this.animatingBlades.clear();
+    this.spatialGrid.clear();
   }
 }
 
@@ -3741,6 +3717,7 @@ class PinManager {
     );
     pole.position = position.clone();
     pole.position.y = baseY;
+    pole.isPickable = true; // MUST be pickable - used for click detection in AimView
 
     // Build a striped texture procedurally on a canvas
     const stripeCanvas = document.createElement("canvas");
@@ -3794,6 +3771,7 @@ class PinManager {
     // Parent to pivot; offset so the left edge sits at the pivot (pole center)
     flagPlane.parent = flagPivot;
     flagPlane.position = new BABYLON.Vector3(cfg.FLAG_WIDTH / 2, 0, 0);
+    flagPlane.isPickable = false; // Flag is child of pole, doesn't need picking
 
     const flagMat = new BABYLON.StandardMaterial("flagMat", scene);
     // Use first texture from cache
@@ -3818,6 +3796,8 @@ class PinManager {
     hole.position = position.clone();
     hole.position.y = cfg.HOLE_Y_OFFSET;
     hole.rotation.x = Math.PI / 2;
+    hole.isPickable = false; // Hole is decorative, doesn't need picking
+
     const holeMat = new BABYLON.StandardMaterial("holeMat", scene);
     holeMat.diffuseColor = new BABYLON.Color3(0, 0, 0);
     holeMat.specularColor = new BABYLON.Color3(0, 0, 0);
@@ -3847,6 +3827,7 @@ class PinManager {
     green.scaling = new BABYLON.Vector3(1, 0.01, 1);
     green.position = centerPos.clone();
     green.position.y = 0.001; // Flush with ground
+    green.isPickable = false; // Disable picking - greens are decorative
 
     const greenMat = Utils.createMaterial(
       `greenMat_${Math.random()}`,
@@ -4394,11 +4375,24 @@ class SceneSetup {
 
     ground.material = groundMat;
     ground.receiveShadows = true;
+    ground.isPickable = false; // Disable picking - terrain doesn't need raycasting
 
-    // Physics for terrain - use BOX (cube) shape for reliable flat ground collision
-    // Make it a large thin box that covers the entire disc area
+    // Physics for terrain - create a separate collision body for reliable ground
+    // Use a thin box as an invisible collision layer
+    const collisionBox = BABYLON.MeshBuilder.CreateBox(
+      "groundCollision",
+      {
+        width: radius * 2 * 1.1, // Slightly larger than disc
+        height: 1, // Thin enough to not interfere but enough for collision
+        depth: radius * 2 * 1.1,
+      },
+      scene,
+    );
+    collisionBox.position.y = -0.5; // Position so top surface is at y=0
+    collisionBox.visibility = 0; // Invisible
+
     const groundAggregate = new BABYLON.PhysicsAggregate(
-      ground,
+      collisionBox,
       BABYLON.PhysicsShapeType.BOX,
       {
         mass: 0,
@@ -4471,7 +4465,7 @@ class SceneSetup {
     hillsRing.convertToFlatShadedMesh();
     hillsRing.receiveShadows = false;
     hillsRing.isPickable = false;
-    hillsRing.alwaysSelectAsActiveMesh = true;
+    // Let Babylon frustum cull hills (they're far away and large)
 
     const hillsMaterial = Utils.createMaterial(
       "rollingHillsMat",
@@ -4541,7 +4535,7 @@ class SceneSetup {
     tallHillsRing.convertToFlatShadedMesh();
     tallHillsRing.receiveShadows = false;
     tallHillsRing.isPickable = false;
-    tallHillsRing.alwaysSelectAsActiveMesh = true;
+    // Let Babylon frustum cull hills (they're far away and large)
 
     const tallHillsMaterial = Utils.createMaterial(
       "tallerHillsMat",
@@ -4604,6 +4598,7 @@ class SceneSetup {
     waterMat.backFaceCulling = false;
 
     waterDisc.material = waterMat;
+    waterDisc.isPickable = false; // Disable picking - decorative water doesn't need raycasting
     scene.waterRing = waterDisc;
 
     // Store animation state on the water disc
@@ -5053,8 +5048,9 @@ class GolfGame {
     // Setup pins after golfBall is loaded
     this.setupPins();
 
-    // Setup grass after pins
-    await this.setupGrass();
+    // Initialize grass system
+    this.grassSystem = new GrassSystem(this.scene);
+    await this.grassSystem.initialize();
 
     // Setup systems
     this.setupCamera();
@@ -5104,6 +5100,7 @@ class GolfGame {
     );
     bodyMesh.position = this.ballStartPosition.clone();
     bodyMesh.isVisible = false;
+    bodyMesh.isPickable = false; // Ball is invisible, doesn't need raycasting
 
     const aggregate = new BABYLON.PhysicsAggregate(
       bodyMesh,
@@ -5266,10 +5263,10 @@ class GolfGame {
   disableControls() {
     // Disable gameplay controls but keep orbit controls active for camera movement
     this.isControlsDisabled = true;
-    
+
     // Keep aimView ACTIVE for orbit controls during review
     // Don't deactivate it - we want the camera to be orbitable
-    
+
     // Hide all UI circles during review
     if (this.circleUIManager) {
       this.circleUIManager.hideAllCircles();
@@ -5279,7 +5276,7 @@ class GolfGame {
   enableControls() {
     // Re-enable controls
     this.isControlsDisabled = false;
-    
+
     // Re-enable UI circles
     if (this.circleUIManager) {
       this.circleUIManager.showAllCircles();
@@ -5289,7 +5286,7 @@ class GolfGame {
   showShotReviewMessage(holeNumber, shotCount) {
     // Disable all controls during review
     this.disableControls();
-    
+
     // Create container div positioned at center
     const container = document.createElement("div");
     container.id = "shotReviewMessage";
@@ -5311,7 +5308,7 @@ class GolfGame {
     message.style.cssText = `
       font-size: 36px;
       font-weight: bold;
-      color: #ffeb3b;
+      color: #E1E44E;
       text-align: center;
       font-family: Arial, sans-serif;
       text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
@@ -5445,8 +5442,11 @@ class GolfGame {
       // Guard against repeated holesink events from ball vibrating in hole
       if (this.holeSinkProcessed) return;
       this.holeSinkProcessed = true;
-
-      console.log("pin:holesink event - setting lastPinPosition to:", holePos);
+      // Disable orbit controls before transitioning to shot review
+      if (this.aimView) {
+        this.aimView.isActive = false;
+        this.aimView.removeOrbitControls();
+      }
       // Show all archived trails for the hole overview
       this.showArchivedTrails();
       // Transition to shot review view when hole is sunk
@@ -5472,19 +5472,6 @@ class GolfGame {
     this.eventManager.on("game:showShotReview", (reviewData) => {
       this.showShotReviewMessage(reviewData.holeNumber, reviewData.shotCount);
     });
-  }
-
-  async setupGrass() {
-    // Create and setup grass system
-    this.grassSystem = new GrassSystem(this.scene, this);
-
-    try {
-      await this.grassSystem.loadFrames(CONFIG.GRASS.FRAME_COUNT);
-      // Scatter grass across circular disc (183m radius)
-      this.grassSystem.scatter(183, 12, this.greenPositions);
-    } catch (err) {
-      // Silently fail if grass frames not found
-    }
   }
 
   updateBallState() {
@@ -5607,11 +5594,6 @@ class GolfGame {
       trail: archivedTrail,
       shotNumber: this.currentHoleShotCount + 1,
     });
-
-    console.log(
-      `Archived shot ${this.currentHoleShotCount + 1} trail with color`,
-      color,
-    );
 
     // Clear the ball trail for the next shot, but keep archived trails visible
     this.ballTrail.clear();
@@ -5819,43 +5801,16 @@ class GolfGame {
     const waterRing = this.scene?.waterRing;
     if (!waterRing || !waterRing.diffuseTex || !waterRing.normalTex) return;
 
-    const windSpeedMs = this.wind.speed;
-    const WIND_THRESHOLD = 5; // mph equivalent threshold; speeds below this use idle animation
-
     waterRing.waterAnimTime += dt;
 
-    if (windSpeedMs < WIND_THRESHOLD) {
-      // Idle mode: floating back and forth
-      const idleTime = waterRing.waterAnimTime;
-      const sway1 = Math.sin(idleTime * 0.5) * 0.1;
-      const sway2 = Math.sin(idleTime * 0.3 + Math.PI / 4) * 0.08;
+    // Slow circular flow
+    const flowSpeed = 0.3; // Slow circular animation
+    const circularFlow = waterRing.waterAnimTime * flowSpeed;
 
-      waterRing.diffuseTex.uOffset = sway1;
-      waterRing.diffuseTex.vOffset = sway2;
-      waterRing.normalTex.uOffset = sway1 * 0.5;
-      waterRing.normalTex.vOffset = sway2 * 0.5;
-    } else {
-      // Wind mode: animate based on wind direction and speed
-      const windVec = this.wind.getWindVector();
-      const windAngle = Math.atan2(windVec.x, windVec.z);
-
-      // Animation speed scales from 2 at threshold to 8 at max wind
-      const t = Math.min(
-        1,
-        (windSpeedMs - WIND_THRESHOLD) /
-          (CONFIG.WIND.MAX_SPEED - WIND_THRESHOLD),
-      );
-      const animSpeed = 2 + t * (8 - 2);
-
-      // Flow in wind direction
-      const flow = windAngle * 0.1;
-      const animatedFlow = waterRing.waterAnimTime * animSpeed * 0.1;
-
-      waterRing.diffuseTex.uOffset = Math.cos(flow) * animatedFlow;
-      waterRing.diffuseTex.vOffset = Math.sin(flow) * animatedFlow;
-      waterRing.normalTex.uOffset = Math.cos(flow) * animatedFlow * 0.5;
-      waterRing.normalTex.vOffset = Math.sin(flow) * animatedFlow * 0.5;
-    }
+    waterRing.diffuseTex.uOffset = Math.cos(circularFlow) * 0.15;
+    waterRing.diffuseTex.vOffset = Math.sin(circularFlow) * 0.15;
+    waterRing.normalTex.uOffset = Math.cos(circularFlow) * 0.075;
+    waterRing.normalTex.vOffset = Math.sin(circularFlow) * 0.075;
   }
 
   setupRenderLoop() {
@@ -5882,10 +5837,9 @@ class GolfGame {
       this.inputHandler?.updateSwipeOverlay(this.engine.getDeltaTime());
       this.uiManager.update();
       this.aimView?.isActive && this.aimView.update();
-      if (this.grassSystem) {
-        this.grassSystem.ballPosition = this.golfBall.getPosition();
-        this.grassSystem.update(this.engine.getDeltaTime() / 1000);
-      }
+      const pinPositions =
+        this.scene.pinManager?.pins?.map((p) => p.holePosition) || [];
+      this.grassSystem?.update(this.golfBall.getPosition(), pinPositions);
       if (this.cloudSystem) {
         this.cloudSystem.update(this.golfBall.getPosition(), this.wind);
       }
@@ -5936,6 +5890,7 @@ async function startGame() {
   try {
     const canvas = document.getElementById("renderCanvas");
     const game = new GolfGame(canvas);
+    window.game = game; // Global reference for debugging
     await game.initialize();
   } catch (error) {
     alert("Failed to initialize game: " + error.message);

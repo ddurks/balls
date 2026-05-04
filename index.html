@@ -66,7 +66,7 @@
         width: var(--ui-size);
         height: var(--ui-size);
         background: rgba(144, 200, 150, 0.85);
-        border: var(--ui-border-width) solid #3a6b35;
+        border: var(--ui-border-width) solid #476a23;
         border-radius: 50%;
         display: flex;
         flex-direction: column;
@@ -138,11 +138,11 @@
       }
       .wind-arrow-poly {
         fill: #ff6b6b;
-        stroke: #ffeb3b;
+        stroke: #e1e44e;
         stroke-width: 1.5;
       }
       #windSpeedDisplay {
-        color: #ffeb3b;
+        color: #e1e44e;
         font-size: var(--ui-wind-fs);
         font-weight: bold;
         font-family: monospace;
@@ -226,7 +226,7 @@
         position: absolute;
         top: 20%;
         left: 15%;
-        color: #ffeb3b;
+        color: #e1e44e;
         font-weight: bold;
         font-size: var(--ui-pin-fs);
         text-shadow:
@@ -234,7 +234,7 @@
           1px 1px 2px rgba(0, 0, 0, 1);
       }
       .yardage-display {
-        color: #ffeb3b;
+        color: #e1e44e;
         font-weight: bold;
         font-size: var(--ui-yardage-fs);
         text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
@@ -271,7 +271,7 @@
         line-height: 1;
       }
       .power-text {
-        color: #ffeb3b;
+        color: #e1e44e;
         font-weight: bold;
         font-family: monospace;
         font-size: var(--ui-power-fs);
@@ -302,13 +302,13 @@
         object-fit: contain;
       }
       .club-name-display {
-        color: #ffeb3b;
+        color: #e1e44e;
         font-weight: bold;
         font-size: var(--ui-club-name-fs);
         text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
       }
       .club-dist-display {
-        color: #ffeb3b;
+        color: #e1e44e;
         margin-top: var(--ui-mb-flag);
         font-size: var(--ui-club-dist-fs);
         font-weight: bold;
@@ -365,10 +365,22 @@
     <script>
       // Load scripts sequentially: Babylon → Havok → Game
       const scriptChain = [
-        { local: 'babylon/babylon.js', cdn: 'https://cdn.babylonjs.com/babylon.js' },
-        { local: 'babylon/babylonjs.loaders.min.js', cdn: 'https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js' },
-        { local: 'babylon/babylonjs.materials.min.js', cdn: 'https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js' },
-          { local: 'babylon/HavokPhysics_umd.js', cdn: 'https://cdn.babylonjs.com/havok/HavokPhysics_umd.js' },
+        {
+          local: "babylon/babylon.js",
+          cdn: "https://cdn.babylonjs.com/babylon.js",
+        },
+        {
+          local: "babylon/babylonjs.loaders.min.js",
+          cdn: "https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js",
+        },
+        {
+          local: "babylon/babylonjs.materials.min.js",
+          cdn: "https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js",
+        },
+        {
+          local: "babylon/HavokPhysics_umd.js",
+          cdn: "https://cdn.babylonjs.com/havok/HavokPhysics_umd.js",
+        },
       ];
 
       let chainIndex = 0;
@@ -381,8 +393,8 @@
         }
 
         const { local, cdn } = scriptChain[chainIndex];
-        const script = document.createElement('script');
-        
+        const script = document.createElement("script");
+
         script.onload = () => {
           chainIndex++;
           loadNextInChain();
@@ -399,7 +411,7 @@
             };
             document.head.appendChild(script);
           } else {
-            console.error('Failed to load script', cdn);
+            console.error("Failed to load script", cdn);
           }
         };
 
@@ -408,8 +420,8 @@
       }
 
       function loadGameScript() {
-        const gameScript = document.createElement('script');
-        gameScript.src = 'game.js';
+        const gameScript = document.createElement("script");
+        gameScript.src = "game.js";
         document.head.appendChild(gameScript);
       }
 
@@ -431,16 +443,40 @@
     <div id="circleCompass" class="compass-wrapper">
       <div id="compassCircle" class="ui-circle glass-circle">
         <svg id="compassSvg" class="compass-svg" viewBox="0 0 120 120">
-          <text x="60" y="18" text-anchor="middle" dominant-baseline="middle" class="compass-label">
+          <text
+            x="60"
+            y="18"
+            text-anchor="middle"
+            dominant-baseline="middle"
+            class="compass-label"
+          >
             N
           </text>
-          <text x="102" y="65" text-anchor="middle" dominant-baseline="middle" class="compass-label">
+          <text
+            x="102"
+            y="65"
+            text-anchor="middle"
+            dominant-baseline="middle"
+            class="compass-label"
+          >
             E
           </text>
-          <text x="60" y="108" text-anchor="middle" dominant-baseline="middle" class="compass-label">
+          <text
+            x="60"
+            y="108"
+            text-anchor="middle"
+            dominant-baseline="middle"
+            class="compass-label"
+          >
             S
           </text>
-          <text x="18" y="65" text-anchor="middle" dominant-baseline="middle" class="compass-label">
+          <text
+            x="18"
+            y="65"
+            text-anchor="middle"
+            dominant-baseline="middle"
+            class="compass-label"
+          >
             W
           </text>
           <circle cx="60" cy="60" r="4" class="compass-center" />
@@ -473,7 +509,7 @@
           cy="75"
           r="61"
           fill="none"
-          stroke="#ffeb3b"
+          stroke="#E1E44E"
           stroke-width="8"
           stroke-linecap="round"
           stroke-dasharray="383"
