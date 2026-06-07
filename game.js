@@ -76,7 +76,7 @@ const CONFIG = {
     UPDATE_THRESHOLD: 5,
     FRAME_COUNT: 5,
     BILLBOARD_MODE: BABYLON.Mesh.BILLBOARDMODE_ALL,
-    BLADES_PER_CELL: 250, // 200 blades per 25-unit cell
+    BLADES_PER_CELL: 100, // blades per 25-unit cell
     CELL_SIZE: 25, // Smaller cells = more density
     GREEN_EXCLUSION_RADIUS: 31, // Don't spawn within 35 units of pins
     TERRAIN_RADIUS: 183, // Match ground disc radius
@@ -220,11 +220,11 @@ const CONFIG = {
   BOIDS: {
     COUNT: 25,
     CYLINDER_RADIUS: 200,
-    CYLINDER_MIN_HEIGHT: 50,
+    CYLINDER_MIN_HEIGHT: 8,
     CYLINDER_MAX_HEIGHT: 200,
     VISUAL_RANGE: 25,
     MIN_AVOID_DISTANCE: 15,
-    MAX_SPEED: 2.5,
+    MAX_SPEED: 1.2,
     CENTERING_FACTOR: 0.0005,
     AVOID_FACTOR: 0.05,
     MATCHING_FACTOR: 0.04,
@@ -240,7 +240,7 @@ const CONFIG = {
     PERCH_HEIGHT: 3.5,
     PERCH_ATTRACTION_RANGE: 40,
     PERCH_ATTRACTION_STRENGTH: 0.08,
-    STARTLE_RADIUS: 25,
+    STARTLE_RADIUS: 12,
   },
 };
 
@@ -431,7 +431,8 @@ class CloudSystem {
 // Implements flocking behavior with birds that stay within a cylindrical bounds.
 
 class Boid3D {
-  constructor(position, scene) {
+  constructor(position, scene, birdTemplate) {
+    this.debugId = Math.random().toString(36).slice(2, 5); // 3-char debug ID for console logs
     this.position = position.clone();
     this.velocity = new BABYLON.Vector3(
       (Math.random() - 0.5) * 2,
@@ -441,151 +442,174 @@ class Boid3D {
     this.acceleration = BABYLON.Vector3.Zero();
     this.scene = scene;
 
+    // Perching state
+    this.isPerched = false;
+    this.perchPosition = null;
+    this.perchTimeRemaining = 0;
+
     // Wander behavior state
     this.wanderAngle = Math.random() * Math.PI * 2;
     this.wanderAngleZ = Math.random() * Math.PI * 2;
 
-    // Create a billboarded plane for sprite rendering
-    this.mesh = BABYLON.MeshBuilder.CreatePlane(
-      `bird_${Math.random()}`,
-      { width: CONFIG.BOIDS.SIZE * 2, height: CONFIG.BOIDS.SIZE * 2 },
-      scene,
-    );
-    this.mesh.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
-    this.mesh.isPickable = false; // Disable picking - birds are decorative
-    this.mesh.alwaysSelectAsActiveMesh = false; // Use frustum culling for performance
+    // Clone the bird template mesh
+    this.mesh = birdTemplate.mesh.clone(`bird_${Math.random()}`);
+    this.mesh.position = this.position.clone();
+    this.mesh.setEnabled(true);
 
-    // Load bird sprite frames (0-indexed: 0, 1, 2, 3)
-    this.spriteFrames = [];
-    for (let i = 1; i <= 4; i++) {
-      const tex = new BABYLON.Texture(`./assets/bird/bird-${i}.png`, scene);
-      tex.hasAlpha = true;
-      this.spriteFrames.push(tex);
+    // Disable any billboard mode (ensure independent rotation)
+    this.mesh.billboardMode = BABYLON.Mesh.BILLBOARDMODE_NONE;
+
+    // Clear quaternion to use Euler angles for rotation
+    this.mesh.rotationQuaternion = null;
+    this.mesh.rotation = BABYLON.Vector3.Zero();
+
+    // Clone skeleton for independent animation
+    this.skeleton = null;
+    if (birdTemplate.skeleton) {
+      this.skeleton = birdTemplate.skeleton.clone(
+        `birdSkeleton_${Math.random()}`,
+      );
+      this.mesh.skeleton = this.skeleton;
     }
 
-    // Load perched bird texture
-    this.perchTexture = new BABYLON.Texture(`./assets/bird/bird.png`, scene);
-    this.perchTexture.hasAlpha = true;
+    // Build a node map from template hierarchy → cloned hierarchy so the
+    // retargeting callback can redirect TransformNode targets (GLTF animations
+    // target TransformNodes, not BABYLON.Bone objects).
+    const nodeMap = new Map();
+    nodeMap.set(birdTemplate.mesh, this.mesh);
+    const originalNodes = birdTemplate.mesh.getChildTransformNodes(true);
+    const clonedNodes = this.mesh.getChildTransformNodes(true);
+    for (const cloned of clonedNodes) {
+      const original = originalNodes.find((n) => n.name === cloned.name);
+      if (original) nodeMap.set(original, cloned);
+    }
 
-    // Animation state for ping-pong playback
-    this.currentFrameIndex = 0; // 0, 1, 2, 3, 2, 1, 0, 1, 2...
-    this.frameDirection = 1; // 1 = forward, -1 = backward
-    this.animationCounter = 0;
-    this.animationSpeed = CONFIG.BOIDS.BASE_ANIMATION_SPEED; // Base flapping speed
+    const retarget = (oldTarget) => {
+      if (oldTarget instanceof BABYLON.Bone && this.skeleton) {
+        return this.skeleton.getBoneByName(oldTarget.name);
+      }
+      return nodeMap.get(oldTarget) ?? oldTarget;
+    };
 
-    // Perching state
-    this.isPerched = false;
-    this.perchCounter = 0;
-    this.perchDuration = 0;
+    // Clone animation groups for independent playback with proper retargeting
+    this.idleAnimation = null;
+    this.flapAnimation = null;
+    if (birdTemplate.idleAnimation) {
+      this.idleAnimation = birdTemplate.idleAnimation.clone(
+        `idle_${Math.random()}`,
+        retarget,
+      );
+    }
+    if (birdTemplate.flapAnimation) {
+      this.flapAnimation = birdTemplate.flapAnimation.clone(
+        `flap_${Math.random()}`,
+        retarget,
+      );
+    }
 
-    // Create material with first frame texture
-    const mat = new BABYLON.StandardMaterial(`birdMat_${Math.random()}`, scene);
-    mat.emissiveTexture = this.spriteFrames[0];
-    mat.emissiveColor = new BABYLON.Color3(1, 1, 1);
-    mat.diffuseTexture = this.spriteFrames[0];
-    mat.diffuseColor = new BABYLON.Color3(0, 0, 0);
-    mat.specularColor = new BABYLON.Color3(0, 0, 0);
-    mat.useAlphaFromDiffuseTexture = true;
-    mat.transparencyMode = BABYLON.Material.MATERIAL_ALPHATESTANDBLEND;
-    mat.backFaceCulling = false;
+    // Animation state
+    this.currentAnimationType = null; // 'idle' or 'flap'
+    this.animSpeedVariation = 0.95 + Math.random() * 0.1; // 0.95-1.05 per bird — natural desyncing
 
-    this.mesh.material = mat;
-    this.mesh.position = this.position.clone();
+    // Reusable temp vector — avoids per-frame allocations in wander/rotation
+    this._tmp = new BABYLON.Vector3();
+
+    // Start with flap animation
+    this.playAnimationOfType("flap");
+  }
+
+  playAnimationOfType(animationType) {
+    const animGroup =
+      animationType === "idle" ? this.idleAnimation : this.flapAnimation;
+    if (!animGroup) return;
+
+    // Stop other animations
+    if (animationType === "idle" && this.flapAnimation?.isPlaying) {
+      this.flapAnimation.stop();
+    } else if (animationType === "flap" && this.idleAnimation?.isPlaying) {
+      this.idleAnimation.stop();
+    }
+
+    // Play the selected animation with looping
+    const wasPlaying = animGroup.isPlaying;
+    if (!animGroup.isPlaying) {
+      animGroup.reset();
+      animGroup.loopAnimation = true;
+      animGroup.speedRatio = 1.0;
+      animGroup.start(true);
+    }
+
+    // Always jump to a fresh random frame to prevent birds syncing up
+    // (must happen even if already playing, in case cloned anim inherited parent's playback state)
+    let randomFrame = animGroup.from;
+    if (animGroup.to > animGroup.from) {
+      randomFrame =
+        animGroup.from + Math.random() * (animGroup.to - animGroup.from);
+      animGroup.goToFrame(randomFrame);
+    }
+
+    if (this.currentAnimationType !== animationType) {
+      console.log(
+        `[${this.debugId}] anim: ${this.currentAnimationType} → ${animationType}, frame: ${randomFrame.toFixed(1)}, wasPlaying: ${wasPlaying}`,
+      );
+    }
+    this.currentAnimationType = animationType;
   }
 
   updateAnimation() {
+    // When perched, play idle animation
     if (this.isPerched) {
-      // When perched, show static perch texture
-      return;
-    }
-
-    // Vary animation speed based on vertical velocity
-    // Flying up = more flapping, flying down = soaring (less flapping)
-    let speedMultiplier = 1.0;
-    if (this.velocity.y > 0.2) {
-      // Climbing: increase flapping speed
-      speedMultiplier = CONFIG.BOIDS.CLIMB_ANIMATION_BOOST;
-    } else if (this.velocity.y < -0.2) {
-      // Descending: decrease flapping speed (soaring)
-      speedMultiplier = CONFIG.BOIDS.DESCENT_ANIMATION_DAMPEN;
-    }
-
-    this.animationSpeed = CONFIG.BOIDS.BASE_ANIMATION_SPEED * speedMultiplier;
-    this.animationCounter += this.animationSpeed;
-
-    // When counter reaches 1, advance to next frame
-    if (this.animationCounter >= 1) {
-      this.animationCounter = 0;
-      this.currentFrameIndex += this.frameDirection;
-
-      // Ping-pong: reverse direction at boundaries
-      if (this.currentFrameIndex >= 3) {
-        this.currentFrameIndex = 3;
-        this.frameDirection = -1;
-      } else if (this.currentFrameIndex <= 0) {
-        this.currentFrameIndex = 0;
-        this.frameDirection = 1;
+      if (this.currentAnimationType !== "idle") {
+        this.playAnimationOfType("idle");
+      } else if (this.idleAnimation) {
+        this.idleAnimation.speedRatio = this.animSpeedVariation;
       }
-
-      // Update material texture to current frame
-      const mat = this.mesh.material;
-      mat.emissiveTexture = this.spriteFrames[this.currentFrameIndex];
-      mat.diffuseTexture = this.spriteFrames[this.currentFrameIndex];
-    }
-  }
-
-  updatePerching() {
-    if (this.isPerched) {
-      this.perchCounter--;
-      if (this.perchCounter <= 0) {
-        this.takeoff();
-      }
-      // Stay at perch position
-      this.velocity = BABYLON.Vector3.Zero();
-      this.acceleration = BABYLON.Vector3.Zero();
     } else {
-      // Random chance to land
-      if (Math.random() < CONFIG.BOIDS.PERCH_CHANCE) {
-        this.land();
+      // When flying, play flap animation with speed modulation
+      if (this.currentAnimationType !== "flap") {
+        this.playAnimationOfType("flap");
+      } else if (this.flapAnimation) {
+        // Adjust flap speed based on vertical velocity
+        let speedMultiplier = 1.0;
+        if (this.velocity.y > 0.2) {
+          speedMultiplier = CONFIG.BOIDS.CLIMB_ANIMATION_BOOST;
+        } else if (this.velocity.y < -0.2) {
+          speedMultiplier = CONFIG.BOIDS.DESCENT_ANIMATION_DAMPEN;
+        }
+        this.flapAnimation.speedRatio = speedMultiplier * this.animSpeedVariation;
       }
     }
   }
 
-  land() {
-    this.isPerched = true;
-    this.perchCounter = Math.floor(
-      CONFIG.BOIDS.PERCH_DURATION_MIN +
-        Math.random() *
-          (CONFIG.BOIDS.PERCH_DURATION_MAX - CONFIG.BOIDS.PERCH_DURATION_MIN),
-    );
-    this.position.y = CONFIG.BOIDS.PERCH_HEIGHT;
-    this.velocity = BABYLON.Vector3.Zero();
+  updateRotation() {
+    // Skip rotation when perched
+    if (this.isPerched) return;
 
-    // Switch to perch texture
-    const mat = this.mesh.material;
-    mat.emissiveTexture = this.perchTexture;
-    mat.diffuseTexture = this.perchTexture;
-  }
+    // Rotate bird mesh to face direction of travel
+    const velocityLength = this.velocity.length();
+    if (velocityLength < 0.01) return;
 
-  takeoff() {
-    this.isPerched = false;
-    this.mesh.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+    // Calculate yaw/pitch directly from velocity (no Vector3 allocation)
+    const hx = this.velocity.x;
+    const hz = this.velocity.z;
+    const hLen = Math.sqrt(hx * hx + hz * hz);
+    const yaw = Math.atan2(hx, hz) + Math.PI;
+    const pitch = Math.atan2(this.velocity.y, hLen);
+    const clampedPitch = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, pitch));
 
-    // Switch back to flight animation
-    const mat = this.mesh.material;
-    mat.emissiveTexture = this.spriteFrames[0];
-    mat.diffuseTexture = this.spriteFrames[0];
+    this.mesh.rotation.x = clampedPitch;
+    this.mesh.rotation.y = yaw;
+    this.mesh.rotation.z = 0;
   }
 
   update() {
-    this.updatePerching();
-
     // Update position based on velocity
     this.position.addInPlace(this.velocity);
-    this.mesh.position = this.position.clone();
+    this.mesh.position.copyFrom(this.position);
 
-    // Update animation frame
+    // Update animation and rotation
     this.updateAnimation();
+    this.updateRotation();
 
     // Reset acceleration each cycle (forces don't accumulate)
     this.acceleration = BABYLON.Vector3.Zero();
@@ -600,9 +624,9 @@ class Boid3D {
     const wanderY = Math.sin(this.wanderAngleZ);
     const wanderZ = Math.sin(this.wanderAngle);
 
-    const wanderForce = new BABYLON.Vector3(wanderX, wanderY, wanderZ);
-    wanderForce.scaleInPlace(CONFIG.BOIDS.WANDER_STRENGTH);
-    this.applyForce(wanderForce);
+    this._tmp.set(wanderX, wanderY, wanderZ);
+    this._tmp.scaleInPlace(CONFIG.BOIDS.WANDER_STRENGTH);
+    this.applyForce(this._tmp);
   }
 
   applyForce(force) {
@@ -610,9 +634,21 @@ class Boid3D {
   }
 
   dispose() {
-    if (this.mesh.material) this.mesh.material.dispose();
-    this.spriteFrames.forEach((tex) => tex.dispose());
-    if (this.perchTexture) this.perchTexture.dispose();
+    // Stop and dispose cloned animation groups
+    if (this.idleAnimation) {
+      this.idleAnimation.stop();
+      this.idleAnimation.dispose();
+    }
+    if (this.flapAnimation) {
+      this.flapAnimation.stop();
+      this.flapAnimation.dispose();
+    }
+
+    // Dispose cloned skeleton
+    if (this.skeleton) {
+      this.skeleton.dispose();
+    }
+
     this.mesh.dispose();
   }
 }
@@ -623,10 +659,65 @@ class BirdFlockSystem {
     this.boids = [];
     this.groundCenterX = groundCenterX;
     this.groundCenterZ = groundCenterZ;
-    this.init();
+    this.birdTemplate = null;
+    this.isLoaded = false;
+    // Reusable temp vectors — avoids allocations in inner neighbor loops
+    this._diff = new BABYLON.Vector3();
+    this._avgVelocity = new BABYLON.Vector3();
+    this._center = new BABYLON.Vector3();
+    this._steer = new BABYLON.Vector3();
+  }
+
+  async load() {
+    try {
+      const result = await BABYLON.SceneLoader.ImportMeshAsync(
+        "",
+        "assets/3d/",
+        "ballsbird.glb",
+        this.scene,
+      );
+
+      // Create template object with mesh and animations
+      const idleAnim = this.scene.getAnimationGroupByName("idle");
+      const flapAnim = this.scene.getAnimationGroupByName("flap");
+
+      if (!idleAnim) console.warn("idle animation not found in scene");
+      if (!flapAnim) console.warn("flap animation not found in scene");
+
+      // Stop template animations so clones don't inherit playing state
+      if (idleAnim) idleAnim.stop();
+      if (flapAnim) flapAnim.stop();
+
+      this.birdTemplate = {
+        mesh: result.meshes[0],
+        skeleton: result.skeletons?.[0] || null,
+        idleAnimation: idleAnim,
+        flapAnimation: flapAnim,
+      };
+
+      // Reset template mesh to clean state before cloning
+      this.birdTemplate.mesh.billboardMode = BABYLON.Mesh.BILLBOARDMODE_NONE;
+      this.birdTemplate.mesh.rotation = BABYLON.Vector3.Zero();
+      this.birdTemplate.mesh.rotationQuaternion = null; // Clear quaternion to use Euler angles
+
+      // Hide template mesh
+      this.birdTemplate.mesh.setEnabled(false);
+
+      // Initialize boids
+      this.init();
+      this.isLoaded = true;
+    } catch (error) {
+      console.error("Failed to load ballsbird.glb:", error);
+      this.isLoaded = false;
+    }
   }
 
   init() {
+    if (!this.birdTemplate) {
+      console.warn("Bird template not loaded, cannot initialize boids");
+      return;
+    }
+
     for (let i = 0; i < CONFIG.BOIDS.COUNT; i++) {
       // Random position within cylinder
       const angle = Math.random() * Math.PI * 2;
@@ -639,109 +730,173 @@ class BirdFlockSystem {
       const x = this.groundCenterX + Math.cos(angle) * radius;
       const z = this.groundCenterZ + Math.sin(angle) * radius;
 
-      const boid = new Boid3D(new BABYLON.Vector3(x, height, z), this.scene);
+      const boid = new Boid3D(
+        new BABYLON.Vector3(x, height, z),
+        this.scene,
+        this.birdTemplate,
+      );
       this.boids.push(boid);
     }
   }
 
-  update(ballPosition = null) {
-    // Startle perched birds if ball gets too close
-    if (ballPosition) {
-      this.startleBirds(ballPosition);
-    }
+  update(ballPosition = null, ballVelocity = null) {
+    // Update perch states (decide to perch, unperch, attract others)
+    this.updatePerchStates();
 
-    // Apply flocking behaviors
+    // Apply flocking behaviors to all boids
     for (const boid of this.boids) {
+      // Skip flocking forces while perched
       if (!boid.isPerched) {
-        this.separation(boid);
-        this.alignment(boid);
-        this.cohesion(boid);
-        this.attractToPerches(boid);
+        this.applyFlockingForces(boid);
         boid.wander();
-        this.keepWithinBounds(boid);
-        this.limitSpeed(boid);
-
-        // Apply acceleration to velocity
-        boid.velocity.addInPlace(boid.acceleration);
       }
+
+      // Apply perch attraction force if nearby perched birds
+      this.applyPerchAttraction(boid);
+
+      this.keepWithinBounds(boid);
+      this.limitSpeed(boid);
+
+      // Apply acceleration to velocity
+      boid.velocity.addInPlace(boid.acceleration);
+
+      // Update bird each frame
       boid.update();
     }
   }
 
-  separation(boid) {
-    // Avoid crowding local flockmates
-    const steer = BABYLON.Vector3.Zero();
-    let count = 0;
+  updatePerchStates() {
+    const deltaTime = 1 / 60; // assuming 60fps
+    const deltaTimeMs = deltaTime * 1000;
 
-    for (const other of this.boids) {
-      if (!other.isPerched) {
-        const distance = BABYLON.Vector3.Distance(
-          boid.position,
-          other.position,
-        );
-        if (distance > 0 && distance < CONFIG.BOIDS.MIN_AVOID_DISTANCE) {
-          const diff = boid.position.subtract(other.position).normalize();
-          steer.addInPlace(diff.scale(CONFIG.BOIDS.SEPARATION_WEIGHT));
-          count++;
+    for (const boid of this.boids) {
+      if (boid.isPerched) {
+        // Count down perch time
+        boid.perchTimeRemaining -= deltaTimeMs;
+        if (boid.perchTimeRemaining <= 0) {
+          // Time to take off — return to flight
+          boid.isPerched = false;
+          boid.perchPosition = null;
+          // Give a small upward kick to begin takeoff
+          boid.velocity.y = 0.5;
+        } else {
+          // While perched: stay at perch position with zero velocity
+          boid.position.x = boid.perchPosition.x;
+          boid.position.z = boid.perchPosition.z;
+          boid.position.y = 0;
+          boid.velocity.setAll(0);
+        }
+      } else {
+        // Random chance to start perching
+        if (Math.random() < CONFIG.BOIDS.PERCH_CHANCE) {
+          boid.isPerched = true;
+          boid.perchPosition = boid.position.clone();
+          boid.perchPosition.y = 0; // Ground level (we'll set mesh Y to PERCH_HEIGHT)
+          boid.perchTimeRemaining =
+            CONFIG.BOIDS.PERCH_DURATION_MIN +
+            Math.random() *
+              (CONFIG.BOIDS.PERCH_DURATION_MAX -
+                CONFIG.BOIDS.PERCH_DURATION_MIN);
         }
       }
     }
+  }
 
-    if (count > 0) {
+  applyPerchAttraction(boid) {
+    // If bird is already perched, no attraction force needed
+    if (boid.isPerched) return;
+
+    const perchRangeSq =
+      CONFIG.BOIDS.PERCH_ATTRACTION_RANGE *
+      CONFIG.BOIDS.PERCH_ATTRACTION_RANGE;
+
+    // Look for nearby perched birds (horizontal distance only, ignoring Y)
+    let nearbyPerched = [];
+    for (const other of this.boids) {
+      if (other === boid || !other.isPerched) continue;
+      const dx = boid.position.x - other.position.x;
+      const dz = boid.position.z - other.position.z;
+      const distSq = dx * dx + dz * dz;
+      if (distSq < perchRangeSq) {
+        nearbyPerched.push(other);
+      }
+    }
+
+    // If nearby perched birds exist, attract toward their perch location
+    if (nearbyPerched.length > 0) {
+      // Cohesion-like force toward the center of nearby perched birds
+      const center = this._center;
+      center.setAll(0);
+      for (const perched of nearbyPerched) {
+        center.addInPlace(perched.position);
+      }
+      center.scaleInPlace(1 / nearbyPerched.length);
+      center.subtractToRef(boid.position, center);
+      center.scaleInPlace(CONFIG.BOIDS.PERCH_ATTRACTION_STRENGTH);
+      boid.applyForce(center);
+    }
+  }
+
+  applyFlockingForces(boid) {
+    // Single pass through neighbors — apply separation, alignment, cohesion in one loop
+    const avoidDistSq =
+      CONFIG.BOIDS.MIN_AVOID_DISTANCE * CONFIG.BOIDS.MIN_AVOID_DISTANCE;
+    const visualRangeSq = CONFIG.BOIDS.VISUAL_RANGE * CONFIG.BOIDS.VISUAL_RANGE;
+
+    const steer = this._steer;
+    steer.setAll(0);
+    const alignmentAccum = this._avgVelocity;
+    const cohesionAccum = this._center;
+    alignmentAccum.setAll(0);
+    cohesionAccum.setAll(0);
+
+    let separationCount = 0,
+      alignmentCount = 0,
+      cohesionCount = 0;
+
+    for (const other of this.boids) {
+      if (other === boid) continue;
+      const distSq = BABYLON.Vector3.DistanceSquared(
+        boid.position,
+        other.position,
+      );
+
+      // Separation (closer neighbors only)
+      if (distSq > 0 && distSq < avoidDistSq) {
+        boid.position.subtractToRef(other.position, this._diff);
+        BABYLON.Vector3.NormalizeToRef(this._diff, this._diff);
+        this._diff.scaleInPlace(CONFIG.BOIDS.SEPARATION_WEIGHT);
+        steer.addInPlace(this._diff);
+        separationCount++;
+      }
+
+      // Alignment and Cohesion (visual range)
+      if (distSq > 0 && distSq < visualRangeSq) {
+        alignmentAccum.addInPlace(other.velocity);
+        alignmentCount++;
+        cohesionAccum.addInPlace(other.position);
+        cohesionCount++;
+      }
+    }
+
+    // Apply separation
+    if (separationCount > 0) {
       steer.scaleInPlace(CONFIG.BOIDS.AVOID_FACTOR);
       boid.applyForce(steer);
     }
-  }
-
-  alignment(boid) {
-    // Steer towards average heading of local flockmates
-    const avgVelocity = BABYLON.Vector3.Zero();
-    let count = 0;
-
-    for (const other of this.boids) {
-      if (!other.isPerched) {
-        const distance = BABYLON.Vector3.Distance(
-          boid.position,
-          other.position,
-        );
-        if (distance > 0 && distance < CONFIG.BOIDS.VISUAL_RANGE) {
-          avgVelocity.addInPlace(other.velocity);
-          count++;
-        }
-      }
+    // Apply alignment
+    if (alignmentCount > 0) {
+      alignmentAccum.scaleInPlace(1 / alignmentCount);
+      alignmentAccum.subtractInPlace(boid.velocity);
+      alignmentAccum.scaleInPlace(CONFIG.BOIDS.MATCHING_FACTOR);
+      boid.applyForce(alignmentAccum);
     }
-
-    if (count > 0) {
-      avgVelocity.scaleInPlace(1 / count);
-      avgVelocity.subtractInPlace(boid.velocity);
-      avgVelocity.scaleInPlace(CONFIG.BOIDS.MATCHING_FACTOR);
-      boid.applyForce(avgVelocity);
-    }
-  }
-
-  cohesion(boid) {
-    // Steer to move toward the average location of local flockmates
-    const center = BABYLON.Vector3.Zero();
-    let count = 0;
-
-    for (const other of this.boids) {
-      if (!other.isPerched) {
-        const distance = BABYLON.Vector3.Distance(
-          boid.position,
-          other.position,
-        );
-        if (distance > 0 && distance < CONFIG.BOIDS.VISUAL_RANGE) {
-          center.addInPlace(other.position);
-          count++;
-        }
-      }
-    }
-
-    if (count > 0) {
-      center.scaleInPlace(1 / count);
-      const steer = center.subtract(boid.position);
-      steer.scaleInPlace(CONFIG.BOIDS.CENTERING_FACTOR);
-      boid.applyForce(steer);
+    // Apply cohesion
+    if (cohesionCount > 0) {
+      cohesionAccum.scaleInPlace(1 / cohesionCount);
+      cohesionAccum.subtractToRef(boid.position, cohesionAccum);
+      cohesionAccum.scaleInPlace(CONFIG.BOIDS.CENTERING_FACTOR);
+      boid.applyForce(cohesionAccum);
     }
   }
 
@@ -774,41 +929,6 @@ class BirdFlockSystem {
     const speed = boid.velocity.length();
     if (speed > CONFIG.BOIDS.MAX_SPEED) {
       boid.velocity.normalize().scaleInPlace(CONFIG.BOIDS.MAX_SPEED);
-    }
-  }
-
-  attractToPerches(boid) {
-    // Find perched birds and attract flying birds to them
-    for (const other of this.boids) {
-      if (other.isPerched && !boid.isPerched) {
-        const distance = BABYLON.Vector3.Distance(
-          boid.position,
-          other.position,
-        );
-        if (distance > 0 && distance < CONFIG.BOIDS.PERCH_ATTRACTION_RANGE) {
-          const attraction = other.position.subtract(boid.position).normalize();
-          attraction.scaleInPlace(CONFIG.BOIDS.PERCH_ATTRACTION_STRENGTH);
-          boid.applyForce(attraction);
-        }
-      }
-    }
-  }
-
-  startleBirds(ballPosition) {
-    // If ball is near any perched birds, they all take off
-    for (const boid of this.boids) {
-      if (boid.isPerched) {
-        const distance = BABYLON.Vector3.Distance(boid.position, ballPosition);
-        if (distance < CONFIG.BOIDS.STARTLE_RADIUS) {
-          boid.takeoff();
-          // Give takeoff velocity to escape
-          const escapeDirection = boid.position
-            .subtract(ballPosition)
-            .normalize();
-          boid.velocity = escapeDirection.scale(CONFIG.BOIDS.MAX_SPEED * 0.8);
-          boid.velocity.y = Math.max(boid.velocity.y, 1);
-        }
-      }
     }
   }
 
@@ -4326,8 +4446,9 @@ class SceneSetup {
     // Ground disc with distant horizon dressing
     this.createGroundDisc(scene);
 
-    // Initialize bird flock system
+    // Initialize and load bird flock system
     scene.birdFlockSystem = new BirdFlockSystem(scene, 0, 0);
+    await scene.birdFlockSystem.load();
   }
 
   static createGroundDisc(scene) {
@@ -4753,8 +4874,13 @@ class ClubSystem {
         }
       }
 
-      // Stop all animations from looping
+      // Stop club animations from looping (skip bird animations)
       for (const animGroup of this.scene.animationGroups) {
+        if (
+          animGroup.name.startsWith("idle") ||
+          animGroup.name.startsWith("flap")
+        )
+          continue;
         animGroup.loopAnimation = false;
         animGroup.stop();
       }
@@ -4834,8 +4960,13 @@ class ClubSystem {
     };
     const animationName = animationNames[typeName];
 
-    // Stop any running animations
+    // Stop any running club animations (skip bird animations)
     for (const animGroup of this.scene.animationGroups) {
+      if (
+        animGroup.name.startsWith("idle") ||
+        animGroup.name.startsWith("flap")
+      )
+        continue;
       animGroup.stop();
       animGroup.reset();
     }
@@ -4925,6 +5056,11 @@ class ClubSystem {
       }
     }
     for (const animGroup of this.scene.animationGroups) {
+      if (
+        animGroup.name.startsWith("idle") ||
+        animGroup.name.startsWith("flap")
+      )
+        continue;
       animGroup.stop();
       animGroup.reset();
     }
@@ -5846,7 +5982,10 @@ class GolfGame {
 
       // Update bird flock system
       if (this.scene.birdFlockSystem) {
-        this.scene.birdFlockSystem.update(this.golfBall.getPosition());
+        this.scene.birdFlockSystem.update(
+          this.golfBall.getPosition(),
+          this.golfBall.getVelocity(),
+        );
       }
 
       // Update pin indicator arrow
