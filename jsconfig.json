@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "checkJs": true,
+    "allowJs": true,
+    "noEmit": true,
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "strict": false,
+    "skipLibCheck": true
+  },
+  "include": [
+    "game.js",
+    "server.js",
+    "scripts/**/*.js",
+    "test/**/*.js",
+    "globals.d.ts"
+  ],
+  "exclude": ["node_modules", "vendor", "assets", "course_design"]
+}
