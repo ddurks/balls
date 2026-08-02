@@ -54,15 +54,26 @@ const CONFIG = {
     RESTITUTION: 0.3,
     TEXTURE_PATH: "assets/texture/ground.png",
     NORMAL_MAP_PATH: "assets/texture/groundnormals.png",
-    UV_TILING: 500,
   },
   BALL: {
     COLLIDER_DIAMETER: 0.4,
     MASS: 0.045,
-    FRICTION: 0.7,
+    FRICTION: 0.9,
     RESTITUTION: 0.6,
     LINEAR_DAMPING: 0.3,
-    ANGULAR_DAMPING: 0.8,
+    ANGULAR_DAMPING: 1.2,
+  },
+  // Swing/hit + landing-detection tuning. Single home for these values; the
+  // PhysicsConfig accessor class reads them from here so there's no second copy.
+  PHYSICS: {
+    HIT_FORWARD_FORCE: 100, // reduced for finesse gameplay
+    HIT_UPWARD_FORCE: 60,
+    SPIN_MULTIPLIER: 400,
+    SPIN_ANIMATION_SPEED: 0.3,
+    MIN_SWIPE_DISTANCE: 3,
+    AIRBORNE_HEIGHT: 2,
+    GROUND_CONTACT_HEIGHT: 1.5,
+    LANDED_SPEED_THRESHOLD: 0.5,
   },
   CAMERA: {
     FOV_AIM: 1.5,
@@ -74,13 +85,10 @@ const CONFIG = {
   GRASS: {
     VIEW_RADIUS: 30,
     UPDATE_THRESHOLD: 5,
-    FRAME_COUNT: 5,
-    BILLBOARD_MODE: BABYLON.Mesh.BILLBOARDMODE_ALL,
     BLADES_PER_CELL: 100, // blades per 25-unit cell
     CELL_SIZE: 25, // Smaller cells = more density
     GREEN_EXCLUSION_RADIUS: 31, // Don't spawn within 35 units of pins
     TERRAIN_RADIUS: 183, // Match ground disc radius
-    CLUMP_SIZE: 15,
   },
   LIGHTING: {
     AMBIENT_INTENSITY: 0.75,
@@ -221,26 +229,38 @@ const CONFIG = {
     COUNT: 25,
     CYLINDER_RADIUS: 200,
     CYLINDER_MIN_HEIGHT: 8,
-    CYLINDER_MAX_HEIGHT: 200,
+    CYLINDER_MAX_HEIGHT: 160,
     VISUAL_RANGE: 25,
     MIN_AVOID_DISTANCE: 15,
-    MAX_SPEED: 1.2,
-    CENTERING_FACTOR: 0.0005,
+    MAX_SPEED: 1.2, // per-60fps-frame; integration is now delta-timed
+    MAX_FORCE: 0.06, // steering-force clamp → smooth turns (no jerk)
+    CENTERING_FACTOR: 0.0006,
     AVOID_FACTOR: 0.05,
-    MATCHING_FACTOR: 0.04,
+    MATCHING_FACTOR: 0.05,
     SEPARATION_WEIGHT: 1.2,
     SIZE: 4,
-    WANDER_STRENGTH: 0.02,
-    BASE_ANIMATION_SPEED: 0.05,
+    WANDER_STRENGTH: 0.015,
     CLIMB_ANIMATION_BOOST: 1.5,
     DESCENT_ANIMATION_DAMPEN: 0.6,
-    PERCH_CHANCE: 0.001,
-    PERCH_DURATION_MIN: 500,
-    PERCH_DURATION_MAX: 1500,
-    PERCH_HEIGHT: 3.5,
-    PERCH_ATTRACTION_RANGE: 40,
-    PERCH_ATTRACTION_STRENGTH: 0.08,
-    STARTLE_RADIUS: 12,
+    ROTATE_SMOOTH: 5, // orientation lerp rate (higher = snappier)
+    // Landing / perching
+    LAND_CHANCE: 0.045, // base per-second chance a flying bird starts landing
+    LAND_JOIN_BONUS: 0.12, // small extra chance near an already-landed group
+    GROUP_RANGE: 40, // horizontal range for "join the group" landings
+    GROUP_CAP: 4, // stop adding join-bonus once a group reaches this many
+    ARRIVAL_RADIUS: 16, // start decelerating within this of the landing spot
+    TOUCHDOWN_DIST: 1.5, // perch once this close to the spot
+    PERCH_SECONDS_MIN: 4,
+    PERCH_SECONDS_MAX: 14,
+    TAKEOFF_KICK: 0.55, // initial upward velocity on takeoff
+    TAKEOFF_HEIGHT: 16, // climb this far above the surface before free flight
+    CLIMB_FORCE: 0.05,
+    STARTLE_RADIUS: 14, // ball this close makes perched/landing birds bolt
+    // Floating on water (bottom of the bird rides at the surface, bobbing)
+    WATER_FLOAT: 0.06, // mean height of the bird's underside above the water
+    WATER_BOB_AMP: 0.1,
+    WATER_BOB_SPEED: 1.6,
+    WATER_DRIFT: 0.6, // slow horizontal drift while floating (units/sec)
   },
 };
 
@@ -282,8 +302,12 @@ class Wind {
   }
 
   getForceVector() {
-    const windVec = this.getWindVector();
-    return windVec.scale(CONFIG.WIND.FORCE_MULTIPLIER);
+    // Reused scratch — applied to the ball every airborne frame, so avoid the two
+    // Vector3 allocations (getWindVector + scale) the old path did per frame.
+    const v = this._forceScratch || (this._forceScratch = new BABYLON.Vector3());
+    const s = this.speed * CONFIG.WIND.FORCE_MULTIPLIER;
+    v.set(-Math.sin(this.direction) * s, 0, Math.cos(this.direction) * s);
+    return v;
   }
 
   reset() {
@@ -431,228 +455,163 @@ class CloudSystem {
 // Implements flocking behavior with birds that stay within a cylindrical bounds.
 
 class Boid3D {
-  constructor(position, scene, birdTemplate) {
-    this.debugId = Math.random().toString(36).slice(2, 5); // 3-char debug ID for console logs
-    this.position = position.clone();
-    this.velocity = new BABYLON.Vector3(
-      (Math.random() - 0.5) * 2,
-      (Math.random() - 0.5) * 2,
-      (Math.random() - 0.5) * 2,
-    );
-    this.acceleration = BABYLON.Vector3.Zero();
+  constructor(position, scene, entries) {
     this.scene = scene;
+    this.position = position.clone();
+    const s = CONFIG.BOIDS.MAX_SPEED;
+    this.velocity = new BABYLON.Vector3(
+      (Math.random() - 0.5) * s,
+      (Math.random() - 0.5) * 0.3,
+      (Math.random() - 0.5) * s,
+    );
+    this.acceleration = new BABYLON.Vector3();
 
-    // Perching state
-    this.isPerched = false;
-    this.perchPosition = null;
-    this.perchTimeRemaining = 0;
+    // Flight state machine: flying → landing → perched → takeoff → flying
+    this.state = "flying";
+    this.landTarget = new BABYLON.Vector3();
+    this.hasTarget = false;
+    this.onWater = false;
+    this.perchTimer = 0;
+    this.bobPhase = Math.random() * Math.PI * 2;
+    this.driftAngle = Math.random() * Math.PI * 2;
 
-    // Wander behavior state
+    // Smoothed orientation (radians) — birds bank into turns and level out to perch.
+    this.yaw = Math.atan2(this.velocity.x, this.velocity.z) + Math.PI;
+    this.pitch = 0;
+    this.roll = 0;
+
     this.wanderAngle = Math.random() * Math.PI * 2;
-    this.wanderAngleZ = Math.random() * Math.PI * 2;
+    this.animSpeedVariation = 0.8 + Math.random() * 0.4; // per-bird desync (±20%)
+    this._tmp = new BABYLON.Vector3();
 
-    // Clone the bird template mesh
-    this.mesh = birdTemplate.mesh.clone(`bird_${Math.random()}`);
+    // Fully-independent instance of the GLTF (mesh + skeleton + retargeted
+    // animation groups). instantiateModelsToScene remaps every animation to THIS
+    // bird's own nodes, so playback is truly independent (unlike a manual clone,
+    // whose GLTF node targets couldn't be retargeted → all birds locked in sync).
+    this.entries = entries;
+    // Wrap the instance's __root__ (which carries the glTF handedness) under our
+    // own control node so we can position/rotate the bird without disturbing it.
+    this.mesh = new BABYLON.TransformNode(`bird_${Math.random()}`, scene);
+    for (const rn of entries.rootNodes) rn.parent = this.mesh;
     this.mesh.position = this.position.clone();
-    this.mesh.setEnabled(true);
-
-    // Disable any billboard mode (ensure independent rotation)
-    this.mesh.billboardMode = BABYLON.Mesh.BILLBOARDMODE_NONE;
-
-    // Clear quaternion to use Euler angles for rotation
     this.mesh.rotationQuaternion = null;
     this.mesh.rotation = BABYLON.Vector3.Zero();
 
-    // Clone skeleton for independent animation
-    this.skeleton = null;
-    if (birdTemplate.skeleton) {
-      this.skeleton = birdTemplate.skeleton.clone(
-        `birdSkeleton_${Math.random()}`,
-      );
-      this.mesh.skeleton = this.skeleton;
-    }
+    this.skeleton = entries.skeletons?.[0] || null;
+    const groups = entries.animationGroups || [];
+    this.idleAnimation = groups.find((g) => /idle/i.test(g.name)) || null;
+    this.flapAnimation = groups.find((g) => /flap/i.test(g.name)) || null;
+    this.idleAnimation?.stop();
+    this.flapAnimation?.stop();
+    // Cross-fade between idle/flap instead of snapping.
+    Boid3D.enableBlend(this.idleAnimation);
+    Boid3D.enableBlend(this.flapAnimation);
 
-    // Build a node map from template hierarchy → cloned hierarchy so the
-    // retargeting callback can redirect TransformNode targets (GLTF animations
-    // target TransformNodes, not BABYLON.Bone objects).
-    const nodeMap = new Map();
-    nodeMap.set(birdTemplate.mesh, this.mesh);
-    const originalNodes = birdTemplate.mesh.getChildTransformNodes(true);
-    const clonedNodes = this.mesh.getChildTransformNodes(true);
-    for (const cloned of clonedNodes) {
-      const original = originalNodes.find((n) => n.name === cloned.name);
-      if (original) nodeMap.set(original, cloned);
-    }
-
-    const retarget = (oldTarget) => {
-      if (oldTarget instanceof BABYLON.Bone && this.skeleton) {
-        return this.skeleton.getBoneByName(oldTarget.name);
-      }
-      return nodeMap.get(oldTarget) ?? oldTarget;
-    };
-
-    // Clone animation groups for independent playback with proper retargeting
-    this.idleAnimation = null;
-    this.flapAnimation = null;
-    if (birdTemplate.idleAnimation) {
-      this.idleAnimation = birdTemplate.idleAnimation.clone(
-        `idle_${Math.random()}`,
-        retarget,
-      );
-    }
-    if (birdTemplate.flapAnimation) {
-      this.flapAnimation = birdTemplate.flapAnimation.clone(
-        `flap_${Math.random()}`,
-        retarget,
-      );
-    }
-
-    // Animation state
-    this.currentAnimationType = null; // 'idle' or 'flap'
-    this.animSpeedVariation = 0.95 + Math.random() * 0.1; // 0.95-1.05 per bird — natural desyncing
-
-    // Reusable temp vector — avoids per-frame allocations in wander/rotation
-    this._tmp = new BABYLON.Vector3();
-
-    // Start with flap animation
+    this.currentAnimationType = null;
     this.playAnimationOfType("flap");
   }
 
-  playAnimationOfType(animationType) {
-    const animGroup =
-      animationType === "idle" ? this.idleAnimation : this.flapAnimation;
+  static enableBlend(animGroup) {
     if (!animGroup) return;
-
-    // Stop other animations
-    if (animationType === "idle" && this.flapAnimation?.isPlaying) {
-      this.flapAnimation.stop();
-    } else if (animationType === "flap" && this.idleAnimation?.isPlaying) {
-      this.idleAnimation.stop();
+    for (const ta of animGroup.targetedAnimations) {
+      ta.animation.enableBlending = true;
+      ta.animation.blendingSpeed = 0.06;
     }
-
-    // Play the selected animation with looping
-    const wasPlaying = animGroup.isPlaying;
-    if (!animGroup.isPlaying) {
-      animGroup.reset();
-      animGroup.loopAnimation = true;
-      animGroup.speedRatio = 1.0;
-      animGroup.start(true);
-    }
-
-    // Always jump to a fresh random frame to prevent birds syncing up
-    // (must happen even if already playing, in case cloned anim inherited parent's playback state)
-    let randomFrame = animGroup.from;
-    if (animGroup.to > animGroup.from) {
-      randomFrame =
-        animGroup.from + Math.random() * (animGroup.to - animGroup.from);
-      animGroup.goToFrame(randomFrame);
-    }
-
-    if (this.currentAnimationType !== animationType) {
-      console.log(
-        `[${this.debugId}] anim: ${this.currentAnimationType} → ${animationType}, frame: ${randomFrame.toFixed(1)}, wasPlaying: ${wasPlaying}`,
-      );
-    }
-    this.currentAnimationType = animationType;
-  }
-
-  updateAnimation() {
-    // When perched, play idle animation
-    if (this.isPerched) {
-      if (this.currentAnimationType !== "idle") {
-        this.playAnimationOfType("idle");
-      } else if (this.idleAnimation) {
-        this.idleAnimation.speedRatio = this.animSpeedVariation;
-      }
-    } else {
-      // When flying, play flap animation with speed modulation
-      if (this.currentAnimationType !== "flap") {
-        this.playAnimationOfType("flap");
-      } else if (this.flapAnimation) {
-        // Adjust flap speed based on vertical velocity
-        let speedMultiplier = 1.0;
-        if (this.velocity.y > 0.2) {
-          speedMultiplier = CONFIG.BOIDS.CLIMB_ANIMATION_BOOST;
-        } else if (this.velocity.y < -0.2) {
-          speedMultiplier = CONFIG.BOIDS.DESCENT_ANIMATION_DAMPEN;
-        }
-        this.flapAnimation.speedRatio = speedMultiplier * this.animSpeedVariation;
-      }
-    }
-  }
-
-  updateRotation() {
-    // Skip rotation when perched
-    if (this.isPerched) return;
-
-    // Rotate bird mesh to face direction of travel
-    const velocityLength = this.velocity.length();
-    if (velocityLength < 0.01) return;
-
-    // Calculate yaw/pitch directly from velocity (no Vector3 allocation)
-    const hx = this.velocity.x;
-    const hz = this.velocity.z;
-    const hLen = Math.sqrt(hx * hx + hz * hz);
-    const yaw = Math.atan2(hx, hz) + Math.PI;
-    const pitch = Math.atan2(this.velocity.y, hLen);
-    const clampedPitch = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, pitch));
-
-    this.mesh.rotation.x = clampedPitch;
-    this.mesh.rotation.y = yaw;
-    this.mesh.rotation.z = 0;
-  }
-
-  update() {
-    // Update position based on velocity
-    this.position.addInPlace(this.velocity);
-    this.mesh.position.copyFrom(this.position);
-
-    // Update animation and rotation
-    this.updateAnimation();
-    this.updateRotation();
-
-    // Reset acceleration each cycle (forces don't accumulate)
-    this.acceleration = BABYLON.Vector3.Zero();
-  }
-
-  wander() {
-    // Random wander behavior to break up circular patterns
-    this.wanderAngle += (Math.random() - 0.5) * 0.3;
-    this.wanderAngleZ += (Math.random() - 0.5) * 0.3;
-
-    const wanderX = Math.cos(this.wanderAngle);
-    const wanderY = Math.sin(this.wanderAngleZ);
-    const wanderZ = Math.sin(this.wanderAngle);
-
-    this._tmp.set(wanderX, wanderY, wanderZ);
-    this._tmp.scaleInPlace(CONFIG.BOIDS.WANDER_STRENGTH);
-    this.applyForce(this._tmp);
   }
 
   applyForce(force) {
     this.acceleration.addInPlace(force);
   }
 
-  dispose() {
-    // Stop and dispose cloned animation groups
-    if (this.idleAnimation) {
-      this.idleAnimation.stop();
-      this.idleAnimation.dispose();
+  playAnimationOfType(animationType) {
+    if (this.currentAnimationType === animationType) return;
+    const animGroup =
+      animationType === "idle" ? this.idleAnimation : this.flapAnimation;
+    if (!animGroup) return;
+    // Don't reset() — that snaps targets to frame 0 and defeats the cross-fade.
+    // Stop the other group (leaves its pose in place) and start this one; the
+    // per-animation blending eases from that pose. Start at a random frame so
+    // birds don't beat their wings in unison.
+    if (animationType === "idle") this.flapAnimation?.stop();
+    else this.idleAnimation?.stop();
+    animGroup.loopAnimation = true;
+    animGroup.start(true, 1.0, animGroup.from, animGroup.to);
+    // Offset the phase so birds don't beat their wings in unison (the pose still
+    // cross-fades smoothly because the animations have blending enabled).
+    if (animGroup.to > animGroup.from) {
+      animGroup.goToFrame(
+        animGroup.from + Math.random() * (animGroup.to - animGroup.from),
+      );
+    }
+    this.currentAnimationType = animationType;
+  }
+
+  updateAnimation() {
+    const want = this.state === "perched" ? "idle" : "flap";
+    const grp = want === "idle" ? this.idleAnimation : this.flapAnimation;
+    // Switch type, or restart if the group somehow stopped (keeps wings moving).
+    if (this.currentAnimationType !== want || (grp && !grp.isPlaying)) {
+      this.currentAnimationType = null;
+      this.playAnimationOfType(want);
+    }
+    if (this.state === "perched") {
+      if (this.idleAnimation)
+        this.idleAnimation.speedRatio = this.animSpeedVariation;
+      return;
     }
     if (this.flapAnimation) {
-      this.flapAnimation.stop();
-      this.flapAnimation.dispose();
+      let m = 1.0;
+      if (this.velocity.y > 0.2) m = CONFIG.BOIDS.CLIMB_ANIMATION_BOOST;
+      else if (this.velocity.y < -0.2)
+        m = CONFIG.BOIDS.DESCENT_ANIMATION_DAMPEN;
+      this.flapAnimation.speedRatio = m * this.animSpeedVariation;
     }
+  }
 
-    // Dispose cloned skeleton
-    if (this.skeleton) {
-      this.skeleton.dispose();
+  // Smoothly turn to face travel direction, banking into turns; level when perched.
+  orient(dt) {
+    const k = 1 - Math.exp(-CONFIG.BOIDS.ROTATE_SMOOTH * dt);
+    let targetYaw = this.yaw;
+    let targetPitch = 0;
+    let targetRoll = 0;
+    const hLen = Math.hypot(this.velocity.x, this.velocity.z);
+    if (this.state !== "perched" && hLen > 0.02) {
+      targetYaw = Math.atan2(this.velocity.x, this.velocity.z) + Math.PI;
+      targetPitch = Math.max(
+        -Math.PI / 3,
+        Math.min(Math.PI / 3, Math.atan2(this.velocity.y, hLen)),
+      );
     }
+    // shortest-path yaw delta (drives both the turn and the bank)
+    let dyaw = targetYaw - this.yaw;
+    while (dyaw > Math.PI) dyaw -= 2 * Math.PI;
+    while (dyaw < -Math.PI) dyaw += 2 * Math.PI;
+    if (this.state !== "perched") {
+      targetRoll = Math.max(-0.5, Math.min(0.5, dyaw * 2.5));
+    }
+    this.yaw += dyaw * k;
+    this.pitch += (targetPitch - this.pitch) * k;
+    this.roll += (targetRoll - this.roll) * k;
+    this.mesh.rotation.set(this.pitch, this.yaw, this.roll);
+  }
 
+  dispose() {
+    this.entries?.animationGroups?.forEach((g) => {
+      g.stop();
+      g.dispose();
+    });
+    this.entries?.skeletons?.forEach((s) => s.dispose());
+    this.entries?.rootNodes?.forEach((n) => n.dispose());
     this.mesh.dispose();
   }
 }
 
+/**
+ * A small flock of birds that fly, flock (separation/alignment/cohesion), and
+ * every so often peel off to land — on the ground or on the water, where they
+ * float and gently bob. Motion is a delta-timed steering model with a clamped
+ * steering force, so turns and landings are smooth rather than jerky.
+ */
 class BirdFlockSystem {
   constructor(scene, groundCenterX = 0, groundCenterZ = 0) {
     this.scene = scene;
@@ -661,49 +620,39 @@ class BirdFlockSystem {
     this.groundCenterZ = groundCenterZ;
     this.birdTemplate = null;
     this.isLoaded = false;
-    // Reusable temp vectors — avoids allocations in inner neighbor loops
+    this.bottomOffset = 0.7; // mesh origin → underside; refined at load
+    // Reusable temp vectors — no per-frame allocations in the neighbor loops.
     this._diff = new BABYLON.Vector3();
-    this._avgVelocity = new BABYLON.Vector3();
+    this._align = new BABYLON.Vector3();
     this._center = new BABYLON.Vector3();
     this._steer = new BABYLON.Vector3();
+    this._desired = new BABYLON.Vector3();
+    this._down = new BABYLON.Vector3(0, -1, 0);
   }
 
   async load() {
     try {
-      const result = await BABYLON.SceneLoader.ImportMeshAsync(
-        "",
+      // Keep the model in a container and stamp independent instances from it —
+      // instantiateModelsToScene properly clones + retargets skeleton animations.
+      this.container = await BABYLON.SceneLoader.LoadAssetContainerAsync(
         "assets/3d/",
         "ballsbird.glb",
         this.scene,
       );
+      this.container.animationGroups.forEach((g) => g.stop());
 
-      // Create template object with mesh and animations
-      const idleAnim = this.scene.getAnimationGroupByName("idle");
-      const flapAnim = this.scene.getAnimationGroupByName("flap");
+      // Underside offset (level pose) so perched birds sit tangent to the surface.
+      const probe = this.container.instantiateModelsToScene(
+        (n) => "birdProbe_" + n,
+        false,
+      );
+      const proot = probe.rootNodes[0];
+      proot.computeWorldMatrix(true);
+      const bb = proot.getHierarchyBoundingVectors(true);
+      this.bottomOffset = proot.getAbsolutePosition().y - bb.min.y;
+      if (!isFinite(this.bottomOffset)) this.bottomOffset = 0.7;
+      probe.dispose();
 
-      if (!idleAnim) console.warn("idle animation not found in scene");
-      if (!flapAnim) console.warn("flap animation not found in scene");
-
-      // Stop template animations so clones don't inherit playing state
-      if (idleAnim) idleAnim.stop();
-      if (flapAnim) flapAnim.stop();
-
-      this.birdTemplate = {
-        mesh: result.meshes[0],
-        skeleton: result.skeletons?.[0] || null,
-        idleAnimation: idleAnim,
-        flapAnimation: flapAnim,
-      };
-
-      // Reset template mesh to clean state before cloning
-      this.birdTemplate.mesh.billboardMode = BABYLON.Mesh.BILLBOARDMODE_NONE;
-      this.birdTemplate.mesh.rotation = BABYLON.Vector3.Zero();
-      this.birdTemplate.mesh.rotationQuaternion = null; // Clear quaternion to use Euler angles
-
-      // Hide template mesh
-      this.birdTemplate.mesh.setEnabled(false);
-
-      // Initialize boids
       this.init();
       this.isLoaded = true;
     } catch (error) {
@@ -713,146 +662,150 @@ class BirdFlockSystem {
   }
 
   init() {
-    if (!this.birdTemplate) {
-      console.warn("Bird template not loaded, cannot initialize boids");
-      return;
-    }
-
-    for (let i = 0; i < CONFIG.BOIDS.COUNT; i++) {
-      // Random position within cylinder
+    if (!this.container) return;
+    const c = CONFIG.BOIDS;
+    for (let i = 0; i < c.COUNT; i++) {
       const angle = Math.random() * Math.PI * 2;
-      const radius = Math.random() * CONFIG.BOIDS.CYLINDER_RADIUS;
+      const radius = Math.random() * c.CYLINDER_RADIUS;
       const height =
-        CONFIG.BOIDS.CYLINDER_MIN_HEIGHT +
-        Math.random() *
-          (CONFIG.BOIDS.CYLINDER_MAX_HEIGHT - CONFIG.BOIDS.CYLINDER_MIN_HEIGHT);
-
+        c.CYLINDER_MIN_HEIGHT +
+        Math.random() * (c.CYLINDER_MAX_HEIGHT - c.CYLINDER_MIN_HEIGHT);
       const x = this.groundCenterX + Math.cos(angle) * radius;
       const z = this.groundCenterZ + Math.sin(angle) * radius;
-
-      const boid = new Boid3D(
-        new BABYLON.Vector3(x, height, z),
-        this.scene,
-        this.birdTemplate,
+      const entries = this.container.instantiateModelsToScene(
+        (n) => `bird${i}_${n}`,
+        false,
       );
-      this.boids.push(boid);
+      this.boids.push(
+        new Boid3D(new BABYLON.Vector3(x, height, z), this.scene, entries),
+      );
     }
   }
 
-  update(ballPosition = null, ballVelocity = null) {
-    // Update perch states (decide to perch, unperch, attract others)
-    this.updatePerchStates();
+  // ── surface lookup for landing: raycast against ground/water meshes (both
+  //    modes) via intersectsMesh so it works even on non-pickable meshes. ──
+  sampleSurface(x, z) {
+    const ray = new BABYLON.Ray(
+      new BABYLON.Vector3(x, 600, z),
+      this._down,
+      1200,
+    );
+    let bestY = -Infinity;
+    let water = false;
+    for (const m of this.scene.meshes) {
+      const n = m.name;
+      if (!m.isEnabled()) continue;
+      if (n !== "groundDisc" && n !== "waterRing" && !n.startsWith("surf_"))
+        continue;
+      const info = ray.intersectsMesh(m);
+      if (info.hit && info.pickedPoint.y > bestY) {
+        bestY = info.pickedPoint.y;
+        water = n.toLowerCase().includes("water");
+      }
+    }
+    return bestY === -Infinity ? null : { y: bestY, isWater: water };
+  }
 
-    // Apply flocking behaviors to all boids
+  update(dt = 1 / 60, ballPosition = null, ballVelocity = null) {
+    if (!this.boids.length) return;
+    const c = CONFIG.BOIDS;
+    // Clamp dt so a frame hitch can't fast-forward timers or mass-trigger
+    // landings (LAND_CHANCE*dt). Harmless at a normal frame rate.
+    dt = Math.min(dt, 0.05);
+    const f = dt * 60; // frame-equivalent step (≤3)
+
     for (const boid of this.boids) {
-      // Skip flocking forces while perched
-      if (!boid.isPerched) {
-        this.applyFlockingForces(boid);
-        boid.wander();
+      boid.acceleration.setAll(0);
+
+      switch (boid.state) {
+        case "flying":
+          this.flock(boid);
+          this.wander(boid);
+          this.keepWithinBounds(boid);
+          this.steer(boid, f);
+          this.maybeStartLanding(boid, dt);
+          break;
+
+        case "landing":
+          this.seek(boid, boid.landTarget, true);
+          this.separationOnly(boid);
+          this.steer(boid, f);
+          if (this.startled(boid, ballPosition)) {
+            this.takeOff(boid);
+          } else if (this.arrived(boid)) {
+            this.perch(boid);
+          }
+          break;
+
+        case "perched":
+          this.updatePerched(boid, dt, ballPosition);
+          break;
+
+        case "takeoff":
+          this.separationOnly(boid);
+          boid.acceleration.y += c.CLIMB_FORCE;
+          this.steer(boid, f);
+          if (boid.position.y > boid.landTarget.y + c.TAKEOFF_HEIGHT) {
+            boid.state = "flying";
+            boid.hasTarget = false;
+          }
+          break;
       }
 
-      // Apply perch attraction force if nearby perched birds
-      this.applyPerchAttraction(boid);
-
-      this.keepWithinBounds(boid);
-      this.limitSpeed(boid);
-
-      // Apply acceleration to velocity
-      boid.velocity.addInPlace(boid.acceleration);
-
-      // Update bird each frame
-      boid.update();
+      boid.updateAnimation();
+      boid.mesh.position.copyFrom(boid.position);
+      boid.orient(dt);
     }
   }
 
-  updatePerchStates() {
-    const deltaTime = 1 / 60; // assuming 60fps
-    const deltaTimeMs = deltaTime * 1000;
-
-    for (const boid of this.boids) {
-      if (boid.isPerched) {
-        // Count down perch time
-        boid.perchTimeRemaining -= deltaTimeMs;
-        if (boid.perchTimeRemaining <= 0) {
-          // Time to take off — return to flight
-          boid.isPerched = false;
-          boid.perchPosition = null;
-          // Give a small upward kick to begin takeoff
-          boid.velocity.y = 0.5;
-        } else {
-          // While perched: stay at perch position with zero velocity
-          boid.position.x = boid.perchPosition.x;
-          boid.position.z = boid.perchPosition.z;
-          boid.position.y = 0;
-          boid.velocity.setAll(0);
-        }
-      } else {
-        // Random chance to start perching
-        if (Math.random() < CONFIG.BOIDS.PERCH_CHANCE) {
-          boid.isPerched = true;
-          boid.perchPosition = boid.position.clone();
-          boid.perchPosition.y = 0; // Ground level (we'll set mesh Y to PERCH_HEIGHT)
-          boid.perchTimeRemaining =
-            CONFIG.BOIDS.PERCH_DURATION_MIN +
-            Math.random() *
-              (CONFIG.BOIDS.PERCH_DURATION_MAX -
-                CONFIG.BOIDS.PERCH_DURATION_MIN);
-        }
-      }
-    }
+  // Integrate steering: clamp the force (smooth turns), then velocity, then move.
+  steer(boid, f) {
+    const c = CONFIG.BOIDS;
+    const aLen = boid.acceleration.length();
+    if (aLen > c.MAX_FORCE) boid.acceleration.scaleInPlace(c.MAX_FORCE / aLen);
+    boid.velocity.addInPlace(boid.acceleration.scale(f));
+    const sp = boid.velocity.length();
+    if (sp > c.MAX_SPEED) boid.velocity.scaleInPlace(c.MAX_SPEED / sp);
+    boid.position.addInPlace(boid.velocity.scale(f));
   }
 
-  applyPerchAttraction(boid) {
-    // If bird is already perched, no attraction force needed
-    if (boid.isPerched) return;
-
-    const perchRangeSq =
-      CONFIG.BOIDS.PERCH_ATTRACTION_RANGE *
-      CONFIG.BOIDS.PERCH_ATTRACTION_RANGE;
-
-    // Look for nearby perched birds (horizontal distance only, ignoring Y)
-    let nearbyPerched = [];
-    for (const other of this.boids) {
-      if (other === boid || !other.isPerched) continue;
-      const dx = boid.position.x - other.position.x;
-      const dz = boid.position.z - other.position.z;
-      const distSq = dx * dx + dz * dz;
-      if (distSq < perchRangeSq) {
-        nearbyPerched.push(other);
-      }
-    }
-
-    // If nearby perched birds exist, attract toward their perch location
-    if (nearbyPerched.length > 0) {
-      // Cohesion-like force toward the center of nearby perched birds
-      const center = this._center;
-      center.setAll(0);
-      for (const perched of nearbyPerched) {
-        center.addInPlace(perched.position);
-      }
-      center.scaleInPlace(1 / nearbyPerched.length);
-      center.subtractToRef(boid.position, center);
-      center.scaleInPlace(CONFIG.BOIDS.PERCH_ATTRACTION_STRENGTH);
-      boid.applyForce(center);
-    }
+  // Reynolds seek (with arrival slow-down) toward a point.
+  seek(boid, target, arrive) {
+    const c = CONFIG.BOIDS;
+    target.subtractToRef(boid.position, this._desired);
+    const d = this._desired.length();
+    if (d < 1e-3) return;
+    let speed = c.MAX_SPEED;
+    if (arrive && d < c.ARRIVAL_RADIUS)
+      speed = c.MAX_SPEED * (d / c.ARRIVAL_RADIUS);
+    this._desired.scaleInPlace(speed / d);
+    this._desired.subtractInPlace(boid.velocity);
+    boid.applyForce(this._desired);
   }
 
-  applyFlockingForces(boid) {
-    // Single pass through neighbors — apply separation, alignment, cohesion in one loop
-    const avoidDistSq =
-      CONFIG.BOIDS.MIN_AVOID_DISTANCE * CONFIG.BOIDS.MIN_AVOID_DISTANCE;
-    const visualRangeSq = CONFIG.BOIDS.VISUAL_RANGE * CONFIG.BOIDS.VISUAL_RANGE;
+  wander(boid) {
+    boid.wanderAngle += (Math.random() - 0.5) * 0.3;
+    boid._tmp.set(
+      Math.cos(boid.wanderAngle),
+      (Math.random() - 0.5) * 0.4,
+      Math.sin(boid.wanderAngle),
+    );
+    boid._tmp.scaleInPlace(CONFIG.BOIDS.WANDER_STRENGTH);
+    boid.applyForce(boid._tmp);
+  }
 
-    const steer = this._steer;
-    steer.setAll(0);
-    const alignmentAccum = this._avgVelocity;
-    const cohesionAccum = this._center;
-    alignmentAccum.setAll(0);
-    cohesionAccum.setAll(0);
-
-    let separationCount = 0,
-      alignmentCount = 0,
-      cohesionCount = 0;
+  flock(boid) {
+    const c = CONFIG.BOIDS;
+    const avoidSq = c.MIN_AVOID_DISTANCE * c.MIN_AVOID_DISTANCE;
+    const rangeSq = c.VISUAL_RANGE * c.VISUAL_RANGE;
+    const sep = this._steer;
+    const align = this._align;
+    const coh = this._center;
+    sep.setAll(0);
+    align.setAll(0);
+    coh.setAll(0);
+    let sepN = 0;
+    let n = 0;
 
     for (const other of this.boids) {
       if (other === boid) continue;
@@ -860,76 +813,175 @@ class BirdFlockSystem {
         boid.position,
         other.position,
       );
-
-      // Separation (closer neighbors only)
-      if (distSq > 0 && distSq < avoidDistSq) {
+      if (distSq > 0 && distSq < avoidSq) {
         boid.position.subtractToRef(other.position, this._diff);
-        BABYLON.Vector3.NormalizeToRef(this._diff, this._diff);
-        this._diff.scaleInPlace(CONFIG.BOIDS.SEPARATION_WEIGHT);
-        steer.addInPlace(this._diff);
-        separationCount++;
+        this._diff.scaleInPlace(c.SEPARATION_WEIGHT / Math.sqrt(distSq));
+        sep.addInPlace(this._diff);
+        sepN++;
       }
-
-      // Alignment and Cohesion (visual range)
-      if (distSq > 0 && distSq < visualRangeSq) {
-        alignmentAccum.addInPlace(other.velocity);
-        alignmentCount++;
-        cohesionAccum.addInPlace(other.position);
-        cohesionCount++;
+      if (distSq > 0 && distSq < rangeSq) {
+        align.addInPlace(other.velocity);
+        coh.addInPlace(other.position);
+        n++;
       }
     }
 
-    // Apply separation
-    if (separationCount > 0) {
-      steer.scaleInPlace(CONFIG.BOIDS.AVOID_FACTOR);
-      boid.applyForce(steer);
+    if (sepN > 0) {
+      sep.scaleInPlace(c.AVOID_FACTOR);
+      boid.applyForce(sep);
     }
-    // Apply alignment
-    if (alignmentCount > 0) {
-      alignmentAccum.scaleInPlace(1 / alignmentCount);
-      alignmentAccum.subtractInPlace(boid.velocity);
-      alignmentAccum.scaleInPlace(CONFIG.BOIDS.MATCHING_FACTOR);
-      boid.applyForce(alignmentAccum);
+    if (n > 0) {
+      align
+        .scaleInPlace(1 / n)
+        .subtractInPlace(boid.velocity)
+        .scaleInPlace(c.MATCHING_FACTOR);
+      boid.applyForce(align);
+      coh
+        .scaleInPlace(1 / n)
+        .subtractInPlace(boid.position)
+        .scaleInPlace(c.CENTERING_FACTOR);
+      boid.applyForce(coh);
     }
-    // Apply cohesion
-    if (cohesionCount > 0) {
-      cohesionAccum.scaleInPlace(1 / cohesionCount);
-      cohesionAccum.subtractToRef(boid.position, cohesionAccum);
-      cohesionAccum.scaleInPlace(CONFIG.BOIDS.CENTERING_FACTOR);
-      boid.applyForce(cohesionAccum);
+  }
+
+  separationOnly(boid) {
+    const c = CONFIG.BOIDS;
+    const avoidSq = c.MIN_AVOID_DISTANCE * c.MIN_AVOID_DISTANCE;
+    const sep = this._steer;
+    sep.setAll(0);
+    let sepN = 0;
+    for (const other of this.boids) {
+      if (other === boid) continue;
+      const distSq = BABYLON.Vector3.DistanceSquared(
+        boid.position,
+        other.position,
+      );
+      if (distSq > 0 && distSq < avoidSq) {
+        boid.position.subtractToRef(other.position, this._diff);
+        this._diff.scaleInPlace(c.SEPARATION_WEIGHT / Math.sqrt(distSq));
+        sep.addInPlace(this._diff);
+        sepN++;
+      }
+    }
+    if (sepN > 0) {
+      sep.scaleInPlace(c.AVOID_FACTOR);
+      boid.applyForce(sep);
     }
   }
 
   keepWithinBounds(boid) {
-    // Keep birds within cylindrical bounds
+    const c = CONFIG.BOIDS;
     const dx = boid.position.x - this.groundCenterX;
     const dz = boid.position.z - this.groundCenterZ;
-    const distFromCenter = Math.sqrt(dx * dx + dz * dz);
-
-    const turnFactor = 0.3;
-
-    // Horizontal cylinder boundary
-    if (distFromCenter > CONFIG.BOIDS.CYLINDER_RADIUS) {
-      const normalX = dx / distFromCenter;
-      const normalZ = dz / distFromCenter;
-      boid.velocity.x -= normalX * turnFactor;
-      boid.velocity.z -= normalZ * turnFactor;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    const turn = 0.25;
+    if (dist > c.CYLINDER_RADIUS) {
+      boid.velocity.x -= (dx / dist) * turn;
+      boid.velocity.z -= (dz / dist) * turn;
     }
+    if (boid.position.y < c.CYLINDER_MIN_HEIGHT) boid.velocity.y += turn;
+    if (boid.position.y > c.CYLINDER_MAX_HEIGHT) boid.velocity.y -= turn;
+  }
 
-    // Vertical bounds
-    if (boid.position.y < CONFIG.BOIDS.CYLINDER_MIN_HEIGHT) {
-      boid.velocity.y += turnFactor;
+  // Occasionally peel off to land. Birds near an already-landed group are more
+  // likely to join it — producing natural flock landings.
+  maybeStartLanding(boid, dt) {
+    const c = CONFIG.BOIDS;
+    let chance = c.LAND_CHANCE;
+    let anchor = null;
+    let nearby = 0;
+    for (const other of this.boids) {
+      if (other === boid) continue;
+      if (other.state !== "perched" && other.state !== "landing") continue;
+      const dx = boid.position.x - other.position.x;
+      const dz = boid.position.z - other.position.z;
+      if (dx * dx + dz * dz < c.GROUP_RANGE * c.GROUP_RANGE) {
+        nearby++;
+        if (!anchor) anchor = other;
+      }
     }
-    if (boid.position.y > CONFIG.BOIDS.CYLINDER_MAX_HEIGHT) {
-      boid.velocity.y -= turnFactor;
+    // Nudge toward joining only while the group is still small, so flocks land
+    // in modest clusters rather than the whole flock piling onto one spot.
+    if (nearby > 0 && nearby < c.GROUP_CAP) chance += c.LAND_JOIN_BONUS;
+    else anchor = null;
+    if (Math.random() >= chance * dt) return;
+
+    let tx = boid.position.x;
+    let tz = boid.position.z;
+    if (anchor) {
+      tx = anchor.landTarget.x + (Math.random() - 0.5) * 12;
+      tz = anchor.landTarget.z + (Math.random() - 0.5) * 12;
+    }
+    const surf = this.sampleSurface(tx, tz);
+    if (!surf) return; // nothing to land on (over the void) — keep flying
+    // Offset by the mesh's bottom so the bird's underside rests on the surface.
+    boid.landTarget.set(tx, surf.y + this.bottomOffset, tz);
+    boid.onWater = surf.isWater;
+    boid.hasTarget = true;
+    boid.state = "landing";
+  }
+
+  arrived(boid) {
+    const c = CONFIG.BOIDS;
+    const dx = boid.position.x - boid.landTarget.x;
+    const dz = boid.position.z - boid.landTarget.z;
+    const dy = boid.position.y - boid.landTarget.y;
+    return (
+      Math.sqrt(dx * dx + dz * dz) < c.TOUCHDOWN_DIST &&
+      Math.abs(dy) < c.TOUCHDOWN_DIST
+    );
+  }
+
+  perch(boid) {
+    const c = CONFIG.BOIDS;
+    boid.state = "perched";
+    boid.velocity.setAll(0);
+    boid.position.copyFrom(boid.landTarget);
+    boid.perchTimer =
+      c.PERCH_SECONDS_MIN +
+      Math.random() * (c.PERCH_SECONDS_MAX - c.PERCH_SECONDS_MIN);
+  }
+
+  updatePerched(boid, dt, ballPosition) {
+    const c = CONFIG.BOIDS;
+    boid.velocity.setAll(0);
+    if (boid.onWater) {
+      // Slowly drift on the water and bob with the ripples.
+      boid.driftAngle += (Math.random() - 0.5) * 0.05;
+      boid.landTarget.x += Math.cos(boid.driftAngle) * c.WATER_DRIFT * dt;
+      boid.landTarget.z += Math.sin(boid.driftAngle) * c.WATER_DRIFT * dt;
+      boid.bobPhase += c.WATER_BOB_SPEED * dt;
+      boid.position.x = boid.landTarget.x;
+      boid.position.z = boid.landTarget.z;
+      boid.position.y =
+        boid.landTarget.y +
+        c.WATER_FLOAT +
+        Math.sin(boid.bobPhase) * c.WATER_BOB_AMP;
+      // gentle heading sway as it floats
+      boid.yaw += Math.cos(boid.bobPhase * 0.5) * 0.004;
+    } else {
+      boid.position.copyFrom(boid.landTarget);
+    }
+    boid.perchTimer -= dt;
+    if (boid.perchTimer <= 0 || this.startled(boid, ballPosition)) {
+      this.takeOff(boid);
     }
   }
 
-  limitSpeed(boid) {
-    const speed = boid.velocity.length();
-    if (speed > CONFIG.BOIDS.MAX_SPEED) {
-      boid.velocity.normalize().scaleInPlace(CONFIG.BOIDS.MAX_SPEED);
-    }
+  takeOff(boid) {
+    boid.state = "takeoff";
+    boid.velocity.y = CONFIG.BOIDS.TAKEOFF_KICK;
+    // nudge outward a touch so it doesn't climb straight back into neighbors
+    boid.velocity.x += (Math.random() - 0.5) * CONFIG.BOIDS.MAX_SPEED * 0.5;
+    boid.velocity.z += (Math.random() - 0.5) * CONFIG.BOIDS.MAX_SPEED * 0.5;
+  }
+
+  startled(boid, ballPosition) {
+    if (!ballPosition) return false;
+    const r = CONFIG.BOIDS.STARTLE_RADIUS;
+    const dx = boid.position.x - ballPosition.x;
+    const dz = boid.position.z - ballPosition.z;
+    return dx * dx + dz * dz < r * r;
   }
 
   dispose() {
@@ -961,7 +1013,15 @@ class EventManager {
 
   emit(eventName, data = null) {
     if (!this.listeners[eventName]) return;
-    this.listeners[eventName].forEach((callback) => callback(data));
+    // Iterate a copy and isolate faults: a throwing listener shouldn't abort the
+    // remaining handlers for this event (and off() during emit stays safe).
+    for (const callback of this.listeners[eventName].slice()) {
+      try {
+        callback(data);
+      } catch (e) {
+        console.error(`Listener for "${eventName}" threw:`, e);
+      }
+    }
   }
 }
 
@@ -1782,11 +1842,6 @@ class AimView {
   updateUI() {
     this.clubSelector.updateUI();
   }
-
-  hideClubUI() {
-    // Now handled by circleUIManager.hideClubCircle()
-    // Keep for backward compatibility
-  }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1805,21 +1860,28 @@ class PhysicsConfig {
   static GROUND_FRICTION = CONFIG.TERRAIN.FRICTION;
   static GROUND_RESTITUTION = CONFIG.TERRAIN.RESTITUTION;
 
-  static HIT_FORWARD_FORCE = 100; // Reduced for finesse gameplay
-  static HIT_UPWARD_FORCE = 60; // Reduced for finesse gameplay
-  static SPIN_MULTIPLIER = 400; // Increased for more spin effect
-  static SPIN_ANIMATION_SPEED = 0.3;
+  // Sourced from CONFIG.PHYSICS so tuning lives in one place (this class is just
+  // a typed accessor kept for its many existing call sites).
+  static HIT_FORWARD_FORCE = CONFIG.PHYSICS.HIT_FORWARD_FORCE;
+  static HIT_UPWARD_FORCE = CONFIG.PHYSICS.HIT_UPWARD_FORCE;
+  static SPIN_MULTIPLIER = CONFIG.PHYSICS.SPIN_MULTIPLIER;
+  static SPIN_ANIMATION_SPEED = CONFIG.PHYSICS.SPIN_ANIMATION_SPEED;
 
-  static MIN_SWIPE_DISTANCE = 3; // Lowered for more control
-  static AIRBORNE_HEIGHT = 2;
-  static GROUND_CONTACT_HEIGHT = 1.5;
-  static LANDED_SPEED_THRESHOLD = 0.5;
+  static MIN_SWIPE_DISTANCE = CONFIG.PHYSICS.MIN_SWIPE_DISTANCE;
+  static AIRBORNE_HEIGHT = CONFIG.PHYSICS.AIRBORNE_HEIGHT;
+  static GROUND_CONTACT_HEIGHT = CONFIG.PHYSICS.GROUND_CONTACT_HEIGHT;
+  static LANDED_SPEED_THRESHOLD = CONFIG.PHYSICS.LANDED_SPEED_THRESHOLD;
 }
 
 // ─── CHARACTER (GOLF BALL WITH ANIMATIONS) ─────────────────────────────────
 // Ball physics, face expressions, blinking, and eye gaze system.
 
 class GolfBallGuy {
+  // Rolling resistance: only brake once the ball is already slow, and use a
+  // constant decel. ~3.0 m/s² stops slopes up to ~18°; steeper banks still roll.
+  static ROLL_BRAKE_SPEED = 2.5;
+  static ROLL_BRAKE_DECEL = 3.0;
+
   constructor(mesh, physicsBody, skeleton, scene) {
     // Physics properties
     this.mesh = mesh;
@@ -1827,6 +1889,14 @@ class GolfBallGuy {
     this.startPosition = mesh.position.clone();
     this.landed = true;
     this.touchedGround = false;
+    // Terrain height directly under the ball (0 for the flat practice ground).
+    // Course mode updates this each frame so airborne/contact tests are measured
+    // relative to the ground below, not absolute world Y.
+    this.heightRef = 0;
+
+    // Teleport support: reset() flips disablePreStep off so the body follows the
+    // mesh for a few physics steps; updateLandingState() restores it afterward.
+    this._teleportRestoreFrames = 0;
     this.pendingSpinAmount = 0;
     this.pendingSpinAxis = BABYLON.Vector3.Zero();
 
@@ -1889,7 +1959,7 @@ class GolfBallGuy {
   }
 
   getHeight() {
-    return this.mesh.position.y;
+    return this.mesh.position.y - this.heightRef;
   }
 
   getVelocity() {
@@ -1899,13 +1969,51 @@ class GolfBallGuy {
   }
 
   getSpeed() {
-    return this.getVelocity().length();
+    // Reuse a scratch vector — getSpeed runs several times per frame and returns
+    // only a scalar, so there's no need to allocate a fresh Vector3 each call.
+    const v = this._speedScratch || (this._speedScratch = new BABYLON.Vector3());
+    this.body.getLinearVelocityToRef(v);
+    return v.length();
   }
 
   getAngularVelocity() {
     let angVel = BABYLON.Vector3.Zero();
     this.body.getAngularVelocityToRef(angVel);
     return angVel;
+  }
+
+  /**
+   * Rolling resistance. A physics sphere rolls down any slope forever (sliding
+   * friction can't stop a rolling ball — only rolling resistance can). So when
+   * the ball is on the ground and already slow, bleed off horizontal speed with
+   * a CONSTANT deceleration (not proportional damping, which only asymptotes).
+   * On a gentle undulation this beats gravity → the ball fully stops; on a steep
+   * bank gravity wins → it keeps rolling. Makes the ball settle instead of creep.
+   */
+  applyRollingResistance(dt) {
+    if (this.isAirborne()) return;
+    // Scratch vectors reused every frame instead of allocating (this runs each
+    // render frame while the ball is settling on an undulation).
+    const v = this._rrLin || (this._rrLin = new BABYLON.Vector3());
+    const av = this._rrAng || (this._rrAng = new BABYLON.Vector3());
+    this.body.getLinearVelocityToRef(v);
+    const hs = Math.hypot(v.x, v.z);
+    if (hs < 1e-3 || hs > GolfBallGuy.ROLL_BRAKE_SPEED) return;
+    const newHs = hs - GolfBallGuy.ROLL_BRAKE_DECEL * dt;
+    if (newHs < 0.06) {
+      // Fully stopped: kill motion so static friction can hold it on the slope.
+      v.set(0, Math.min(0, v.y), 0);
+      this.body.setLinearVelocity(v);
+      av.set(0, 0, 0);
+      this.body.setAngularVelocity(av);
+    } else {
+      const s = newHs / hs;
+      v.set(v.x * s, v.y, v.z * s);
+      this.body.setLinearVelocity(v);
+      this.body.getAngularVelocityToRef(av);
+      av.scaleInPlace(s);
+      this.body.setAngularVelocity(av);
+    }
   }
 
   applyHit(
@@ -1955,7 +2063,14 @@ class GolfBallGuy {
       ),
     );
 
-    this.body.applyForce(rotatedForce, impactPoint);
+    // Deliver the strike as an instantaneous impulse (J = mass·Δv) instead of a
+    // force integrated over one variable-length physics step. applyForce made the
+    // launch speed depend on frame length (a long frame = a bigger hit) and it
+    // didn't match the trajectory preview, which models Δv = force/mass · dt with
+    // dt = PHYSICS_STEP_SECONDS. Scaling the force by that same dt makes the two
+    // agree and makes the shot frame-rate independent (identical at 60 fps).
+    const impulse = rotatedForce.scale(CONFIG.SWIPE_OVERLAY.PHYSICS_STEP_SECONDS);
+    this.body.applyImpulse(impulse, impactPoint);
     this.body.setAngularVelocity(BABYLON.Vector3.Zero());
   }
 
@@ -1971,6 +2086,13 @@ class GolfBallGuy {
   }
 
   updateLandingState() {
+    // Restore physics control a few steps after a teleport (see reset()).
+    if (this._teleportRestoreFrames > 0) {
+      this._teleportRestoreFrames--;
+      if (this._teleportRestoreFrames === 0 && this.body) {
+        this.body.disablePreStep = true;
+      }
+    }
     const height = this.getHeight();
     const speed = this.getSpeed();
 
@@ -2308,6 +2430,13 @@ class GolfBallGuy {
     this.mesh.rotation = BABYLON.Vector3.Zero();
     this.body.setLinearVelocity(BABYLON.Vector3.Zero());
     this.body.setAngularVelocity(BABYLON.Vector3.Zero());
+    // Teleport the physics body to the new spot: let it read the mesh transform
+    // for a few physics steps, then hand position control back to the simulation.
+    if (this.body) {
+      this.body.disablePreStep = false;
+      this._teleportRestoreFrames = 3;
+      this.mesh.computeWorldMatrix(true);
+    }
     this.landed = true;
     this.touchedGround = false;
     this.pendingSpinAmount = 0;
@@ -2406,11 +2535,6 @@ class FollowCamera {
     );
   }
 
-  setFullShotView() {
-    // Backward-compatible alias while we transition naming.
-    this.setShotReviewView();
-  }
-
   setPlayView() {
     this.viewMode = CameraViewMode.PLAY;
     this.setOffsets(
@@ -2483,7 +2607,9 @@ class FollowCamera {
       this.cameraAngle,
     );
 
-    const newPosition = new BABYLON.Vector3(
+    // Scratch vectors reused every frame (this runs on every physics tick).
+    const newPosition = this._camPos || (this._camPos = new BABYLON.Vector3());
+    newPosition.set(
       referencePoint.x + offsetX,
       referencePoint.y + this.offsetY,
       referencePoint.z + offsetZ,
@@ -2491,38 +2617,37 @@ class FollowCamera {
 
     // Clamp camera distance in PLAY view mode
     if (this.viewMode === CameraViewMode.PLAY) {
-      const distFromRef = BABYLON.Vector3.Distance(
-        new BABYLON.Vector3(newPosition.x, referencePoint.y, newPosition.z),
-        referencePoint,
-      );
-      if (distFromRef > CONFIG.FOLLOW_CAMERA.PLAY_VIEW_MAX_DISTANCE) {
-        const direction = new BABYLON.Vector3(
-          newPosition.x - referencePoint.x,
-          0,
-          newPosition.z - referencePoint.z,
-        ).normalize();
-        newPosition.x =
-          referencePoint.x +
-          direction.x * CONFIG.FOLLOW_CAMERA.PLAY_VIEW_MAX_DISTANCE;
-        newPosition.z =
-          referencePoint.z +
-          direction.z * CONFIG.FOLLOW_CAMERA.PLAY_VIEW_MAX_DISTANCE;
+      const dx = newPosition.x - referencePoint.x;
+      const dz = newPosition.z - referencePoint.z;
+      const distFromRef = Math.hypot(dx, dz);
+      if (
+        distFromRef > CONFIG.FOLLOW_CAMERA.PLAY_VIEW_MAX_DISTANCE &&
+        distFromRef > 1e-6
+      ) {
+        const k = CONFIG.FOLLOW_CAMERA.PLAY_VIEW_MAX_DISTANCE / distFromRef;
+        newPosition.x = referencePoint.x + dx * k;
+        newPosition.z = referencePoint.z + dz * k;
       }
     }
 
-    this.lastPosition = BABYLON.Vector3.Lerp(
+    // Smooth in place, then copy values into the camera's own position vector
+    // (keeping them separate objects so engine-side normalization can't perturb
+    // our smoothing source).
+    BABYLON.Vector3.LerpToRef(
       this.lastPosition,
       newPosition,
       fPos,
+      this.lastPosition,
     );
-    this.camera.position = this.lastPosition;
+    this.camera.position.copyFrom(this.lastPosition);
 
     const { x: lookX, z: lookZ } = Utils.rotate2D(
       0,
       this.lookOffsetZ,
       this.cameraAngle,
     );
-    const lookTarget = new BABYLON.Vector3(
+    const lookTarget = this._camLook || (this._camLook = new BABYLON.Vector3());
+    lookTarget.set(
       referencePoint.x + lookX,
       referencePoint.y + this.lookOffsetY,
       referencePoint.z + lookZ,
@@ -2612,35 +2737,35 @@ class GrassSystem {
       CONFIG.TERRAIN.WIDTH,
       CONFIG.GRASS.CELL_SIZE,
     );
+    // Course-mode hooks (null in practice → original flat behavior).
+    // groundYAt(x,z) → terrain height for the blade; playableAt(x,z) → whether
+    // grass is allowed there (fairway/rough only, not water/sand/off-hole).
+    this.groundYAt = null;
+    this.playableAt = null;
   }
 
   async initialize() {
-    // Load 3 grass textures
-    const textureVariants = [];
-    for (let i = 1; i <= 3; i++) {
-      const tex = new BABYLON.Texture(
-        `./assets/grass/grass${i}.png`,
-        this.scene,
-      );
-      tex.hasAlpha = true;
-      tex.uWrapMode = BABYLON.Texture.CLAMP_ADDRESSMODE;
-      tex.vWrapMode = BABYLON.Texture.CLAMP_ADDRESSMODE;
-      tex.uOffset = 0.01;
-      tex.vOffset = 0.01;
-      tex.uScale = 0.98;
-      tex.vScale = 0.98;
-      textureVariants.push(tex);
-    }
-
-    // Create 6 base blades (3 textures × 2 flips)
+    // 6 base blades: 3 grass textures × 2 mirror flips. Each (texture, flip) gets
+    // its OWN Texture — the old code shared one Texture per variant and negated
+    // uScale on the material, which mutated the shared texture (last-write-wins),
+    // so the "flip" produced two identical variants.
     for (let i = 0; i < 3; i++) {
       for (let flip = 0; flip < 2; flip++) {
+        const tex = new BABYLON.Texture(
+          `./assets/grass/grass${i + 1}.png`,
+          this.scene,
+        );
+        tex.hasAlpha = true;
+        tex.uWrapMode = BABYLON.Texture.CLAMP_ADDRESSMODE;
+        tex.vWrapMode = BABYLON.Texture.CLAMP_ADDRESSMODE;
+        tex.uOffset = 0.01;
+        tex.vOffset = 0.01;
+        tex.uScale = flip === 0 ? 0.98 : -0.98; // mirror the flipped variant
+        tex.vScale = 0.98;
+
         const baseBlade = BABYLON.MeshBuilder.CreatePlane(
           `grassBlade_${i}_${flip}`,
-          {
-            width: 0.5,
-            height: 0.5,
-          },
+          { width: 0.5, height: 0.5 },
           this.scene,
         );
 
@@ -2648,12 +2773,14 @@ class GrassSystem {
           `grassMat_${i}_${flip}`,
           this.scene,
         );
-        mat.diffuse = new BABYLON.Color3(1, 1, 1);
-        mat.diffuseTexture = textureVariants[i];
-        mat.diffuseTexture.uScale =
-          flip === 0 ? mat.diffuseTexture.uScale : -mat.diffuseTexture.uScale;
+        mat.diffuseColor = new BABYLON.Color3(1, 1, 1);
+        mat.diffuseTexture = tex;
+        mat.useAlphaFromDiffuseTexture = true;
+        // Alpha-TEST (cutout) rather than alpha-BLEND: no per-frame transparency
+        // sorting / overdraw across the thousands of instanced blades.
+        mat.transparencyMode = BABYLON.Material.MATERIAL_ALPHATEST;
+        mat.alphaCutOff = 0.4;
         mat.backFaceCulling = false;
-        mat.alphaMode = BABYLON.Engine.ALPHA_BLEND;
 
         baseBlade.material = mat;
         baseBlade.isPickable = false;
@@ -2700,7 +2827,18 @@ class GrassSystem {
           for (let i = 0; i < density; i++) {
             const posX = cellX * cellSize + (Math.random() - 0.5) * cellSize;
             const posZ = cellZ * cellSize + (Math.random() - 0.5) * cellSize;
-            const pos = new BABYLON.Vector3(posX, 0.25, posZ);
+
+            // Course mode: only grow grass on playable turf (fairway/rough),
+            // and follow the terrain height. Practice mode keeps the flat disc.
+            if (this.playableAt) {
+              if (!this.playableAt(posX, posZ)) continue;
+            } else {
+              const distFromCenter = Math.sqrt(posX * posX + posZ * posZ);
+              if (distFromCenter > CONFIG.GRASS.TERRAIN_RADIUS) continue;
+            }
+
+            const baseY = this.groundYAt ? this.groundYAt(posX, posZ) : 0;
+            const pos = new BABYLON.Vector3(posX, baseY + 0.25, posZ);
 
             // Skip if near any pin/green
             let tooCloseToGreen = false;
@@ -2714,12 +2852,6 @@ class GrassSystem {
             }
 
             if (tooCloseToGreen) {
-              continue;
-            }
-
-            // Skip if outside terrain disc (distance from center)
-            const distFromCenter = Math.sqrt(posX * posX + posZ * posZ);
-            if (distFromCenter > CONFIG.GRASS.TERRAIN_RADIUS) {
               continue;
             }
 
@@ -3068,6 +3200,20 @@ class InputHandler {
   }
 
   solveSwipeStrengthForDistance(worldDistance, dt, linearDamping, gAbs) {
+    // This binary search runs a 600-step integration 14× and is called every
+    // frame while aiming. The target distance barely moves frame-to-frame (the
+    // ball is at rest), so memoize on the inputs and skip the ~8,400-step solve.
+    const c = this._strengthCache;
+    if (
+      c &&
+      c.dt === dt &&
+      c.damping === linearDamping &&
+      c.g === gAbs &&
+      Math.abs(c.dist - worldDistance) < 0.5
+    ) {
+      return c.strength;
+    }
+
     const minStrength =
       CONFIG.SWIPE_OVERLAY.MIN_FORWARD_FORCE / PhysicsConfig.HIT_FORWARD_FORCE;
     const maxStrength = CONFIG.GOLF_BALL.MAX_HIT_STRENGTH;
@@ -3089,7 +3235,15 @@ class InputHandler {
       }
     }
 
-    return Math.max(minStrength, Math.min(maxStrength, high));
+    const strength = Math.max(minStrength, Math.min(maxStrength, high));
+    this._strengthCache = {
+      dist: worldDistance,
+      dt,
+      damping: linearDamping,
+      g: gAbs,
+      strength,
+    };
+    return strength;
   }
 
   buildIdealSwipeVector(best, aimedDirection, swipeStrength) {
@@ -3207,13 +3361,6 @@ class InputHandler {
 
     // In aim mode, don't trigger hit/spin, let orbit controls handle it
     if (this.isAimMode()) {
-      return;
-    }
-
-    if (this.isShotReviewMode() && this.golfBall.isLanded()) {
-      this.overviewOrbiting = true;
-      this.lastPointerX = event.clientX;
-      this.clearInputPreview();
       return;
     }
 
@@ -3926,10 +4073,14 @@ class PinManager {
     this.pins.push({
       mesh: pole,
       body: poleBody,
+      poleMat, // per-pin — must be disposed with the pin
+      stripeTexture, // per-pin DynamicTexture — must be disposed with the pin
       flagMesh: flagPlane,
       flagPivot,
-      flagMat,
+      flagMat, // per-pin (its diffuseTexture is the shared flagTexturesCache)
       flagTextures,
+      hole, // per-pin cup disc mesh
+      holeMat, // per-pin
       flagAnimTime: 0,
       flagAnimFrame: 0,
       holePosition: position.clone(),
@@ -3973,15 +4124,31 @@ class PinManager {
     green.material = greenMat;
     green.receiveShadows = true;
 
-    // Create physics body for green at the raised position
+    // Physics: a thin invisible CYLINDER with real thickness instead of a ~2000-tri
+    // MESH collider on the squashed sphere. Much cheaper (no triangle soup + wasted
+    // underside), and the thickness prevents fast landings from tunnelling through.
+    const colThickness = 1.0;
+    const greenTopY = green.position.y + radius * 0.01; // squashed-sphere apex
+    const greenCol = BABYLON.MeshBuilder.CreateCylinder(
+      "greenCol",
+      { diameter: radius * 2, height: colThickness, tessellation: 24 },
+      scene,
+    );
+    greenCol.position = new BABYLON.Vector3(
+      centerPos.x,
+      greenTopY - colThickness / 2,
+      centerPos.z,
+    );
+    greenCol.isVisible = false;
+    greenCol.isPickable = false;
     const greenPhysics = new BABYLON.PhysicsAggregate(
-      green,
-      BABYLON.PhysicsShapeType.MESH,
+      greenCol,
+      BABYLON.PhysicsShapeType.CYLINDER,
       { mass: 0, friction: 3.0, restitution: 0.1 },
       scene,
     );
 
-    this.greens.push({ mesh: green, body: greenPhysics });
+    this.greens.push({ mesh: green, body: greenPhysics, collider: greenCol });
   }
 
   updateFlags(wind, dt) {
@@ -4029,6 +4196,7 @@ class PinManager {
     for (const pin of this.pins) {
       const holePos = pin.holePosition;
       if (!holePos) continue;
+      if (pin.sunk) continue; // already sunk — don't re-snap/re-emit every frame
 
       // Skip pins too far away
       const distance3D = BABYLON.Vector3.Distance(ballPos, holePos);
@@ -4053,6 +4221,7 @@ class PinManager {
         this.golfBall.mesh.position.z = holePos.z;
         this.golfBall.mesh.position.y = CONFIG.PINS.HOLE_Y_OFFSET - 0.25;
         this.golfBall.landed = true;
+        pin.sunk = true;
         this.eventManager.emit("pin:holesink", holePos);
       }
     }
@@ -4235,10 +4404,11 @@ class CameraCoordinator {
    */
   transitionToPlay(ballPosition, shotDirection) {
     this.camera.setShotStartPosition(ballPosition);
-    // Camera angle convention is opposite to aimView, so negate it
-    const cameraAngle = -shotDirection;
-    this.camera.setCameraAngleImmediate(cameraAngle);
-    this.camera.targetCameraAngle = cameraAngle;
+    // Camera angle convention is opposite to aimView, so negate it.
+    // setCameraAngleImmediate normalizes BOTH cameraAngle and targetCameraAngle;
+    // don't re-assign the raw (un-normalized) value or the follow-cam lerps a
+    // full 360° spin when the pin is dead ahead (cameraRotation ≈ 2π).
+    this.camera.setCameraAngleImmediate(-shotDirection);
     this.camera.setPlayView();
   }
 
@@ -4266,6 +4436,7 @@ class GameStateCoordinator {
     this.game.aimedDirection = shotDirection;
     this.game.gameState = GameState.PLAY;
     this.game.justTransitioned = true;
+    this.game._awaitingSettle = false; // new shot cancels any pending settle→aim
     this.game.currentHoleShotCount++; // Increment shot count for current hole
 
     // Update UI for play mode
@@ -4350,15 +4521,6 @@ class GameStateCoordinator {
   }
 
   /**
-   * Handle hole sink: reset for next hole
-   */
-  handleHoleSink(holePos) {
-    // After hole sink review, reset for next hole when player is ready
-    // This will be called to prepare for the next hole
-    // For now, just mark ready for next shot
-  }
-
-  /**
    * Toggle between AIM and PLAY modes (when clicking club circle)
    */
   toggleMode() {
@@ -4390,7 +4552,7 @@ class GameStateCoordinator {
 // ─── SCENE SETUP ──────────────────────────────────────────────────────────────
 
 class SceneSetup {
-  static async createEnvironment(scene) {
+  static async createEnvironment(scene, opts = {}) {
     // Try to load environment texture
     let envTexture = null;
     try {
@@ -4443,8 +4605,16 @@ class SceneSetup {
     shadowGenerator.bias = 0.001;
     scene.shadowGenerator = shadowGenerator;
 
-    // Ground disc with distant horizon dressing
-    this.createGroundDisc(scene);
+    // Ground disc with distant horizon dressing.
+    // Course mode skips the flat playable disc (each hole ships its own terrain)
+    // but keeps the distant hills + water backdrop.
+    if (opts.skipGround) {
+      this.createRollingHillsRing(scene, 183);
+      this.createTallerHillsRing(scene, 183);
+      this.createWaterRing(scene, 183);
+    } else {
+      this.createGroundDisc(scene);
+    }
 
     // Initialize and load bird flock system
     scene.birdFlockSystem = new BirdFlockSystem(scene, 0, 0);
@@ -4791,26 +4961,36 @@ class BallTrail {
   }
 
   updateLine() {
-    if (this.line) {
-      this.line.dispose();
-      this.line = null;
-    }
-
     if (this.positions.length < 2) {
       return;
     }
 
-    // Render trail as a simple line strip.
-    this.line = BABYLON.MeshBuilder.CreateLines(
-      "trail",
-      {
-        points: this.positions,
-        updatable: false,
-      },
-      this.scene,
-    );
-    this.line.color = new BABYLON.Color3(1, 0.15, 0.15);
-    this.line.alpha = 0.95;
+    // Update ONE updatable LinesMesh in place rather than disposing + rebuilding
+    // a fresh mesh (new vertex buffer + GC) on every point. The buffer is a fixed
+    // maxPoints size; unused tail slots repeat the tip (degenerate segments), so
+    // the vertex count never changes and we can pass `instance:`.
+    const pts = this.positions;
+    const cap = this.maxPoints;
+    const buf = this._lineBuf || (this._lineBuf = new Array(cap));
+    const tip = pts[pts.length - 1];
+    for (let i = 0; i < cap; i++) buf[i] = i < pts.length ? pts[i] : tip;
+
+    if (!this.line) {
+      this.line = BABYLON.MeshBuilder.CreateLines(
+        "trail",
+        { points: buf, updatable: true },
+        this.scene,
+      );
+      this.line.color = new BABYLON.Color3(1, 0.15, 0.15);
+      this.line.alpha = 0.95;
+      this.line.isPickable = false;
+    } else {
+      this.line = BABYLON.MeshBuilder.CreateLines(
+        "trail",
+        { points: buf, instance: this.line },
+        this.scene,
+      );
+    }
     this.line.setEnabled(this._visible);
   }
 
@@ -5088,8 +5268,12 @@ class PhysicsManager {
 // Core game loop, state management, and system initialization.
 
 class GolfGame {
-  constructor(canvas) {
+  constructor(canvas, options = {}) {
     this.canvas = canvas;
+    this.options = options;
+    // "practice" = original random-pin sandbox, "course" = 3-hole match play
+    this.mode = options.mode || "practice";
+    this.courseManager = null;
     this.engine = new BABYLON.Engine(canvas, true);
     this.scene = null;
     this.eventManager = new EventManager();
@@ -5175,14 +5359,21 @@ class GolfGame {
     if (BABYLON.PhysicsViewer) {
       this.physicsViewer = new BABYLON.PhysicsViewer(this.scene);
     }
-    await SceneSetup.createEnvironment(this.scene);
+    const courseMode = this.mode === "course";
+    await SceneSetup.createEnvironment(this.scene, { skipGround: courseMode });
 
     // Load models
     await this.loadGolfBall();
     await this.loadCharacter();
 
-    // Setup pins after golfBall is loaded
-    this.setupPins();
+    if (courseMode) {
+      // Course mode: CourseManager owns pins/terrain per hole
+      this.courseManager = new CourseManager(this);
+      await this.courseManager.init();
+    } else {
+      // Setup pins after golfBall is loaded (practice sandbox)
+      this.setupPins();
+    }
 
     // Initialize grass system
     this.grassSystem = new GrassSystem(this.scene);
@@ -5226,6 +5417,10 @@ class GolfGame {
     this.setupAimView();
 
     this.setupRenderLoop();
+
+    if (this.courseManager) {
+      await this.courseManager.start();
+    }
   }
 
   async loadGolfBall() {
@@ -5256,12 +5451,20 @@ class GolfGame {
   }
 
   async loadCharacter() {
-    const result = await BABYLON.SceneLoader.ImportMeshAsync(
-      "",
-      "assets/3d/",
-      "gball.glb",
-      this.scene,
-    );
+    let result;
+    try {
+      result = await BABYLON.SceneLoader.ImportMeshAsync(
+        "",
+        "assets/3d/",
+        "gball.glb",
+        this.scene,
+      );
+    } catch (e) {
+      // Non-fatal: the ball still has its physics body + collider mesh, it just
+      // won't have the character face/skeleton. Don't kill the whole game.
+      console.warn("Character model (gball.glb) failed to load; continuing without it.", e);
+      return;
+    }
 
     // Parent all character meshes directly to the physics body
     // so they rotate and position with it automatically
@@ -5388,14 +5591,6 @@ class GolfGame {
     });
   }
 
-  resetLastPin() {
-    this.lastPinPosition = null;
-    if (this.pinIndicatorArrow) {
-      this.pinIndicatorArrow.dispose();
-      this.pinIndicatorArrow.arrow = null;
-    }
-  }
-
   disableControls() {
     // Disable gameplay controls but keep orbit controls active for camera movement
     this.isControlsDisabled = true;
@@ -5451,9 +5646,11 @@ class GolfGame {
     `;
     message.textContent = `Hole in ${shotCount} on ${holeNumber}`;
 
-    // Create reset button
+    // Continue button: dismiss the review and resume play at the tee so the
+    // player can go for the next pin (previously this only offered a full reload,
+    // which soft-locked Practice after the first hole-out).
     const button = document.createElement("button");
-    button.textContent = "Reset";
+    button.textContent = "Continue";
     button.style.cssText = `
       padding: 12px 36px;
       font-size: 18px;
@@ -5472,7 +5669,11 @@ class GolfGame {
       button.style.background = "#3a6b35";
     });
     button.addEventListener("click", () => {
-      location.reload();
+      container.remove();
+      this.enableControls();
+      this.holeSinkProcessed = false; // allow the next pin to register a sink
+      this.scene.pinManager?.pins?.forEach((p) => (p.sunk = false));
+      this.gameStateCoordinator.resetForNextHole();
     });
 
     container.appendChild(message);
@@ -5600,8 +5801,8 @@ class GolfGame {
       }
       this.currentHolePin = null; // Reset hole tracking
       this.currentHoleShotCount = 0;
-      this.gameStateCoordinator.handleHoleSink(holePos);
-      // aimView.activate() (called in handleHoleSink) will auto-aim at next hole
+      // Play resumes when the player clicks "Continue" on the review overlay
+      // (showShotReviewMessage → resetForNextHole).
     });
 
     // Listen for shot review event
@@ -5617,10 +5818,27 @@ class GolfGame {
       this.ballTrail.setVisible(false); // Hide trail after landing
       // Don't go to shot review here - only go when ball is sunk in hole
       this.archiveCurrentTrail();
-      // Transition back to AIM mode for next shot
-      if (this.gameState !== GameState.LANDED) {
-        this.gameState = GameState.AIM;
-        this.aimView.activate(); // Re-enable orbit controls for aiming
+      this.eventManager.emit(
+        "ball:landed",
+        this.golfBall.getPosition().clone(),
+      );
+      // Don't pop up aim yet — wait until the ball has fully stopped for 1s
+      // (it may still be trickling down an undulation).
+      this._settleTimer = 0;
+      this._awaitingSettle = this.gameState !== GameState.LANDED;
+    }
+
+    // Enter aim mode only after the ball has stopped completely for 1 second.
+    if (this._awaitingSettle && this.gameState !== GameState.AIM) {
+      if (this.golfBall.getSpeed() < 0.15 && !this.golfBall.isAirborne()) {
+        this._settleTimer += this.engine.getDeltaTime() / 1000;
+        if (this._settleTimer >= 1.0) {
+          this._awaitingSettle = false;
+          this.gameState = GameState.AIM;
+          this.aimView.activate();
+        }
+      } else {
+        this._settleTimer = 0; // still rolling — reset the settle clock
       }
     }
 
@@ -5764,6 +5982,9 @@ class GolfGame {
   setupWindControl() {
     const svg = this.circleUIManager.getCompassSvg();
     if (!svg) return;
+    // Course mode: wind is a fixed per-hole condition, not a player control —
+    // the compass still displays it, but dragging/clicking it does nothing.
+    if (this.mode === "course") return;
 
     let isDragging = false;
 
@@ -5960,6 +6181,8 @@ class GolfGame {
         const windForce = this.wind.getForceVector();
         this.golfBall.body.applyForce(windForce, this.golfBall.getPosition());
       }
+      // Rolling resistance so the ball actually settles on undulations.
+      this.golfBall.applyRollingResistance(this.engine.getDeltaTime() / 1000);
 
       this.updateBallState();
       // Pin collisions handled by Havok physics automatically
@@ -5983,6 +6206,7 @@ class GolfGame {
       // Update bird flock system
       if (this.scene.birdFlockSystem) {
         this.scene.birdFlockSystem.update(
+          this.engine.getDeltaTime() / 1000,
           this.golfBall.getPosition(),
           this.golfBall.getVelocity(),
         );
@@ -6022,18 +6246,1195 @@ class GolfGame {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// APPLICATION BOOTSTRAP
+// COURSE MODE — 3-hole match play (loads Blender-authored hole .glb files)
 // ═════════════════════════════════════════════════════════════════════════════
 
-async function startGame() {
-  try {
-    const canvas = document.getElementById("renderCanvas");
-    const game = new GolfGame(canvas);
-    window.game = game; // Global reference for debugging
-    await game.initialize();
-  } catch (error) {
-    alert("Failed to initialize game: " + error.message);
+// Per-hole definition. Tee, pin/cup and tree placements come from marker meshes
+// baked into each .glb; only par/name/notes live here.
+// Bump when hole .glb geometry is rebuilt (assets are served immutable-cached).
+const HOLE_ASSET_VERSION = "coursefix1";
+const COURSE_HOLES = [
+  { id: 1, glb: "assets/3d/holes/hole1.glb", par: 4, name: "Wet and Wild" },
+  { id: 2, glb: "assets/3d/holes/hole2.glb", par: 3, name: "Rock and Roll" },
+  { id: 3, glb: "assets/3d/holes/hole3.glb", par: 5, name: "On a Bender" },
+];
+
+// Physics + friction per surface type. Golf-ball-scale tuning: rough grabs, greens
+// roll true, sand plugs, the desert rock face bounces balls back toward the green.
+const SURFACE_PHYSICS = {
+  // Grass friction ordering: green fastest (least), fairway medium, rough grabbiest.
+  green: { friction: 0.9, restitution: 0.1 }, // least → true, fast roll
+  fairway: { friction: 1.8, restitution: 0.3 }, // middle
+  rough: { friction: 4.5, restitution: 0.2 }, // most → ball stops
+  sand: { friction: 10.0, restitution: 0.05 }, // plush bunker sand: plugs
+  desert: { friction: 2.8, restitution: 0.35 }, // firm rocky hardpan
+  rock: { friction: 0.5, restitution: 0.6 }, // rock face: lucky bounces
+};
+
+/**
+ * Loads decor.glb once and stamps instanced copies (trees/rocks) so many
+ * placements share geometry. Sources are parked far below the course.
+ */
+class CourseDecor {
+  constructor(scene) {
+    this.scene = scene;
+    this.sources = {};
+  }
+
+  async load() {
+    let res;
+    try {
+      res = await BABYLON.SceneLoader.ImportMeshAsync(
+        "",
+        "assets/3d/",
+        "decor.glb",
+        this.scene,
+      );
+    } catch (e) {
+      // Non-fatal: without decor sources, place() returns null and holes simply
+      // render with no trees/rocks rather than the whole round failing to load.
+      console.warn("Decor model (decor.glb) failed to load; holes will have no trees/rocks.", e);
+      return;
+    }
+    for (const name of ["tree1", "tree2", "tree3", "rock1", "rock2", "rock3"]) {
+      const node =
+        res.meshes.find((m) => m.name === name) ||
+        (res.transformNodes || []).find((n) => n.name === name);
+      if (!node) continue;
+      node.setParent(null); // bake the glTF handedness transform into the node
+      node.position = new BABYLON.Vector3(0, -1000, 0); // park source off-course
+      node.setEnabled(true);
+      this.sources[name] = node;
+    }
+  }
+
+  place(type, position, yaw = 0, scale = 1) {
+    const src = this.sources[type];
+    if (!src) return null;
+    const inst = src.instantiateHierarchy(null, { doNotInstantiate: false });
+    if (!inst) return null;
+    inst.position = position.clone();
+    inst.rotation = new BABYLON.Vector3(0, yaw, 0);
+    inst.rotationQuaternion = null;
+    inst.scaling = new BABYLON.Vector3(scale, scale, scale);
+    inst.setEnabled(true);
+    inst.getChildMeshes().forEach((m) => {
+      m.isPickable = false;
+      m.receiveShadows = true;
+    });
+    return inst;
   }
 }
 
-startGame();
+/**
+ * Shared world-projected (triplanar) materials so hole terrain matches the
+ * existing grass/water/sand look without needing UVs baked into the glb.
+ */
+class CourseSurfaces {
+  constructor(scene) {
+    this.scene = scene;
+    this.mats = {};
+  }
+
+  // Terrain meshes carry planar world (x,y) UVs, so tiling = 1/tileWorld units.
+  _tex(path, tileWorld) {
+    const t = new BABYLON.Texture(path, this.scene);
+    t.wrapU = t.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
+    t.uScale = t.vScale = 1 / tileWorld;
+    return t;
+  }
+
+  _std(name, texPath, tileWorld, color, normalPath) {
+    const m = new BABYLON.StandardMaterial(name, this.scene);
+    m.diffuseColor = color;
+    m.specularColor = new BABYLON.Color3(0.02, 0.02, 0.02);
+    m.specularPower = 8;
+    m.diffuseTexture = this._tex(texPath, tileWorld);
+    if (normalPath) m.bumpTexture = this._tex(normalPath, tileWorld);
+    return m;
+  }
+
+  build() {
+    const C = BABYLON.Color3;
+    const T = CONFIG.TERRAIN;
+    const P = CONFIG.PINS;
+    // rough = dark painted-grass texture; fairway/green = brighter putting texture.
+    // Fine tiling (small world size per tile) so the painted grass reads at ball scale.
+    this.mats.rough = this._std(
+      "courseRough",
+      T.TEXTURE_PATH,
+      2.5,
+      new C(0.42, 0.62, 0.28),
+      T.NORMAL_MAP_PATH,
+    );
+    this.mats.fairway = this._std(
+      "courseFairway",
+      P.GREEN_TEXTURE_PATH,
+      2.5,
+      new C(0.62, 0.8, 0.42),
+      P.GREEN_NORMAL_MAP_PATH,
+    );
+    this.mats.green = this._std(
+      "courseGreen",
+      P.GREEN_TEXTURE_PATH,
+      1.6,
+      new C(0.5, 0.82, 0.28),
+      P.GREEN_NORMAL_MAP_PATH,
+    );
+    this.mats.sand = this._std(
+      "courseSand",
+      "assets/texture/sand.png",
+      3,
+      new C(0.96, 0.9, 0.76),
+      null,
+    );
+    this.mats.desert = this._std(
+      "courseDesert",
+      "assets/texture/sand.png",
+      3.5,
+      new C(0.94, 0.87, 0.72),
+      null,
+    );
+    this.mats.rock = new BABYLON.StandardMaterial("courseRock", this.scene);
+    this.mats.rock.diffuseColor = new C(0.46, 0.44, 0.41);
+    this.mats.rock.specularColor = new C(0.05, 0.05, 0.05);
+
+    // Water: bright translucent like the distant water ring
+    const water = new BABYLON.PBRMaterial("courseWater", this.scene);
+    water.albedoTexture = this._tex("assets/texture/water.png", 10);
+    water.bumpTexture = this._tex("assets/texture/waternormals.png", 10);
+    water.metallic = 0.6;
+    water.roughness = 0.25;
+    water.alpha = 0.82;
+    water.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND;
+    water.backFaceCulling = true; // only ever viewed from above — skip the underside
+    this.mats.water = water;
+    return this.mats;
+  }
+
+  // Surface-name → material/physics key. These `surf_*` substrings are a CONTRACT
+  // with the hole authoring pipeline: course_design/hole_gen.py writes the mesh
+  // names (surf_rough/fairway/green/sand/desert/rockface/water, marker_tee/pin,
+  // tree_*/rock_*) and the runtime decodes them here + in buildHeightGrid,
+  // BirdFlockSystem.sampleSurface, and CourseManager.loadHole. Rename on one side
+  // → update the other, or physics/decor/birds silently break.
+  forSurfaceName(name) {
+    const n = name.toLowerCase();
+    if (n.includes("underwater")) return "rough"; // submerged basin floor
+    if (n.includes("water")) return "water";
+    if (n.includes("green")) return "green";
+    if (n.includes("fairway")) return "fairway";
+    if (n.includes("desert")) return "desert";
+    if (n.includes("sand")) return "sand";
+    if (n.includes("rock")) return "rock"; // rock face backstop
+    return "rough"; // rough + rough_underwater
+  }
+}
+
+/**
+ * Cinematic tee→green flyover, then a swoop down to the tee. Runs on its own
+ * temporary camera and resolves when the animation ends.
+ */
+class DroneCamera {
+  constructor(scene) {
+    this.scene = scene;
+  }
+
+  fly(teePos, pinPos, restoreCamera, duration = 6500) {
+    return new Promise((resolve) => {
+      const scene = this.scene;
+      const dir = pinPos.subtract(teePos);
+      dir.y = 0;
+      if (dir.lengthSquared() < 1e-3) dir.set(0, 0, 1);
+      dir.normalize();
+      const mid = BABYLON.Vector3.Center(teePos, pinPos);
+      const off = (along, x, y) =>
+        teePos.add(dir.scale(along)).add(new BABYLON.Vector3(x, y, 0));
+
+      // Normalized keyframes: behind/above tee → glide down the fairway →
+      // high over the green → swoop back to just behind the ball at the tee.
+      const keys = [
+        { t: 0.0, pos: off(-14, 0, 26), tgt: off(30, 0, 1) },
+        {
+          t: 0.3,
+          pos: mid.add(new BABYLON.Vector3(8, 34, 0)),
+          tgt: pinPos.clone(),
+        },
+        {
+          t: 0.55,
+          pos: pinPos.add(dir.scale(26)).add(new BABYLON.Vector3(-8, 24, 0)),
+          tgt: pinPos.clone(),
+        },
+        {
+          t: 0.75,
+          pos: pinPos.add(dir.scale(8)).add(new BABYLON.Vector3(0, 14, 0)),
+          tgt: pinPos.clone(),
+        },
+        { t: 1.0, pos: off(-9, 0, 5), tgt: off(24, 0, 1) },
+      ];
+
+      const smooth = (u) => u * u * (3 - 2 * u);
+      const sample = (s, prop) => {
+        let i = 0;
+        while (i < keys.length - 2 && s > keys[i + 1].t) i++;
+        const a = keys[i];
+        const b = keys[i + 1];
+        const local = (s - a.t) / (b.t - a.t || 1);
+        return BABYLON.Vector3.Lerp(
+          a[prop],
+          b[prop],
+          Math.max(0, Math.min(1, local)),
+        );
+      };
+
+      const cam = new BABYLON.UniversalCamera(
+        "droneCam",
+        keys[0].pos.clone(),
+        scene,
+      );
+      cam.fov = 1.05;
+      cam.minZ = 0.2;
+      const prevActive = scene.activeCamera;
+      scene.activeCamera = cam;
+
+      let elapsed = 0;
+      let done = false;
+      let obs = null;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        if (obs) scene.onBeforeRenderObservable.remove(obs);
+        scene.activeCamera = restoreCamera || prevActive;
+        cam.dispose();
+        resolve();
+      };
+
+      obs = scene.onBeforeRenderObservable.add(() => {
+        // Clamp dt so a throttled/background frame can't jump the whole flight
+        elapsed += Math.min(scene.getEngine().getDeltaTime(), 60);
+        const u = Math.min(elapsed / duration, 1);
+        const s = smooth(u);
+        cam.position.copyFrom(sample(s, "pos"));
+        cam.setTarget(sample(s, "tgt"));
+        if (u >= 1) finish();
+      });
+      // Guarantee the round proceeds even if rendering stalls.
+      setTimeout(finish, duration + 2500);
+    });
+  }
+}
+
+/** Small top-of-screen hole banner + transient flash messages. */
+class CourseHUD {
+  constructor() {
+    CourseUI.ensureStyles();
+    this.banner = document.createElement("div");
+    this.banner.className = "course-banner";
+    this.banner.style.display = "none";
+    this.flashEl = document.createElement("div");
+    this.flashEl.className = "course-flash";
+    this.flashEl.style.display = "none";
+    document.body.appendChild(this.banner);
+    document.body.appendChild(this.flashEl);
+    this._flashTimer = null;
+  }
+
+  setHole(holeNum, par, name) {
+    this.banner.innerHTML =
+      `<span class="cb-num">HOLE ${holeNum}</span>` +
+      `<span class="cb-par">PAR ${par}</span>` +
+      `<span class="cb-name">${name}</span>`;
+    this.banner.style.display = "flex";
+  }
+
+  flash(text, ms = 2200) {
+    this.flashEl.textContent = text;
+    this.flashEl.style.display = "block";
+    this.flashEl.classList.remove("cf-show");
+    void this.flashEl.offsetWidth; // restart animation
+    this.flashEl.classList.add("cf-show");
+    clearTimeout(this._flashTimer);
+    this._flashTimer = setTimeout(() => {
+      this.flashEl.style.display = "none";
+    }, ms);
+  }
+
+  hide() {
+    this.banner.style.display = "none";
+  }
+}
+
+// Shared style injection + score naming for the course UI.
+class CourseUI {
+  static _styled = false;
+  static ensureStyles() {
+    if (CourseUI._styled) return;
+    CourseUI._styled = true;
+    const css = `
+    .course-banner{position:absolute;top:14px;left:50%;transform:translateX(-50%);
+      z-index:1400;display:flex;gap:14px;align-items:center;padding:8px 22px;
+      border-radius:999px;font-family:'Trebuchet MS',Arial,sans-serif;font-weight:bold;
+      color:#eafff0;background:linear-gradient(180deg,rgba(40,120,60,.92),rgba(20,80,38,.92));
+      border:2px solid rgba(255,255,255,.5);
+      box-shadow:0 6px 20px rgba(0,0,0,.35),inset 0 2px 8px rgba(255,255,255,.4);
+      text-shadow:0 1px 2px rgba(0,0,0,.5);pointer-events:none;}
+    .course-banner .cb-num{font-size:20px;letter-spacing:1px;}
+    .course-banner .cb-par{font-size:15px;opacity:.9;background:rgba(255,255,255,.18);
+      padding:2px 10px;border-radius:999px;}
+    .course-banner .cb-name{font-size:15px;color:#d6f5c0;font-style:italic;}
+    .course-flash{position:absolute;top:38%;left:50%;transform:translate(-50%,-50%);
+      z-index:1600;font-family:'Trebuchet MS',Arial,sans-serif;font-weight:bold;font-size:46px;
+      color:#eafff0;text-shadow:0 2px 10px rgba(0,0,0,.6),0 0 24px rgba(80,220,120,.6);
+      pointer-events:none;text-align:center;}
+    .course-flash.cf-show{animation:cfpop .5s cubic-bezier(.2,1.4,.4,1);}
+    @keyframes cfpop{0%{transform:translate(-50%,-50%) scale(.4);opacity:0}
+      60%{transform:translate(-50%,-52%) scale(1.08);opacity:1}
+      100%{transform:translate(-50%,-50%) scale(1);opacity:1}}
+
+    .balls-overlay{position:absolute;inset:0;z-index:2000;display:flex;align-items:center;
+      justify-content:center;background:radial-gradient(circle at 50% 30%,rgba(135,207,235,.6),rgba(90,150,200,.75));
+      font-family:'Trebuchet MS',Arial,sans-serif;-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px);}
+    .aero-card{background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(232,245,235,.94));
+      border:2px solid rgba(255,255,255,.85);border-radius:32px;padding:30px 40px 34px;min-width:320px;
+      box-shadow:0 20px 60px rgba(0,60,20,.35),inset 0 3px 12px rgba(255,255,255,.9);
+      text-align:center;position:relative;overflow:hidden;}
+    .aero-card::before{content:'';position:absolute;top:0;left:0;right:0;height:46%;
+      background:linear-gradient(180deg,rgba(255,255,255,.65),rgba(255,255,255,0));
+      border-radius:32px 32px 60% 60%/32px 32px 30% 30%;pointer-events:none;}
+    .aero-title{font-size:40px;font-weight:bold;color:#1e7a34;letter-spacing:1px;margin:0 0 4px;
+      text-shadow:0 1px 0 #fff,0 2px 6px rgba(30,122,52,.25);}
+    .aero-sub{font-size:15px;color:#3a7a4c;margin:0 0 22px;opacity:.85;}
+    .aero-btn{display:inline-block;cursor:pointer;user-select:none;border:none;margin:6px;
+      font-family:inherit;font-weight:bold;font-size:19px;color:#fff;padding:13px 30px;border-radius:999px;
+      background:linear-gradient(180deg,#4fc46a,#2e8b48);
+      box-shadow:0 6px 16px rgba(20,90,40,.4),inset 0 2px 6px rgba(255,255,255,.6);
+      text-shadow:0 1px 2px rgba(0,0,0,.35);transition:transform .08s ease,filter .08s ease;}
+    .aero-btn:hover{filter:brightness(1.07);}
+    .aero-btn:active{transform:translateY(2px) scale(.98);filter:brightness(.95);}
+    .aero-btn.secondary{background:linear-gradient(180deg,#e9f3ec,#c9ddce);color:#1e7a34;
+      text-shadow:0 1px 0 rgba(255,255,255,.7);}
+    .aero-stepper{display:flex;align-items:center;justify-content:center;gap:14px;margin:6px 0 20px;
+      color:#1e7a34;font-weight:bold;font-size:18px;}
+    .aero-step{width:38px;height:38px;border-radius:50%;border:none;cursor:pointer;font-size:22px;font-weight:bold;
+      color:#fff;background:linear-gradient(180deg,#4fc46a,#2e8b48);
+      box-shadow:0 3px 8px rgba(20,90,40,.4),inset 0 2px 4px rgba(255,255,255,.6);}
+    .aero-step:disabled{opacity:.4;cursor:default;}
+    .aero-modes{display:flex;gap:14px;justify-content:center;}
+
+    .score-card{max-width:560px;width:88%;}
+    .score-title{font-size:34px;}
+    table.scorecard{border-collapse:separate;border-spacing:0;width:100%;margin:6px 0 20px;
+      border-radius:16px;overflow:hidden;box-shadow:0 4px 12px rgba(0,60,20,.15);}
+    table.scorecard th,table.scorecard td{padding:10px 8px;font-size:16px;text-align:center;}
+    table.scorecard thead th{background:linear-gradient(180deg,#2e8b48,#1e6e36);color:#eafff0;
+      font-weight:bold;text-shadow:0 1px 2px rgba(0,0,0,.4);}
+    table.scorecard tbody td{color:#1e6e36;font-weight:bold;background:rgba(255,255,255,.85);
+      border-bottom:1px solid rgba(30,110,54,.12);}
+    table.scorecard tbody td.label{text-align:left;color:#2a7a44;}
+    table.scorecard tr.total td{background:rgba(224,244,230,.95);font-size:18px;color:#12572a;}
+    `;
+    const s = document.createElement("style");
+    s.textContent = css;
+    document.head.appendChild(s);
+  }
+
+  static scoreName(strokes, par) {
+    const d = strokes - par;
+    if (strokes === 1) return "Hole in One!";
+    if (d <= -3) return "Albatross!";
+    if (d === -2) return "Eagle!";
+    if (d === -1) return "Birdie!";
+    if (d === 0) return "Par";
+    if (d === 1) return "Bogey";
+    if (d === 2) return "Double Bogey";
+    return `+${d}`;
+  }
+}
+
+/** Start menu: Practice sandbox vs 3-hole Course (with a player-count slot). */
+class BallsMenu {
+  static init(startFn) {
+    CourseUI.ensureStyles();
+    BallsMenu.startFn = startFn;
+    BallsMenu.players = 1;
+    BallsMenu.showModeSelect();
+  }
+
+  static _overlay(contentHtml) {
+    const existing = document.getElementById("ballsMenu");
+    if (existing) existing.remove();
+    const o = document.createElement("div");
+    o.id = "ballsMenu";
+    o.className = "balls-overlay";
+    o.innerHTML = `<div class="aero-card">${contentHtml}</div>`;
+    document.body.appendChild(o);
+    return o;
+  }
+
+  static showModeSelect() {
+    const o = BallsMenu._overlay(`
+      <div class="aero-title">BALLS GOLF</div>
+      <div class="aero-sub">Be the ball.</div>
+      <div class="aero-modes">
+        <button class="aero-btn" id="mCourse">▶ Course</button>
+        <button class="aero-btn secondary" id="mPractice">Practice</button>
+      </div>
+    `);
+    o.querySelector("#mCourse").onclick = () => BallsMenu.showCourseStart();
+    o.querySelector("#mPractice").onclick = () => {
+      o.remove();
+      BallsMenu.startFn({ mode: "practice" });
+    };
+  }
+
+  static showCourseStart() {
+    const o = BallsMenu._overlay(`
+      <div class="aero-title">MATCH PLAY</div>
+      <div class="aero-sub">3 holes &nbsp;·&nbsp; lowest total wins</div>
+      <div class="aero-stepper">
+        <button class="aero-step" id="pMinus">−</button>
+        <span>Players: <span id="pCount">1</span></span>
+        <button class="aero-step" id="pPlus">+</button>
+      </div>
+      <button class="aero-btn" id="cPlay">▶ Play</button>
+      <div style="margin-top:8px"><button class="aero-btn secondary" id="cBack">Back</button></div>
+    `);
+    const countEl = o.querySelector("#pCount");
+    const minus = o.querySelector("#pMinus");
+    const plus = o.querySelector("#pPlus");
+    const sync = () => {
+      countEl.textContent = BallsMenu.players;
+      minus.disabled = BallsMenu.players <= 1;
+      plus.disabled = BallsMenu.players >= 4;
+    };
+    sync();
+    minus.onclick = () => {
+      BallsMenu.players = Math.max(1, BallsMenu.players - 1);
+      sync();
+    };
+    plus.onclick = () => {
+      BallsMenu.players = Math.min(4, BallsMenu.players + 1);
+      sync();
+    };
+    o.querySelector("#cBack").onclick = () => BallsMenu.showModeSelect();
+    o.querySelector("#cPlay").onclick = () => {
+      o.remove();
+      BallsMenu.startFn({ mode: "course", players: BallsMenu.players });
+    };
+  }
+}
+
+/** End-of-round scoreboard: traditional white/green, Frutiger-Aero, rounded. */
+class Scoreboard {
+  static show(players, holes) {
+    CourseUI.ensureStyles();
+    const totalPar = holes.reduce((s, h) => s + h.par, 0);
+    let head = `<tr><th class="label">Hole</th>`;
+    holes.forEach((h) => (head += `<th>${h.id}</th>`));
+    head += `<th>Tot</th></tr>`;
+    let parRow = `<tr><td class="label">Par</td>`;
+    holes.forEach((h) => (parRow += `<td>${h.par}</td>`));
+    parRow += `<td>${totalPar}</td></tr>`;
+    let rows = "";
+    players.forEach((p) => {
+      let tot = 0;
+      let r = `<tr><td class="label">${p.name}</td>`;
+      holes.forEach((h, i) => {
+        const s = p.scores[i];
+        tot += s || 0;
+        r += `<td>${s != null ? s : "–"}</td>`;
+      });
+      r += `<td>${tot}</td></tr>`;
+      rows += r;
+    });
+    // winner
+    const totals = players.map((p) =>
+      p.scores.reduce((s, v) => s + (v || 0), 0),
+    );
+    const best = Math.min(...totals);
+    const winners = players
+      .filter((_, i) => totals[i] === best)
+      .map((p) => p.name);
+    const winLine =
+      players.length > 1
+        ? `<div class="aero-sub">🏆 ${winners.join(" & ")} win${winners.length > 1 ? "" : "s"} (${best})</div>`
+        : `<div class="aero-sub">${best - totalPar === 0 ? "Even par" : (best - totalPar > 0 ? "+" : "") + (best - totalPar)} for the round</div>`;
+
+    const o = document.createElement("div");
+    o.id = "ballsScoreboard";
+    o.className = "balls-overlay";
+    o.innerHTML = `<div class="aero-card score-card">
+      <div class="aero-title score-title">SCORECARD</div>
+      ${winLine}
+      <table class="scorecard"><thead>${head}${parRow}</thead>
+      <tbody class="players">${rows}</tbody></table>
+      <button class="aero-btn" id="sbAgain">▶ Play Again</button>
+      <button class="aero-btn secondary" id="sbMenu">Main Menu</button>
+    </div>`;
+    document.body.appendChild(o);
+    o.querySelector("#sbAgain").onclick = () => location.reload();
+    o.querySelector("#sbMenu").onclick = () => location.reload();
+    // tag total row styling
+    const trs = o.querySelectorAll("tbody.players tr");
+    trs.forEach((tr) => tr.classList.add("player-row"));
+  }
+}
+
+/**
+ * Orchestrates the round: loads holes, builds physics/materials/decor, runs the
+ * drone flyover, cycles player turns, detects water + hole-outs, tallies scores.
+ * Built for N players; starts with 1.
+ */
+class CourseManager {
+  constructor(game) {
+    this.game = game;
+    this.scene = game.scene;
+    this.holeIndex = 0;
+    this.currentPlayer = 0;
+    this.players = [];
+    // per-hole transient state
+    this.holeNodes = [];
+    this.holeAggregates = [];
+    this.surfaceMeshes = [];
+    this.tee = null;
+    this.cup = null;
+    this.waterlineY = -100;
+    this.holeComplete = false;
+    this.busy = true; // input locked (menu/drone/transitions)
+    this._pickCache = null;
+  }
+
+  async init() {
+    const players = Math.max(1, this.game.options.players || 1);
+    for (let i = 0; i < players; i++) {
+      this.players.push({ name: `Player ${i + 1}`, scores: [] });
+    }
+    this.decor = new CourseDecor(this.scene);
+    await this.decor.load();
+    this.surfaces = new CourseSurfaces(this.scene);
+    this.surfaces.build();
+    this.hud = new CourseHUD();
+
+    this.pinManager = new PinManager(
+      this.scene,
+      this.game.golfBall,
+      this.game.eventManager,
+    );
+    this.scene.pinManager = this.pinManager;
+
+    this.game.eventManager.on("ball:landed", (pos) => this.onBallLanded(pos));
+    this.game.eventManager.on("pin:holesink", (holePos) =>
+      this.onHoleSink(holePos),
+    );
+    this.scene.onBeforeRenderObservable.add(() => this.frame());
+  }
+
+  async start() {
+    // Grass follows course terrain + only grows on playable turf
+    if (this.game.grassSystem) {
+      this.game.grassSystem.groundYAt = (x, z) => this.groundY(x, z);
+      this.game.grassSystem.playableAt = (x, z) => this.grassAllowed(x, z);
+    }
+    await this.loadHole(0);
+  }
+
+  // ---- terrain height field (sampled once per hole via rays, then O(1) lookups) ----
+  // Per-blade raycasting every frame caused big frame drops during ball flight, so
+  // the grass system + ball heightRef read this cheap grid instead. This lets grass
+  // follow the ball continuously like the practice range (no batch pop-in on landing).
+  buildHeightGrid() {
+    const cell = 3; // finer than before so the fairway/rough boundary is crisp
+    let minX = 1e9,
+      maxX = -1e9,
+      minZ = 1e9,
+      maxZ = -1e9;
+    for (const m of this.surfaceMeshes) {
+      const bb = m.getBoundingInfo().boundingBox;
+      minX = Math.min(minX, bb.minimumWorld.x);
+      maxX = Math.max(maxX, bb.maximumWorld.x);
+      minZ = Math.min(minZ, bb.minimumWorld.z);
+      maxZ = Math.max(maxZ, bb.maximumWorld.z);
+    }
+    const nx = Math.ceil((maxX - minX) / cell) + 1;
+    const nz = Math.ceil((maxZ - minZ) / cell) + 1;
+    const height = new Float32Array(nx * nz);
+    const playable = new Uint8Array(nx * nz);
+    // sample the ground below (exclude the water surface so height = the bed)
+    const solids = this.surfaceMeshes.filter(
+      (m) => !m.name.toLowerCase().includes("water"),
+    );
+    const down = new BABYLON.Vector3(0, -1, 0);
+    for (let i = 0; i < nx; i++) {
+      for (let j = 0; j < nz; j++) {
+        const x = minX + i * cell,
+          z = minZ + j * cell;
+        const ray = new BABYLON.Ray(new BABYLON.Vector3(x, 300, z), down, 600);
+        const hit = this.scene.pickWithRay(ray, (m) => solids.includes(m));
+        const idx = i * nz + j;
+        if (hit && hit.hit) {
+          height[idx] = hit.pickedPoint.y;
+          const n = hit.pickedMesh.name.toLowerCase();
+          // Grass only on rough turf, and never on the submerged bed under water.
+          playable[idx] =
+            n.includes("rough") && hit.pickedPoint.y > this.waterlineY + 0.4
+              ? 1
+              : 0;
+        }
+      }
+    }
+    // Erode the playable mask by one cell so grass never straddles a boundary
+    // (fairway / sand / water / hole edge). A cell survives only if it and all
+    // four orthogonal neighbours are rough — keeps every blade strictly inside
+    // the rough with a thin first-cut margin, so nothing leaks onto the fairway.
+    const eroded = new Uint8Array(nx * nz);
+    for (let i = 1; i < nx - 1; i++) {
+      for (let j = 1; j < nz - 1; j++) {
+        const idx = i * nz + j;
+        if (
+          playable[idx] &&
+          playable[(i - 1) * nz + j] &&
+          playable[(i + 1) * nz + j] &&
+          playable[i * nz + (j - 1)] &&
+          playable[i * nz + (j + 1)]
+        ) {
+          eroded[idx] = 1;
+        }
+      }
+    }
+    this.hg = { minX, minZ, cell, nx, nz, height, playable: eroded };
+  }
+
+  groundY(x, z) {
+    const hg = this.hg;
+    if (!hg) return 0;
+    const fx = (x - hg.minX) / hg.cell,
+      fz = (z - hg.minZ) / hg.cell;
+    let i = Math.max(0, Math.min(hg.nx - 2, Math.floor(fx)));
+    let j = Math.max(0, Math.min(hg.nz - 2, Math.floor(fz)));
+    const tx = Math.max(0, Math.min(1, fx - i)),
+      tz = Math.max(0, Math.min(1, fz - j));
+    const H = (a, b) => hg.height[a * hg.nz + b];
+    return (
+      H(i, j) * (1 - tx) * (1 - tz) +
+      H(i + 1, j) * tx * (1 - tz) +
+      H(i, j + 1) * (1 - tx) * tz +
+      H(i + 1, j + 1) * tx * tz
+    );
+  }
+
+  grassAllowed(x, z) {
+    const hg = this.hg;
+    if (!hg) return false;
+    const i = Math.max(
+      0,
+      Math.min(hg.nx - 1, Math.round((x - hg.minX) / hg.cell)),
+    );
+    const j = Math.max(
+      0,
+      Math.min(hg.nz - 1, Math.round((z - hg.minZ) / hg.cell)),
+    );
+    return hg.playable[i * hg.nz + j] === 1;
+  }
+
+  // ---- hole lifecycle ----
+  async loadHole(index) {
+    this.busy = true;
+    this.holeIndex = index;
+    this.holeComplete = false;
+    this.game.wind?.reset?.(); // fresh (non-editable) wind condition per hole
+    const cfg = COURSE_HOLES[index];
+
+    // Cache-bust: hole .glb files are served immutable, so version the request
+    // to pick up rebuilt geometry. Force the glb loader since the query hides the ext.
+    let res;
+    try {
+      res = await BABYLON.SceneLoader.ImportMeshAsync(
+        "",
+        "",
+        cfg.glb + "?v=" + HOLE_ASSET_VERSION,
+        this.scene,
+        null,
+        ".glb",
+      );
+    } catch (e) {
+      console.error(`Hole ${index + 1} geometry (${cfg.glb}) failed to load.`, e);
+      this.busy = false;
+      return;
+    }
+
+    let teeMarker = null;
+    let pinMarker = null;
+    let root = null;
+    const decorMarkers = [];
+    const surfMeshes = [];
+
+    for (const mesh of res.meshes) {
+      const name = mesh.name;
+      if (name === "__root__") {
+        root = mesh;
+        this.holeNodes.push(mesh);
+        continue;
+      }
+      if (name.startsWith("marker_tee")) {
+        teeMarker = mesh;
+        continue;
+      }
+      if (name.startsWith("marker_pin")) {
+        pinMarker = mesh;
+        continue;
+      }
+      if (name.startsWith("tree_") || name.startsWith("rock_")) {
+        decorMarkers.push(mesh); // <tree|rock>_<type>_<idx>
+        continue;
+      }
+      if (name.startsWith("surf_")) {
+        surfMeshes.push(mesh);
+        continue;
+      }
+    }
+
+    // Center the hole on the origin so it sits inside the distant scenery/mountain
+    // ring (esp. the long par 5). Do this BEFORE building colliders.
+    if (root) {
+      root.computeWorldMatrix(true);
+      const b = root.getHierarchyBoundingVectors(true);
+      root.position.x -= (b.min.x + b.max.x) / 2;
+      root.position.z -= (b.min.z + b.max.z) / 2;
+      root.computeWorldMatrix(true);
+    }
+    for (const m of surfMeshes) m.computeWorldMatrix(true);
+    for (const m of surfMeshes) this.setupSurface(m);
+
+    // Waterline (for water-hazard detection + keeping grass off submerged bed) —
+    // read from the water plane geometry BEFORE building the height grid.
+    const waterMesh = this.surfaceMeshes.find((m) =>
+      m.name.toLowerCase().startsWith("surf_water"),
+    );
+    this.waterlineY = waterMesh
+      ? waterMesh.getBoundingInfo().boundingBox.centerWorld.y
+      : -100;
+
+    this.buildHeightGrid(); // cheap height/playable lookup for grass + ball
+
+    // A hole is unplayable without its tee/pin markers — bail cleanly rather than
+    // throwing a TypeError deep in the render loop if the .glb is malformed.
+    if (!teeMarker || !pinMarker) {
+      console.error(`Hole ${index + 1} is missing marker_tee/marker_pin; skipping.`);
+      this.busy = false;
+      return;
+    }
+
+    // Tee / pin world positions from markers, then discard markers
+    teeMarker.computeWorldMatrix(true);
+    pinMarker.computeWorldMatrix(true);
+    this.tee = teeMarker.getAbsolutePosition().clone();
+    this.cup = pinMarker.getAbsolutePosition().clone();
+
+    // Trees + rocks (instanced from decor.glb)
+    this.treeZones = [];
+    for (const dm of decorMarkers) {
+      dm.computeWorldMatrix(true);
+      const parts = dm.name.split("_"); // <tree|rock>_<type>_<idx>
+      const type = parts[1] || "tree1";
+      const pos = dm.getAbsolutePosition().clone();
+      const isTree = dm.name.startsWith("tree_");
+      let s = Math.abs(dm.absoluteScaling.x) || 1;
+      if (isTree) s *= 3; // trees 3x bigger (relative to the pin)
+      // Sink the trunk base a little into the turf so it never peeks/floats over
+      // undulating ground (bigger tree → deeper plant).
+      if (isTree) pos.y -= 0.5 + 0.25 * s;
+      const yaw =
+        (dm.rotationQuaternion
+          ? dm.rotationQuaternion.toEulerAngles().y
+          : dm.rotation.y) || 0;
+      const inst = this.decor.place(type, pos, yaw, s);
+      if (inst) this.holeNodes.push(inst);
+      if (isTree) {
+        // Pass-through canopy that slows the ball (no solid trunk collision)
+        this.treeZones.push({
+          x: pos.x,
+          z: pos.z,
+          r: 2.4 * s,
+          y0: pos.y - 0.5,
+          y1: pos.y + 7 * s,
+        });
+      } else {
+        this.addDecorCollider(dm.name, pos, s); // rocks stay solid
+      }
+      dm.dispose();
+    }
+    teeMarker.dispose();
+    pinMarker.dispose();
+
+    // Cup / flag / sink detection. Point auto-aim at THIS hole's cup (otherwise
+    // it keeps aiming at the previous hole's now-disposed pin).
+    this.pinManager.addPin(this.cup.clone(), this.scene);
+    this.game.currentHolePin =
+      this.pinManager.pins[this.pinManager.pins.length - 1];
+
+    // Position ball + drone flyover
+    this.placeBallAtTee();
+    this.hud.setHole(cfg.id, cfg.par, cfg.name);
+    this.game.isControlsDisabled = true;
+    this.game.aimView?.deactivate?.();
+
+    const drone = new DroneCamera(this.scene);
+    await drone.fly(
+      this.tee.clone(),
+      this.cup.clone(),
+      this.game.camera.camera,
+    );
+
+    this.beginTurn();
+  }
+
+  // Invisible collider so trees (trunk) and rocks actually block/deflect the ball.
+  addDecorCollider(markerName, pos, scale) {
+    let col, shape, opts;
+    if (markerName.startsWith("tree_")) {
+      const h = 5 * scale;
+      col = BABYLON.MeshBuilder.CreateCylinder(
+        "trunkCol",
+        { height: h, diameter: 0.9 * scale, tessellation: 6 },
+        this.scene,
+      );
+      col.position = new BABYLON.Vector3(pos.x, pos.y + h / 2, pos.z);
+      shape = BABYLON.PhysicsShapeType.CYLINDER;
+      opts = { mass: 0, friction: 0.7, restitution: 0.4 };
+    } else {
+      const r = 1.1 * scale;
+      col = BABYLON.MeshBuilder.CreateSphere(
+        "rockCol",
+        { diameter: 2 * r, segments: 6 },
+        this.scene,
+      );
+      col.position = new BABYLON.Vector3(pos.x, pos.y + 0.6 * r, pos.z);
+      shape = BABYLON.PhysicsShapeType.SPHERE;
+      opts = { mass: 0, friction: 0.8, restitution: 0.45 };
+    }
+    col.isVisible = false;
+    col.isPickable = false;
+    const agg = new BABYLON.PhysicsAggregate(col, shape, opts, this.scene);
+    this.holeAggregates.push(agg);
+    this.holeNodes.push(col);
+  }
+
+  setupSurface(mesh) {
+    const type = this.surfaces.forSurfaceName(mesh.name);
+    mesh.material = this.surfaces.mats[type];
+    mesh.isPickable = true; // used by surface ray + grass sampling
+    mesh.receiveShadows = true;
+    this.surfaceMeshes.push(mesh);
+    if (type !== "water") {
+      const phys = SURFACE_PHYSICS[type] || SURFACE_PHYSICS.rough;
+      const agg = new BABYLON.PhysicsAggregate(
+        mesh,
+        BABYLON.PhysicsShapeType.MESH,
+        { mass: 0, friction: phys.friction, restitution: phys.restitution },
+        this.scene,
+      );
+      this.holeAggregates.push(agg);
+    }
+  }
+
+  placeBallAtTee(yOffset = 0.4) {
+    const pos = this.tee.clone();
+    pos.y += yOffset;
+    this.game.ballStartPosition = pos.clone();
+    this.game.golfBall.startPosition = pos.clone();
+    this.game.golfBall.reset();
+    this.lastLie = pos.clone();
+  }
+
+  // Low-poly wooden tee peg for driver tee shots on the longer holes.
+  makeTeePeg(pos, pegH) {
+    const peg = BABYLON.MeshBuilder.CreateCylinder(
+      "teePeg",
+      { height: pegH, diameterTop: 0.6, diameterBottom: 0.14, tessellation: 7 },
+      this.scene,
+    );
+    peg.position = new BABYLON.Vector3(pos.x, pos.y + pegH / 2, pos.z);
+    const mat = new BABYLON.StandardMaterial("teePegMat", this.scene);
+    mat.diffuseColor = new BABYLON.Color3(0.95, 0.9, 0.82);
+    mat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+    peg.material = mat;
+    peg.isPickable = false;
+    peg.receiveShadows = true;
+    // Collider so the ball rests teed-up until struck.
+    this.teePegAgg = new BABYLON.PhysicsAggregate(
+      peg,
+      BABYLON.PhysicsShapeType.CYLINDER,
+      { mass: 0, friction: 0.6, restitution: 0.1 },
+      this.scene,
+    );
+    return peg;
+  }
+
+  disposeTeePeg() {
+    if (this.teePegAgg) {
+      try {
+        this.teePegAgg.dispose();
+      } catch (e) {}
+      this.teePegAgg = null;
+    }
+    if (this.teePeg) {
+      this.teePeg.dispose();
+      this.teePeg = null;
+    }
+  }
+
+  beginTurn() {
+    this.busy = false; // player may act
+    this.game.currentHoleShotCount = 0;
+    this.holeSinkGuardReset();
+    this.disposeTeePeg();
+
+    // Tee the ball up when the shot warrants a wood/driver (by distance to pin).
+    const distYd =
+      BABYLON.Vector3.Distance(this.tee, this.cup) * UNITS.M_TO_YARDS;
+    const bestClub =
+      this.game.aimView?.clubSelector?.findBestClubForDistance(distYd) ?? 0;
+    const useTee = bestClub >= 10; // 3 Wood / 5 Wood / Driver
+    const pegH = 1.4;
+    this.placeBallAtTee(useTee ? pegH + 0.25 : 0.4);
+    if (useTee) this.teePeg = this.makeTeePeg(this.tee, pegH);
+
+    // Aim the camera down the hole toward the pin (behind-ball view).
+    // Normalize to [-pi,pi] so the aim→strike camera lerp doesn't wrap the long way.
+    const dx = this.cup.x - this.tee.x;
+    const dz = this.cup.z - this.tee.z;
+    const bearing = this.game.normalizeAngle(Math.atan2(dx, dz) + Math.PI);
+    this.game.gameState = GameState.AIM;
+    this.game.isControlsDisabled = false;
+    if (this.game.aimView) {
+      this.game.aimView.cameraRotation = bearing;
+      this.game.aimView.activate();
+      // Default the tee shot to a driver (and lock it until the player re-aims).
+      if (useTee && this.game.aimView.clubSelector) {
+        this.game.aimView.clubSelector.currentClub = 12;
+        this.game.aimView.clubSelector.manuallySelectedClub = true;
+      }
+    }
+    this.game.circleUIManager?.showStatsCircle();
+    this.game.circleUIManager?.showCompassCircle();
+  }
+
+  holeSinkGuardReset() {
+    this.game.holeSinkProcessed = false;
+    this.game.clearArchivedTrails?.();
+  }
+
+  // ---- per-frame ----
+  frame() {
+    if (!this.game.golfBall) return;
+    const ball = this.game.golfBall;
+    // Keep airborne/landing tests relative to the terrain under the ball
+    const bp = ball.getPosition();
+    if (this.hg) ball.heightRef = this.groundY(bp.x, bp.z);
+
+    // Out of bounds: ball rolled/flew off the hole terrain (an island) and is
+    // falling into the void — take a penalty drop instead of falling forever.
+    if (!this.busy && !this.holeComplete && bp.y < -15) {
+      this.applyPenalty("Out of bounds — +1");
+      return;
+    }
+
+    // Trees: when the ball enters a canopy it's deflected out ONCE — losing
+    // energy and kicking out in a random-but-forward-biased direction — instead
+    // of being continuously slowed (which used to freeze it inside the tree).
+    let zoneNow = null;
+    if (this.treeZones) {
+      for (const z of this.treeZones) {
+        if (bp.y < z.y1 && bp.y > z.y0) {
+          const dx = bp.x - z.x,
+            dz = bp.z - z.z;
+          if (dx * dx + dz * dz < z.r * z.r) {
+            zoneNow = z;
+            break;
+          }
+        }
+      }
+    }
+    if (zoneNow && zoneNow !== this._treeZone) this.treeBounce(ball);
+    this._treeZone = zoneNow;
+
+    // Remove the tee peg once the ball has been struck off it.
+    if (this.teePeg && this.tee && BABYLON.Vector3.Distance(bp, this.tee) > 3) {
+      this.disposeTeePeg();
+    }
+  }
+
+  // Deflect the ball out of a tree it just entered: lose most of its energy and
+  // kick out at a random angle biased toward its original heading, with a small
+  // upward pop and some spin — like clattering through the branches.
+  treeBounce(ball) {
+    const v = ball.getVelocity();
+    const hs = Math.hypot(v.x, v.z);
+    if (hs < 2) return; // too slow to bounce out meaningfully
+    const keep = 0.3 + Math.random() * 0.25; // lose ~45–70% of horizontal speed
+    const newHs = hs * keep;
+    const heading =
+      Math.atan2(v.x, v.z) + (Math.random() - 0.5) * Math.PI * 0.5; // ±45° bias forward
+    const nvy = Math.max(1.0, v.y * 0.3) + Math.random() * 2.0; // pop up out of the tree
+    ball.body.setLinearVelocity(
+      new BABYLON.Vector3(
+        Math.sin(heading) * newHs,
+        nvy,
+        Math.cos(heading) * newHs,
+      ),
+    );
+    ball.body.setAngularVelocity(
+      new BABYLON.Vector3(
+        (Math.random() - 0.5) * 12,
+        (Math.random() - 0.5) * 12,
+        (Math.random() - 0.5) * 12,
+      ),
+    );
+    ball.landed = false;
+    ball.touchedGround = false;
+  }
+
+  // ---- events ----
+  onBallLanded(pos) {
+    if (this.busy || this.holeComplete) return;
+    // Water hazard: resting below the waterline
+    if (pos.y < this.waterlineY - 0.15) {
+      this.applyWaterPenalty();
+      return;
+    }
+    this.lastLie = pos.clone();
+  }
+
+  applyPenalty(msg) {
+    this.game.currentHoleShotCount += 1; // penalty stroke
+    this.hud.flash(msg, 1800);
+    const drop = (this.lastLie || this.tee).clone();
+    drop.y += 0.5;
+    this.game.golfBall.startPosition = drop.clone();
+    this.game.golfBall.reset();
+    this.game._awaitingSettle = false;
+    this.game.gameState = GameState.AIM;
+    this.game.aimView?.activate();
+  }
+
+  applyWaterPenalty() {
+    this.applyPenalty("💦 Water — +1");
+  }
+
+  onHoleSink(holePos) {
+    if (this.holeComplete) return;
+    this.holeComplete = true;
+    this.busy = true;
+    const par = COURSE_HOLES[this.holeIndex].par;
+    const strokes = Math.max(1, this.game.currentHoleShotCount);
+    this.players[this.currentPlayer].scores[this.holeIndex] = strokes;
+    this.hud.flash(CourseUI.scoreName(strokes, par), 2600);
+    setTimeout(() => this.advance(), 2800);
+  }
+
+  advance() {
+    // Next player on the same hole?
+    if (this.currentPlayer < this.players.length - 1) {
+      this.currentPlayer += 1;
+      this.holeComplete = false;
+      this.busy = false;
+      this.hud.flash(
+        `${this.players[this.currentPlayer].name} — tee off`,
+        1600,
+      );
+      this.beginTurn();
+      return;
+    }
+    // Otherwise advance to the next hole
+    this.currentPlayer = 0;
+    if (this.holeIndex < COURSE_HOLES.length - 1) {
+      this.disposeHole();
+      this.loadHole(this.holeIndex + 1);
+    } else {
+      this.hud.hide();
+      Scoreboard.show(this.players, COURSE_HOLES);
+    }
+  }
+
+  disposeHole() {
+    this.disposeTeePeg();
+    this.treeZones = [];
+    this.game.currentHolePin = null; // avoid auto-aiming at the old cup
+    for (const agg of this.holeAggregates) {
+      try {
+        agg.dispose();
+      } catch (e) {}
+    }
+    this.holeAggregates = [];
+    for (const node of this.holeNodes) {
+      try {
+        node.getChildMeshes?.().forEach((m) => m.dispose());
+        node.dispose();
+      } catch (e) {}
+    }
+    this.holeNodes = [];
+    this.surfaceMeshes = [];
+    // dispose pins/flags/cups
+    if (this.pinManager?.pins) {
+      for (const pin of this.pinManager.pins) {
+        try {
+          pin.body?.dispose?.();
+          pin.mesh?.dispose();
+          pin.flagMesh?.dispose();
+          pin.flagPivot?.dispose();
+          pin.hole?.dispose();
+          // Materials/textures aren't freed by mesh.dispose() — do it explicitly.
+          // flagMat's texture is the shared static cache, so dispose the material
+          // but NOT its diffuseTexture.
+          pin.poleMat?.dispose();
+          pin.flagMat?.dispose();
+          pin.holeMat?.dispose();
+          pin.stripeTexture?.dispose();
+        } catch (e) {}
+      }
+      this.pinManager.pins = [];
+    }
+    this._pickCache = null;
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// APPLICATION BOOTSTRAP
+// ═════════════════════════════════════════════════════════════════════════════
+
+async function startGame(options = {}) {
+  try {
+    const canvas = document.getElementById("renderCanvas");
+    const game = new GolfGame(canvas, options);
+    window.game = game; // Global reference for debugging
+    await game.initialize();
+    return game;
+  } catch (error) {
+    // Log the full error (stack included) for debugging; the individual asset
+    // loaders now fail soft, so reaching here means something fundamental broke.
+    console.error("Game initialization failed:", error);
+    alert("Failed to initialize game: " + (error?.message || error));
+  }
+}
+
+// Show the start menu (Practice sandbox vs 3-hole Course). BallsMenu is defined
+// in the course module appended below. Guarded so this file can be require()d in
+// Node (no DOM) for unit tests without auto-booting the menu.
+if (typeof document !== "undefined") {
+  BallsMenu.init(startGame);
+}
+
+// Node-only export seam: lets the framework-free gameplay logic (unit math, club
+// selection, wind, config) be unit-tested with `node --test`. No-op in browsers,
+// where `module` is undefined.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    CONFIG,
+    GameState,
+    Utils,
+    ClubData,
+    ClubSelector,
+    Wind,
+    PhysicsConfig,
+  };
+}
