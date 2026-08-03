@@ -1,5 +1,5 @@
-// Flat ESLint config (ESLint 9+). game.js is a classic browser <script> (globals,
-// no module system); the tests, server, and tooling are CommonJS Node.
+// Flat ESLint config (ESLint 9+). game.js + clubhouse.js are classic browser <script>s
+// (globals, no module system); the tests, server, and tooling are CommonJS Node.
 // Run: `npm install` then `npm run lint`.
 const js = require("@eslint/js");
 
@@ -9,6 +9,11 @@ const browserGlobals = {
   window: "readonly",
   document: "readonly",
   navigator: "readonly",
+  location: "readonly",
+  addEventListener: "readonly",
+  removeEventListener: "readonly",
+  URLSearchParams: "readonly",
+  WebSocket: "readonly",
   console: "readonly",
   performance: "readonly",
   localStorage: "readonly",
@@ -20,6 +25,7 @@ const browserGlobals = {
   clearInterval: "readonly",
   fetch: "readonly",
   Image: "readonly",
+  alert: "readonly",
   module: "writable",
 };
 
@@ -35,12 +41,12 @@ const nodeGlobals = {
 };
 
 module.exports = [
-  { ignores: ["node_modules/**", "vendor/**", "assets/**"] },
+  { ignores: ["node_modules/**", "vendor/**", "babylon/**", "assets/**"] },
   js.configs.recommended,
   {
-    files: ["game.js"],
+    files: ["game.js", "clubhouse.js"],
     languageOptions: {
-      ecmaVersion: 2021,
+      ecmaVersion: 2022, // game.js uses static class fields (ES2022)
       sourceType: "script",
       globals: browserGlobals,
     },
@@ -58,6 +64,15 @@ module.exports = [
     },
     rules: {
       "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+    },
+  },
+  {
+    // club-*.js are Node puppeteer harnesses whose page.evaluate() bodies run in
+    // the browser and reference page globals — allow both (merges with the Node
+    // block above for require/module/process).
+    files: ["scripts/club-*.js"],
+    languageOptions: {
+      globals: { ...browserGlobals, ClubData: "readonly", Utils: "readonly" },
     },
   },
 ];

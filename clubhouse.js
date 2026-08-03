@@ -1,0 +1,2566 @@
+/* ============================================================================
+ * Balls — Clubhouse (the game's root)
+ *
+ * A standalone Babylon.js hangout: a country-club room with a PS1 look where
+ * players walk their gball around (Club-Penguin style), chat, and see each
+ * other in real time. Two doors lead out to the Course and the Range.
+ *
+ * Deliberately separate from the golf game (game.js): no Havok, no swing
+ * mechanics. Multiplayer is presence + chat only, served by the drawvidverse
+ * worldserver (GAME_KEY=clubhouse, port 7779). Works single-player if the
+ * server is unreachable.
+ * ========================================================================== */
+(function () {
+  "use strict";
+
+  // ---- config ----------------------------------------------------------------
+  const params = new URLSearchParams(location.search);
+  const isLocal =
+    location.hostname === "localhost" || location.hostname === "127.0.0.1";
+  const WS_URL =
+    params.get("ws") ||
+    (isLocal ? "ws://localhost:7779" : "wss://world-clubhouse.drawvid.com");
+
+  const ASSET_V = "12"; // bump to bust the immutable /assets cache after a rebuild
+  const AV_SCALE = 0.8; // gball model radius ~1 -> ~1.6 dia avatar
+  const MOVE_SPEED = 6.0; // units / second
+  const SEND_HZ = 10;
+  const DOOR_RADIUS = 2.6;
+
+  // Which room this page is showing (?room=vip loads the VIP lounge). Doors are
+  // plain page navigations, so each room is a fresh load — no in-place swapping.
+  const ROOM = params.get("room") === "vip" ? "vip" : "main";
+  const ROOM_CFG = {
+    main: {
+      glb: "clubhouse.glb",
+      area: 0,
+      doors: {
+        course: { label: "COURSE", url: "game.html?mode=course" },
+        range: { label: "RANGE", url: "game.html?mode=practice" },
+        vip: { label: "MEMBERS", url: "index.html?room=vip" },
+      },
+    },
+    vip: {
+      glb: "vip_lounge.glb",
+      area: 1,
+      doors: { main: { label: "LOBBY", url: "index.html" } },
+    },
+  }[ROOM];
+  const MY_AREA = ROOM_CFG.area;
+  document.title =
+    ROOM === "vip" ? "Balls — Members Lounge" : "Balls Clubhouse";
+
+  const MY_NAME =
+    (localStorage.getItem("ballsName") || "").trim() ||
+    "Guest" + Math.floor(100 + Math.random() * 900);
+
+  // ---- boot ------------------------------------------------------------------
+  function whenReady() {
+    if (typeof BABYLON === "undefined" || !BABYLON.Engine) {
+      return setTimeout(whenReady, 30);
+    }
+    start().catch((e) => console.error("[clubhouse] fatal", e));
+  }
+  whenReady();
+
+  // ---- PS1 procedural textures ----------------------------------------------
+  // Small, nearest-sampled, painterly = "impressionist PS1".
+  function woodTexture(scene) {
+    const S = 128;
+    const dt = new BABYLON.DynamicTexture("woodTex", S, scene, false);
+    const ctx = dt.getContext();
+    // warm oak base with horizontal grain bands
+    for (let y = 0; y < S; y++) {
+      const t = Math.sin(y * 0.26) * 0.5 + Math.sin(y * 0.07 + 1) * 0.5;
+      const sh = 1 + t * 0.16;
+      ctx.fillStyle = `rgb(${(150 * sh) | 0},${(96 * sh) | 0},${(48 * sh) | 0})`;
+      ctx.fillRect(0, y, S, 1);
+    }
+    // wavy grain streaks (impressionist brush), both dark and light
+    for (let i = 0; i < 190; i++) {
+      const y0 = Math.random() * S;
+      const dark = Math.random() < 0.55;
+      ctx.strokeStyle = dark
+        ? `rgba(78,44,18,${0.2 + Math.random() * 0.35})`
+        : `rgba(208,156,96,${0.14 + Math.random() * 0.3})`;
+      ctx.lineWidth = 1 + Math.random();
+      ctx.beginPath();
+      let yy = y0;
+      ctx.moveTo(0, yy);
+      for (let x = 0; x <= S; x += 6) {
+        yy += (Math.random() - 0.5) * 2.0;
+        ctx.lineTo(x, yy);
+      }
+      ctx.stroke();
+    }
+    // plank seams
+    ctx.strokeStyle = "rgba(42,22,8,0.85)";
+    ctx.lineWidth = 1;
+    for (let p = 1; p < 3; p++) {
+      const y = (p * S) / 3;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(S, y);
+      ctx.stroke();
+    }
+    dt.update();
+    dt.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
+    dt.wrapU = dt.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
+    return dt;
+  }
+
+  function shagTexture(scene) {
+    const S = 96;
+    const dt = new BABYLON.DynamicTexture("shagTex", S, scene, false);
+    const ctx = dt.getContext();
+    ctx.fillStyle = "rgb(18,46,26)"; // dark green
+    ctx.fillRect(0, 0, S, S);
+    // fuzzy vertical shag streaks
+    for (let i = 0; i < 4200; i++) {
+      const x = Math.random() * S;
+      const y = Math.random() * S;
+      const len = 2 + Math.random() * 4;
+      const lift = Math.random();
+      const r = 10 + lift * 34;
+      const g = 40 + lift * 70;
+      const b = 20 + lift * 30;
+      ctx.strokeStyle = `rgba(${r | 0},${g | 0},${b | 0},0.5)`;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + (Math.random() - 0.5) * 1.5, y - len);
+      ctx.stroke();
+    }
+    dt.update();
+    dt.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
+    dt.wrapU = dt.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
+    return dt;
+  }
+
+  // Build a tangent-space normal map from a height function (finite differences),
+  // NEAREST-sampled to match the PS1 textures. Used for the shag + wood bump.
+  function normalMap(scene, name, S, heightFn, strength) {
+    const dt = new BABYLON.DynamicTexture(name, S, scene, false);
+    const ctx = dt.getContext();
+    const img = ctx.createImageData(S, S);
+    const h = new Float32Array(S * S);
+    for (let y = 0; y < S; y++)
+      for (let x = 0; x < S; x++) h[y * S + x] = heightFn(x, y, S);
+    for (let y = 0; y < S; y++)
+      for (let x = 0; x < S; x++) {
+        const hl = h[y * S + ((x - 1 + S) % S)],
+          hr = h[y * S + ((x + 1) % S)];
+        const hu = h[((y - 1 + S) % S) * S + x],
+          hd = h[((y + 1) % S) * S + x];
+        let nx = (hl - hr) * strength,
+          ny = (hd - hu) * strength,
+          nz = 1;
+        const inv = 1 / Math.hypot(nx, ny, nz);
+        nx *= inv;
+        ny *= inv;
+        nz *= inv;
+        const i = (y * S + x) * 4;
+        img.data[i] = ((nx * 0.5 + 0.5) * 255) | 0;
+        img.data[i + 1] = ((ny * 0.5 + 0.5) * 255) | 0;
+        img.data[i + 2] = ((nz * 0.5 + 0.5) * 255) | 0;
+        img.data[i + 3] = 255;
+      }
+    ctx.putImageData(img, 0, 0);
+    dt.update();
+    dt.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
+    dt.wrapU = dt.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
+    return dt;
+  }
+
+  // Compute per-vertex tangents from positions/uvs/normals so StandardMaterial
+  // normal-mapping works (glb box meshes ship without tangents -> bump renders black).
+  function computeTangents(mesh) {
+    const pos = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+    const nor = mesh.getVerticesData(BABYLON.VertexBuffer.NormalKind);
+    const uv = mesh.getVerticesData(BABYLON.VertexBuffer.UVKind);
+    const idx = mesh.getIndices();
+    if (!pos || !nor || !uv || !idx) return;
+    const n = pos.length / 3;
+    const acc = new Float32Array(n * 3);
+    for (let i = 0; i < idx.length; i += 3) {
+      const a = idx[i],
+        b = idx[i + 1],
+        c = idx[i + 2];
+      const e1x = pos[b * 3] - pos[a * 3],
+        e1y = pos[b * 3 + 1] - pos[a * 3 + 1],
+        e1z = pos[b * 3 + 2] - pos[a * 3 + 2];
+      const e2x = pos[c * 3] - pos[a * 3],
+        e2y = pos[c * 3 + 1] - pos[a * 3 + 1],
+        e2z = pos[c * 3 + 2] - pos[a * 3 + 2];
+      const du1 = uv[b * 2] - uv[a * 2],
+        dv1 = uv[b * 2 + 1] - uv[a * 2 + 1];
+      const du2 = uv[c * 2] - uv[a * 2],
+        dv2 = uv[c * 2 + 1] - uv[a * 2 + 1];
+      const r = du1 * dv2 - du2 * dv1,
+        f = r !== 0 ? 1 / r : 0;
+      const tx = (dv2 * e1x - dv1 * e2x) * f,
+        ty = (dv2 * e1y - dv1 * e2y) * f,
+        tz = (dv2 * e1z - dv1 * e2z) * f;
+      for (const vi of [a, b, c]) {
+        acc[vi * 3] += tx;
+        acc[vi * 3 + 1] += ty;
+        acc[vi * 3 + 2] += tz;
+      }
+    }
+    const out = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      let tx = acc[i * 3],
+        ty = acc[i * 3 + 1],
+        tz = acc[i * 3 + 2];
+      const nx = nor[i * 3],
+        ny = nor[i * 3 + 1],
+        nz = nor[i * 3 + 2];
+      const d = nx * tx + ny * ty + nz * tz;
+      tx -= nx * d;
+      ty -= ny * d;
+      tz -= nz * d;
+      const len = Math.hypot(tx, ty, tz) || 1;
+      out[i * 4] = tx / len;
+      out[i * 4 + 1] = ty / len;
+      out[i * 4 + 2] = tz / len;
+      out[i * 4 + 3] = 1;
+    }
+    mesh.setVerticesData(BABYLON.VertexBuffer.TangentKind, out, false);
+  }
+
+  // Low-poly impressionist stone: mottled grey daubs + irregular cracks.
+  function stoneTexture(scene) {
+    const S = 128;
+    const dt = new BABYLON.DynamicTexture("stoneTex", S, scene, false);
+    const ctx = dt.getContext();
+    ctx.fillStyle = "rgb(122,119,112)";
+    ctx.fillRect(0, 0, S, S);
+    for (let i = 0; i < 520; i++) {
+      const x = Math.random() * S,
+        y = Math.random() * S,
+        r = 3 + Math.random() * 7;
+      const v = 88 + Math.random() * 74;
+      ctx.fillStyle = `rgba(${v | 0},${(v - 4) | 0},${(v - 11) | 0},0.5)`;
+      ctx.beginPath();
+      ctx.ellipse(x, y, r, r * 0.72, Math.random() * 3, 0, 7);
+      ctx.fill();
+    }
+    ctx.strokeStyle = "rgba(68,66,62,0.5)";
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 42; i++) {
+      let x = Math.random() * S,
+        y = Math.random() * S;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      for (let k = 0; k < 4; k++) {
+        x += (Math.random() - 0.5) * 22;
+        y += (Math.random() - 0.5) * 22;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    dt.update();
+    dt.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
+    dt.wrapU = dt.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
+    return dt;
+  }
+
+  function flatMat(name, scene, tex, tint) {
+    const m = new BABYLON.StandardMaterial(name, scene);
+    m.diffuseTexture = tex || null;
+    m.specularColor = new BABYLON.Color3(0, 0, 0); // no shine -> PS1 flat
+    m.emissiveColor = new BABYLON.Color3(0.13, 0.13, 0.13); // small floor so shadows aren't pure black
+    if (tint) m.diffuseColor = tint;
+    return m;
+  }
+
+  // Flat solid color with a small self-lit floor (so shadows/shading read naturally).
+  function colorMat(name, scene, color) {
+    const m = new BABYLON.StandardMaterial(name, scene);
+    m.diffuseColor = color;
+    m.specularColor = new BABYLON.Color3(0, 0, 0);
+    m.emissiveColor = color.scale(0.16);
+    return m;
+  }
+
+  // ---- main ------------------------------------------------------------------
+  async function start() {
+    const canvas = document.getElementById("renderCanvas");
+    const engine = new BABYLON.Engine(canvas, true, {
+      preserveDrawingBuffer: true,
+      stencil: true,
+    });
+    const scene = new BABYLON.Scene(engine);
+    scene.clearColor = new BABYLON.Color4(0, 0, 0, 1); // black void — the room floats
+    scene.ambientColor = new BABYLON.Color3(1, 1, 1);
+
+    const hemi = new BABYLON.HemisphericLight(
+      "hemi",
+      new BABYLON.Vector3(0.25, 1, 0.15),
+      scene,
+    );
+    hemi.intensity = 0.26; // low base fill — the wall sconces do the work now
+    hemi.diffuse = new BABYLON.Color3(0.82, 0.84, 0.95);
+    hemi.groundColor = new BABYLON.Color3(0.22, 0.2, 0.24);
+    const keyLight = new BABYLON.DirectionalLight(
+      "key",
+      new BABYLON.Vector3(-0.5, -1.05, 0.4),
+      scene,
+    );
+    keyLight.position = new BABYLON.Vector3(9, 26, -9);
+    keyLight.intensity = 0.5; // dimmed so it no longer reads as an overhead source (kept for the contact shadow)
+    keyLight.diffuse = new BABYLON.Color3(1.0, 0.95, 0.84); // warm key
+    const shadow = new BABYLON.ShadowGenerator(1024, keyLight);
+    // Poisson soft shadows — PCF renders nothing in this Babylon build; Poisson
+    // gives a soft, moody contact shadow that actually shows on the carpet.
+    shadow.usePoissonSampling = true;
+    shadow.setDarkness(0.38);
+    shadow.bias = 0.006;
+    let fireLight = null; // warm flicker light at the hearth (set after the room loads)
+
+    const CAM_BETA = 1.12; // lower angle, close to the original golf-style camera
+    const camera = new BABYLON.ArcRotateCamera(
+      "cam",
+      -Math.PI / 2,
+      CAM_BETA,
+      16,
+      new BABYLON.Vector3(0, 1, 0),
+      scene,
+    );
+    camera.attachControl(canvas, true);
+    camera.lowerRadiusLimit = 12;
+    camera.upperRadiusLimit = 20;
+    camera.lowerBetaLimit = CAM_BETA; // lock the vertical angle low
+    camera.upperBetaLimit = CAM_BETA;
+    camera.wheelPrecision = 18;
+    camera.panningSensibility = 0; // no panning; target follows the avatar
+    camera.fov = 0.72;
+    camera.maxZ = 220; // small room; a modest far clip is plenty
+
+    // -- clubhouse building --
+    const woodTex = woodTexture(scene);
+    const shagTex = shagTexture(scene);
+    const stoneTex = stoneTexture(scene);
+    const woodMat = flatMat("wood", scene, woodTex);
+    woodMat.emissiveColor = new BABYLON.Color3(0.13, 0.11, 0.07);
+    // wood-grain bump: horizontal grain ridges (varies down the grain, +a little jitter)
+    woodMat.bumpTexture = normalMap(
+      scene,
+      "woodBump",
+      128,
+      (x, y) =>
+        0.5 +
+        (Math.sin(y * 0.26) * 0.5 + Math.sin(y * 0.07 + 1) * 0.5) * 0.4 +
+        (Math.random() - 0.5) * 0.08,
+      2.6,
+    );
+    woodMat.bumpTexture.level = 0.8;
+    const shagMat = flatMat("shag", scene, shagTex);
+    // shag bump: dense random fuzz
+    shagMat.bumpTexture = normalMap(
+      scene,
+      "shagBump",
+      96,
+      () => Math.random(),
+      0.9,
+    );
+    shagMat.bumpTexture.level = 0.7;
+    const stoneMat = flatMat("stone", scene, stoneTex);
+    stoneMat.emissiveColor = new BABYLON.Color3(0.15, 0.15, 0.15);
+    const creamMat = colorMat(
+      "cream",
+      scene,
+      new BABYLON.Color3(0.86, 0.75, 0.48),
+    ); // preppy warm gold walls
+    const trimMat = colorMat(
+      "trim",
+      scene,
+      new BABYLON.Color3(0.98, 0.96, 0.89),
+    ); // (unused now, wainscot is wood)
+    const doorWoodMat = colorMat(
+      "doorWood",
+      scene,
+      new BABYLON.Color3(0.4, 0.24, 0.11),
+    ); // solid wood door
+    const brassMat = colorMat(
+      "brass",
+      scene,
+      new BABYLON.Color3(0.82, 0.63, 0.2),
+    ); // doorknob
+    const feltMat = colorMat(
+      "felt",
+      scene,
+      new BABYLON.Color3(0.1, 0.42, 0.17),
+    );
+    const metalMat = colorMat(
+      "metal",
+      scene,
+      new BABYLON.Color3(0.8, 0.82, 0.85),
+    );
+    const leatherMat = colorMat(
+      "leather",
+      scene,
+      new BABYLON.Color3(0.34, 0.08, 0.09),
+    );
+    const darkMat = colorMat(
+      "dark",
+      scene,
+      new BABYLON.Color3(0.05, 0.05, 0.06),
+    );
+    const vipFloorMat = colorMat(
+      "floorVip",
+      scene,
+      new BABYLON.Color3(0.17, 0.07, 0.07),
+    );
+    const fireRedMat = colorMat(
+      "fireRed",
+      scene,
+      new BABYLON.Color3(0.85, 0.12, 0.05),
+    );
+    fireRedMat.emissiveColor = new BABYLON.Color3(0.9, 0.14, 0.05);
+    const fireOrangeMat = colorMat(
+      "fireOrange",
+      scene,
+      new BABYLON.Color3(1.0, 0.42, 0.06),
+    );
+    fireOrangeMat.emissiveColor = new BABYLON.Color3(1.0, 0.44, 0.07);
+    const fireYellowMat = colorMat(
+      "fireYellow",
+      scene,
+      new BABYLON.Color3(1.0, 0.8, 0.2),
+    );
+    fireYellowMat.emissiveColor = new BABYLON.Color3(1.0, 0.82, 0.26);
+    const flameMeshes = []; // low-poly fire cones to flicker each frame
+
+    // Inward normal of the axis-aligned wall nearest `pos` (so signs/windows face
+    // straight off their wall, not diagonally toward the room centre).
+    function wallInward(pos) {
+      if (Math.abs(pos.x) > Math.abs(pos.z))
+        return new BABYLON.Vector3(-Math.sign(pos.x), 0, 0);
+      return new BABYLON.Vector3(0, 0, -Math.sign(pos.z));
+    }
+
+    // Door sign: dark-brown block text on a wood plaque, mounted flush on the
+    // wall above the door, facing into the room (no billboard).
+    function makeDoorLabel(text, pos) {
+      const W = 256,
+        Hh = 80;
+      const dt = new BABYLON.DynamicTexture(
+        "lbl_" + text,
+        { width: W, height: Hh },
+        scene,
+        false,
+      );
+      const ctx = dt.getContext();
+      ctx.clearRect(0, 0, W, Hh);
+      // wood frame border (distinguished look), with a little grain + darker edge
+      ctx.fillStyle = "#6b4a24";
+      ctx.fillRect(0, 0, W, Hh);
+      ctx.fillStyle = "#5a3d1e";
+      ctx.fillRect(0, 0, W, 4);
+      ctx.fillRect(0, Hh - 4, W, 4);
+      ctx.strokeStyle = "rgba(58,36,15,0.45)";
+      ctx.lineWidth = 1;
+      for (let gy = 9; gy < Hh; gy += 8) {
+        ctx.beginPath();
+        ctx.moveTo(0, gy);
+        ctx.lineTo(W, gy);
+        ctx.stroke();
+      }
+      // green sign face inset within the frame + a thin dark bevel line
+      ctx.fillStyle = "#2e8b48";
+      ctx.fillRect(13, 13, W - 26, Hh - 26);
+      ctx.strokeStyle = "rgba(30,20,8,0.7)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(13, 13, W - 26, Hh - 26);
+      ctx.fillStyle = "#ffffff"; // white block font
+      let fs = 52; // shrink the font so longer labels (e.g. MEMBERS LOUNGE) fit the plaque
+      ctx.font = "bold " + fs + "px 'Arial Black', Impact, sans-serif";
+      while (ctx.measureText(text).width > W - 30 && fs > 14) {
+        fs -= 2;
+        ctx.font = "bold " + fs + "px 'Arial Black', Impact, sans-serif";
+      }
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, W / 2, Hh / 2 + 3);
+      dt.update();
+      dt.hasAlpha = true;
+      dt.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
+      const mat = new BABYLON.StandardMaterial("lblMat_" + text, scene);
+      mat.diffuseTexture = dt; // supplies alpha
+      mat.diffuseTexture.hasAlpha = true;
+      mat.useAlphaFromDiffuseTexture = true;
+      mat.emissiveTexture = dt; // self-lit so plaque + text read at true color
+      mat.emissiveColor = new BABYLON.Color3(1, 1, 1);
+      mat.diffuseColor = new BABYLON.Color3(0, 0, 0);
+      mat.disableLighting = true;
+      mat.specularColor = new BABYLON.Color3(0, 0, 0);
+      mat.backFaceCulling = false;
+      const plane = BABYLON.MeshBuilder.CreatePlane(
+        "lblPlane_" + text,
+        { width: 2.4, height: 0.55 },
+        scene,
+      );
+      plane.material = mat;
+      const inward = wallInward(pos); // straight off the wall (fixes off-centre doors like VIP)
+      // raised into the gap between the door-frame top (~2.9) and the wall top
+      // (3.6) so the plaque sits above the frame, not overlapping it
+      plane.position.set(
+        pos.x + inward.x * 0.16,
+        pos.y + 1.96,
+        pos.z + inward.z * 0.16,
+      );
+      plane.rotation.y = Math.atan2(inward.x, inward.z) + Math.PI; // face the room (text not mirrored)
+      plane.isPickable = false;
+    }
+
+    let spawn = new BABYLON.Vector3(0, 0, 0);
+    const doors = []; // {kind, mesh, pos}
+    const colliders = []; // furniture XZ boxes {minX,maxX,minZ,maxZ}
+    const dispensers = []; // {kind, grabPos, standPos, radius} — walk-up cig machine + beer conveyor
+    const PICKUP_R = 2.2; // how close you must be to grab from a dispenser
+    const clubMeshes = new Set(); // building meshes (for camera-occlusion fade)
+    let floorTopY = 0;
+    let bounds = { minX: -10, maxX: 10, minZ: -10, maxZ: 10 };
+
+    const room = await BABYLON.SceneLoader.ImportMeshAsync(
+      "",
+      "assets/3d/",
+      ROOM_CFG.glb + "?v=" + ASSET_V,
+      scene,
+      null,
+      ".glb",
+    );
+    const DOOR_KINDS = ["course", "range", "vip", "main"];
+    for (const mesh of room.meshes) {
+      if (!mesh.name || mesh.name === "__root__") continue;
+      mesh.computeWorldMatrix(true);
+      const n = mesh.name;
+      if (n.startsWith("marker_spawn")) {
+        spawn = mesh.getAbsolutePosition().clone();
+        mesh.setEnabled(false);
+      } else if (n.startsWith("door_")) {
+        const kind = DOOR_KINDS.find((k) => n.startsWith("door_" + k));
+        const cfg = kind && ROOM_CFG.doors[kind];
+        if (cfg) {
+          mesh.material = n.includes("knob") ? brassMat : doorWoodMat;
+          clubMeshes.add(mesh);
+          shadow.addShadowCaster(mesh);
+          mesh.receiveShadows = true;
+          if (n === "door_" + kind) {
+            // the main slab (not the panels/knob)
+            const pos = mesh.getAbsolutePosition().clone();
+            doors.push({ kind, mesh, pos, url: cfg.url, label: cfg.label });
+            makeDoorLabel(cfg.label, pos);
+          }
+        } else {
+          mesh.material = doorWoodMat;
+        }
+      } else if (n.startsWith("carpet_floor") || n.startsWith("floor_")) {
+        mesh.material = n.startsWith("floor_vip") ? vipFloorMat : shagMat;
+        mesh.receiveShadows = true;
+        const bb = mesh.getBoundingInfo().boundingBox;
+        floorTopY = bb.maximumWorld.y;
+        bounds = {
+          minX: bb.minimumWorld.x + 1.5,
+          maxX: bb.maximumWorld.x - 1.5,
+          minZ: bb.minimumWorld.z + 1.5,
+          maxZ: bb.maximumWorld.z - 1.5,
+        };
+      } else {
+        // props by material prefix (wood_* is the default)
+        if (n.startsWith("cream_field"))
+          mesh.material = woodMat; // wood wainscot panels
+        else if (n.startsWith("cream_"))
+          mesh.material = creamMat; // cream upper walls
+        else if (n.startsWith("trim_"))
+          mesh.material = woodMat; // wood wainscot molding
+        else if (n.startsWith("stone_")) mesh.material = stoneMat;
+        else if (n.startsWith("felt_")) mesh.material = feltMat;
+        else if (n.startsWith("metal_")) mesh.material = metalMat;
+        else if (n.startsWith("leather_")) mesh.material = leatherMat;
+        else if (n.startsWith("fire_")) {
+          mesh.material = n.startsWith("fire_red")
+            ? fireRedMat
+            : n.startsWith("fire_orange")
+              ? fireOrangeMat
+              : fireYellowMat;
+          flameMeshes.push(mesh);
+        } else if (n.startsWith("dark_")) mesh.material = darkMat;
+        else mesh.material = woodMat;
+        mesh.receiveShadows = true;
+        // walls + furniture cast shadows (skip tiny trim / logs / flames)
+        if (
+          /^(cream_wall|wood_(bar|bartop|table|fireplace|pooltable|cardtable|cardleg|barcart)|stone_fireplace|metal_fridge|leather_couch|wood_frame)/.test(
+            n,
+          )
+        ) {
+          shadow.addShadowCaster(mesh);
+        }
+        // walls + wainscot molding + door frames fade when they occlude the character
+        if (/^(cream_wall|cream_field|trim_|wood_frame)/.test(n))
+          clubMeshes.add(mesh);
+        // floor-standing furniture gets a simple XZ collision box
+        if (
+          /^(wood_(bar|table|fireplace|pooltable|cardtable|cardleg|barcart)|metal_fridge|leather_couch|stone_fireplace)/.test(
+            n,
+          )
+        ) {
+          const bb = mesh.getBoundingInfo().boundingBox;
+          colliders.push({
+            minX: bb.minimumWorld.x,
+            maxX: bb.maximumWorld.x,
+            minZ: bb.minimumWorld.z,
+            maxZ: bb.maximumWorld.z,
+          });
+        }
+      }
+    }
+    // give the wood + shag meshes tangents so their bump maps light correctly
+    for (const mesh of room.meshes) {
+      if (mesh.material === woodMat || mesh.material === shagMat)
+        computeTangents(mesh);
+    }
+    // warm hearth light that flickers with the fire (main clubhouse only)
+    if (flameMeshes.length) {
+      const fp = flameMeshes[0].getAbsolutePosition();
+      fireLight = new BABYLON.PointLight(
+        "fireLight",
+        new BABYLON.Vector3(fp.x, fp.y + 0.5, fp.z),
+        scene,
+      );
+      fireLight.diffuse = new BABYLON.Color3(1.0, 0.5, 0.16);
+      fireLight.specular = new BABYLON.Color3(0, 0, 0);
+      fireLight.intensity = 0.9;
+      fireLight.range = 17;
+    }
+
+    const avatarY = floorTopY + AV_SCALE * 0.84; // model half-height -> ball bottom sits on the floor
+
+    // ---- windows: framed panes flanking the COURSE/RANGE doors, showing a
+    // generic rolling-hills golf landscape (blue sky, clouds, green hills, a
+    // pond) painted to match the course palette — two evenly spaced per door ----
+    // Each of the four windows shows a DISTINCT hand-painted golf-country vista
+    // (blue sky, clouds, rolling green hills, water) in the course palette, plus
+    // a small golf accent (pin flag / lake / trees / bunker) so no two match.
+    const WIN_CFGS = [
+      {
+        skyTop: "#5fb4e6",
+        clouds: [
+          [54, 30, 11],
+          [182, 22, 14],
+          [120, 47, 8],
+        ],
+        hills: [
+          [78, 9, 0.0, "#3f7d2c"],
+          [92, 12, 2.1, "#569f31"],
+          [108, 8, 4.0, "#74c23c"],
+        ],
+        ponds: [[150, 117, 46, 11]],
+        flags: [[70, 88]],
+      },
+      {
+        skyTop: "#63b7e8",
+        clouds: [
+          [40, 26, 13],
+          [112, 20, 10],
+          [202, 34, 12],
+          [150, 50, 7],
+        ],
+        hills: [
+          [74, 7, 1.0, "#3a7629"],
+          [88, 10, 3.4, "#4f962e"],
+          [104, 10, 5.5, "#6fbd39"],
+        ],
+        ponds: [[126, 121, 86, 13]],
+        flags: [[206, 98]],
+      },
+      {
+        skyTop: "#5ab0e4",
+        clouds: [
+          [80, 24, 12],
+          [192, 30, 11],
+        ],
+        hills: [
+          [70, 12, 0.6, "#3d7a2b"],
+          [86, 15, 2.8, "#549c30"],
+          [104, 11, 4.6, "#72c03b"],
+        ],
+        ponds: [[54, 119, 32, 9]],
+        trees: [
+          [150, 98, 10],
+          [172, 102, 8],
+          [131, 103, 7],
+        ],
+      },
+      {
+        skyTop: "#6bbcea",
+        clouds: [
+          [50, 20, 10],
+          [130, 31, 13],
+          [212, 24, 11],
+        ],
+        hills: [
+          [76, 8, 1.6, "#40802d"],
+          [90, 11, 3.9, "#579f32"],
+          [106, 9, 5.9, "#75c33d"],
+        ],
+        ponds: [[198, 119, 38, 10]],
+        bunkers: [[96, 111, 26, 8]],
+        flags: [[120, 94]],
+      },
+    ];
+    function golfSceneTexture(v) {
+      const cfg = WIN_CFGS[v];
+      const W = 256,
+        Hh = 128;
+      const dt = new BABYLON.DynamicTexture(
+        "golfWin" + v,
+        { width: W, height: Hh },
+        scene,
+        false,
+      );
+      const ctx = dt.getContext();
+      // sky (deeper blue up top -> pale at the horizon)
+      const sky = ctx.createLinearGradient(0, 0, 0, Hh);
+      sky.addColorStop(0, cfg.skyTop);
+      sky.addColorStop(0.6, "#bfe6f7");
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, Hh);
+      // puffy clouds
+      ctx.fillStyle = "rgba(255,255,255,0.95)";
+      for (const [cx, cy, s] of cfg.clouds) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, s, 0, 7);
+        ctx.arc(cx + s, cy + s * 0.25, s * 0.8, 0, 7);
+        ctx.arc(cx - s, cy + s * 0.25, s * 0.8, 0, 7);
+        ctx.arc(cx + s * 0.4, cy - s * 0.4, s * 0.7, 0, 7);
+        ctx.fill();
+      }
+      // rolling hills, back (darker) to front (bright green)
+      for (const [base, amp, phase, color] of cfg.hills) {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(0, Hh);
+        for (let x = 0; x <= W; x += 6)
+          ctx.lineTo(x, base - Math.sin(x / 38 + phase) * amp);
+        ctx.lineTo(W, Hh);
+        ctx.closePath();
+        ctx.fill();
+      }
+      // sand bunkers
+      for (const [x, y, rx, ry] of cfg.bunkers || []) {
+        ctx.fillStyle = "#e6d6a2";
+        ctx.beginPath();
+        ctx.ellipse(x, y, rx, ry, 0, 0, 7);
+        ctx.fill();
+      }
+      // ponds / lakes (with a soft glint)
+      for (const [x, y, rx, ry] of cfg.ponds || []) {
+        ctx.fillStyle = "#2379db";
+        ctx.beginPath();
+        ctx.ellipse(x, y, rx, ry, 0, 0, 7);
+        ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,0.28)";
+        ctx.beginPath();
+        ctx.ellipse(
+          x - rx * 0.28,
+          y - ry * 0.3,
+          rx * 0.32,
+          Math.max(2, ry * 0.3),
+          0,
+          0,
+          7,
+        );
+        ctx.fill();
+      }
+      // trees (dark canopy on a short trunk)
+      for (const [x, gy, s] of cfg.trees || []) {
+        ctx.fillStyle = "#5b3a1e";
+        ctx.fillRect(x - 1, gy - s, 2, s + 1);
+        ctx.fillStyle = "#245e1c";
+        ctx.beginPath();
+        ctx.arc(x, gy - s, s * 0.95, 0, 7);
+        ctx.fill();
+      }
+      // pin flags
+      for (const [x, gy] of cfg.flags || []) {
+        ctx.strokeStyle = "#eaeaea";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(x, gy);
+        ctx.lineTo(x, gy - 14);
+        ctx.stroke();
+        ctx.fillStyle = "#d3202a";
+        ctx.beginPath();
+        ctx.moveTo(x, gy - 14);
+        ctx.lineTo(x + 9, gy - 11);
+        ctx.lineTo(x, gy - 8);
+        ctx.closePath();
+        ctx.fill();
+      }
+      dt.update();
+      dt.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
+      return dt;
+    }
+    // one unlit material per variant (needs BOTH diffuse & emissive textures or
+    // disableLighting renders it flat white)
+    function makeWinMat(v) {
+      const tex = golfSceneTexture(v);
+      const m = new BABYLON.StandardMaterial("winPaneMat" + v, scene);
+      m.diffuseTexture = tex;
+      m.emissiveTexture = tex;
+      m.emissiveColor = new BABYLON.Color3(1, 1, 1);
+      m.diffuseColor = new BABYLON.Color3(0, 0, 0);
+      m.disableLighting = true;
+      m.specularColor = new BABYLON.Color3(0, 0, 0);
+      m.backFaceCulling = false;
+      return m;
+    }
+    const winMats = ROOM === "main" ? [0, 1, 2, 3].map(makeWinMat) : [];
+    const parallaxWindows = []; // {tex, center, along} — vista slides with the camera
+    // a framed window pane `off` units along the wall from `door`
+    function makeWindow(door, off, mat) {
+      const inward = wallInward(door.pos); // straight off the wall
+      const along = new BABYLON.Vector3(inward.z, 0, -inward.x); // along the wall
+      const wy = 2.5;
+      const wx = door.pos.x + along.x * off,
+        wz = door.pos.z + along.z * off;
+      const roty = Math.atan2(inward.x, inward.z) + Math.PI; // face the room
+      // mount snug on the wall (small relief; not floating)
+      const frame = BABYLON.MeshBuilder.CreateBox(
+        "winFrame",
+        { width: 3.1, height: 1.7, depth: 0.14 },
+        scene,
+      );
+      frame.material = woodMat; // real PS1 wood grain (matches the door frames)
+      computeTangents(frame); // ...or the wood bump map renders black
+      frame.isPickable = false;
+      frame.receiveShadows = true;
+      frame.position.set(wx + inward.x * 0.15, wy, wz + inward.z * 0.15);
+      frame.rotation.y = roty;
+      const pane = BABYLON.MeshBuilder.CreatePlane(
+        "winPane",
+        { width: 2.7, height: 1.32 },
+        scene,
+      );
+      pane.material = mat;
+      pane.isPickable = false;
+      pane.position.set(wx + inward.x * 0.24, wy, wz + inward.z * 0.24);
+      pane.rotation.y = roty;
+      // show only part of the vista so it can slide behind the frame for parallax
+      mat.diffuseTexture.uScale = 0.82;
+      mat.diffuseTexture.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
+      parallaxWindows.push({
+        tex: mat.diffuseTexture, // diffuse + emissive share one texture object
+        center: new BABYLON.Vector3(wx, wy, wz),
+        along,
+      });
+      // classic window muntins: a wood cross dividing it into panes
+      const mp = new BABYLON.Vector3(
+        wx + inward.x * 0.29,
+        wy,
+        wz + inward.z * 0.29,
+      );
+      const mv = BABYLON.MeshBuilder.CreateBox(
+        "winMuntV",
+        { width: 0.07, height: 1.32, depth: 0.05 },
+        scene,
+      );
+      mv.material = woodMat; // wood texture on the muntins ("t things")
+      computeTangents(mv);
+      mv.isPickable = false;
+      mv.position.copyFrom(mp);
+      mv.rotation.y = roty;
+      const mh = BABYLON.MeshBuilder.CreateBox(
+        "winMuntH",
+        { width: 2.7, height: 0.07, depth: 0.05 },
+        scene,
+      );
+      mh.material = woodMat;
+      computeTangents(mh);
+      mh.isPickable = false;
+      mh.position.copyFrom(mp);
+      mh.rotation.y = roty;
+    }
+    if (ROOM === "main") {
+      let wi = 0; // give each window a different vista
+      for (const d of doors) {
+        if (d.kind === "course" || d.kind === "range") {
+          makeWindow(d, 3.7, winMats[wi++ % winMats.length]);
+          makeWindow(d, -3.7, winMats[wi++ % winMats.length]);
+        }
+      }
+    }
+
+    // -- gball avatar template (loaded once, instanced for local + remotes) --
+    const gballContainer = await BABYLON.SceneLoader.LoadAssetContainerAsync(
+      "assets/3d/",
+      "gball.glb?v=" + ASSET_V,
+      scene,
+      null,
+      ".glb",
+    );
+    // real held-item models: cybeer's labelled beer glass + cigbot's cigarette
+    const cybeerContainer = await BABYLON.SceneLoader.LoadAssetContainerAsync(
+      "assets/3d/",
+      "cybeer.glb?v=" + ASSET_V,
+      scene,
+      null,
+      ".glb",
+    );
+    const cigContainer = await BABYLON.SceneLoader.LoadAssetContainerAsync(
+      "assets/3d/",
+      "cigarette.glb?v=" + ASSET_V,
+      scene,
+      null,
+      ".glb",
+    );
+
+    function spawnAvatar() {
+      // clone (don't hardware-instance) so the eyelids morph survives per-avatar
+      const inst = gballContainer.instantiateModelsToScene(
+        (name) => name,
+        false,
+        { doNotInstantiate: true },
+      );
+      for (const g of inst.animationGroups) g.stop(); // none expected; just in case
+      const wrapper = new BABYLON.TransformNode("avatar", scene); // locomotion
+      wrapper.scaling.setAll(AV_SCALE);
+      const bob = new BABYLON.TransformNode("bob", scene); // carries the bounce
+      bob.parent = wrapper;
+      let faceMesh = null;
+      for (const root of inst.rootNodes) {
+        root.parent = bob;
+        for (const cm of root.getChildMeshes(false)) {
+          shadow.addShadowCaster(cm);
+          cm.receiveShadows = true;
+          if (cm.name && /face/i.test(cm.name)) faceMesh = cm;
+        }
+      }
+      const hand = new BABYLON.TransformNode("hand", scene); // holds a beer / cigarette
+      hand.parent = wrapper;
+      const av = {
+        wrapper,
+        bob,
+        hand,
+        holdType: "none",
+        item: null,
+        current: "bounce",
+        animTime: Math.random() * 3,
+      };
+      if (faceMesh && faceMesh.material) {
+        av.faceMat = faceMesh.material.clone("faceMat"); // own material -> per-avatar expressions
+        faceMesh.material = av.faceMat;
+        av.faceDefault = av.faceMat.albedoTexture || null; // the resting smile
+      }
+      av.curFace = "none";
+      setupBlink(av, inst);
+      return av;
+    }
+
+    // Periodic eyelid blink (the gball's "Closed" morph), independent per avatar.
+    function setupBlink(av, inst) {
+      const meshes = [];
+      for (const rn of inst.rootNodes) {
+        meshes.push(rn);
+        for (const c of rn.getChildMeshes(false)) meshes.push(c);
+      }
+      const eyelids = meshes.find(
+        (m) => m.name && /eyelid/i.test(m.name) && m.morphTargetManager,
+      );
+      if (!eyelids || !eyelids.morphTargetManager) return;
+      let mgr = eyelids.morphTargetManager;
+      // give this instance its OWN manager so blinks never sync up
+      if (typeof mgr.clone === "function") {
+        try {
+          mgr = mgr.clone();
+          eyelids.morphTargetManager = mgr;
+        } catch (e) {}
+      }
+      let idx = -1;
+      for (let i = 0; i < mgr.numTargets; i++) {
+        const nm = (mgr.getTarget(i).name || "").toLowerCase();
+        if (
+          nm.includes("closed") ||
+          nm.includes("blink") ||
+          nm.includes("eyelid")
+        ) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx < 0 && mgr.numTargets > 0) idx = mgr.numTargets - 1; // "Closed" is the last key
+      if (idx < 0) return;
+      av.blinkMgr = mgr;
+      av.blinkIdx = idx;
+      av.blinkState = "open";
+      av.blinkTimer = 0;
+      av.nextBlink = 2500 + Math.random() * 2500; // ms — randomized so avatars desync
+    }
+
+    function updateBlink(av, dt) {
+      if (!av.blinkMgr || av.blinkIdx == null || av.blinkIdx < 0) return;
+      const tgt = av.blinkMgr.getTarget(av.blinkIdx);
+      if (!tgt) return;
+      av.blinkTimer += dt * 1000;
+      const CLOSE = 100,
+        HOLD = 50,
+        OPEN = 100; // ms, matches the range's blink
+      if (av.blinkState === "open" && av.blinkTimer >= av.nextBlink) {
+        av.blinkState = "closing";
+        av.blinkTimer = 0;
+      }
+      let inf = 0;
+      if (av.blinkState === "closing") {
+        inf = Math.min(av.blinkTimer / CLOSE, 1);
+        if (av.blinkTimer >= CLOSE) {
+          av.blinkState = "closed";
+          av.blinkTimer = 0;
+        }
+      } else if (av.blinkState === "closed") {
+        inf = 1;
+        if (av.blinkTimer >= HOLD) {
+          av.blinkState = "opening";
+          av.blinkTimer = 0;
+        }
+      } else if (av.blinkState === "opening") {
+        inf = 1 - Math.min(av.blinkTimer / OPEN, 1);
+        if (av.blinkTimer >= OPEN) {
+          av.blinkState = "open";
+          av.blinkTimer = 0;
+          av.nextBlink = 2500 + Math.random() * 2500;
+        }
+      }
+      tgt.influence = inf;
+    }
+
+    // Procedural bounce/walk: the same squash-and-stretch feel derived from
+    // Apple Royale's idle/hop, applied to a child node so gball.glb (with its
+    // dimple texture + pupils) is never re-exported/degraded.
+    function setClip(av, type) {
+      av.current = type;
+    }
+    function animateAvatar(av, dt) {
+      const type = av.current || "bounce";
+      av.animTime += dt * (type === "walk" ? 1.6 : 0.8); // cycles / second
+      const phase = av.animTime - Math.floor(av.animTime);
+      let y, sxy, sz;
+      if (type === "walk") {
+        const s = sampleWalk(phase);
+        y = s.y;
+        sxy = s.sxy;
+        sz = s.sz;
+      } else {
+        const u = 0.5 - 0.5 * Math.cos(2 * Math.PI * phase); // smooth 0→1→0 bob
+        y = 0.12 * u;
+        sxy = 1 - 0.015 * u;
+        sz = 1 + 0.03 * u;
+      }
+      av.bob.position.y = y;
+      av.bob.scaling.set(sxy, sz, sxy);
+    }
+
+    // ---- beer / cigarette / smoke ------------------------------------------
+    // Held items are tiny meshes parented to the avatar's `hand` node (the ball
+    // has no arms, so we just float the item at mouth height). One synced value
+    // per player, `holdType`, drives what every client renders on that avatar.
+    const HOLD_TYPES = ["none", "beer", "cig"]; // index == wire code
+    const CEIL_Y = 3.3; // invisible ceiling the smoke pools under
+    const HAND_LOCAL = new BABYLON.Vector3(0.24, -0.05, 1.02); // wrapper-local: front, just past the ball surface at mouth height
+
+    const smokeTex = new BABYLON.Texture(
+      "assets/smokesheet.png?v=" + ASSET_V,
+      scene,
+      false,
+      false,
+      BABYLON.Texture.NEAREST_SAMPLINGMODE,
+    );
+    const beerMat = new BABYLON.StandardMaterial("beerMat", scene); // amber fill inside the cybeer glass
+    beerMat.diffuseColor = new BABYLON.Color3(0.94, 0.62, 0.1);
+    beerMat.emissiveColor = new BABYLON.Color3(0.58, 0.34, 0.03);
+    beerMat.specularColor = new BABYLON.Color3(0, 0, 0);
+    const emberMat = new BABYLON.StandardMaterial("emberMat", scene);
+    emberMat.diffuseColor = new BABYLON.Color3(1, 0.3, 0.05);
+    emberMat.emissiveColor = new BABYLON.Color3(1, 0.32, 0.03);
+    emberMat.specularColor = new BABYLON.Color3(0, 0, 0);
+    let anyCig = 0; // >0 while at least one cigarette exists (drives ember flicker)
+
+    // face-swap textures (the gball reuses the golf game's face set): a buck-toothed
+    // open mouth while drinking, an "O" mouth while smoking.
+    function faceTex(file) {
+      const t = new BABYLON.Texture(
+        "assets/faces/" + file,
+        scene,
+        false,
+        false,
+        BABYLON.Texture.TRILINEAR_SAMPLINGMODE,
+      );
+      t.hasAlpha = true;
+      return t;
+    }
+    const faceDrinkTex = faceTex("elated.png"); // open mouth + buck teeth
+    const faceSmokeTex = faceTex("o.png"); // round "O" mouth
+    function setFace(av, name) {
+      if (!av.faceMat) return;
+      av.faceMat.albedoTexture =
+        name === "o"
+          ? faceSmokeTex
+          : name === "drink"
+            ? faceDrinkTex
+            : av.faceDefault;
+    }
+
+    // world-space smoke: rise buoyantly, then pool + spread under the ceiling
+    function smokeUpdate(particles) {
+      const dt = this._scaledUpdateSpeed;
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        p.age += dt;
+        if (p.age >= p.lifeTime) {
+          this.recycleParticle(p);
+          i--;
+          continue;
+        }
+        const fade = Math.max(0, 1 - p.age / p.lifeTime);
+        p.color.a = Math.pow(fade, 0.6) * 0.5;
+        p.size = 0.36 + (1 - fade) * 3.3; // ~3x bigger so the smoke is clearly visible; grows as it ages
+        if (p.position.y >= CEIL_Y) {
+          // hit the invisible ceiling -> spread
+          p.direction.x = (Math.random() - 0.5) * 0.5;
+          p.direction.y = -0.03 + Math.random() * 0.01;
+          p.direction.z = (Math.random() - 0.5) * 0.5;
+        } else {
+          p.direction.x *= 1 - dt * 0.4;
+          p.direction.z *= 1 - dt * 0.4;
+          p.direction.y += dt * 0.25; // buoyant acceleration
+        }
+        p.position.x += p.direction.x * dt;
+        p.position.y += p.direction.y * dt;
+        p.position.z += p.direction.z * dt;
+        if (p.updateCellIndex) p.updateCellIndex();
+      }
+    }
+
+    // cybeer's labelled beer glass (the `beer` mesh + its child `cybeer` label);
+    // the arm rig + camera helper in the glb are hidden.
+    function makeBeer(av) {
+      const inst = cybeerContainer.instantiateModelsToScene((n) => n, false, {
+        doNotInstantiate: true,
+      });
+      const root = inst.rootNodes[0];
+      root.parent = av.hand;
+      let beerMesh = null,
+        labelMesh = null;
+      for (const m of root.getChildMeshes(false)) {
+        m.isPickable = false;
+        if (m.name === "beer") beerMesh = m;
+        else if (m.name === "cybeer") labelMesh = m;
+        else m.setEnabled(false); // drop the arm + camera
+      }
+      const S = 0.32;
+      root.scaling.setAll(S);
+      // Orient the glass upright, label facing out. SET the quaternion explicitly
+      // instead of `addRotation` — instantiateModelsToScene shares rotation state
+      // between clones, so a cumulative spin here inherits the shelf/conveyor
+      // glasses' rotations and tips the held mug on its side.
+      if (beerMesh)
+        beerMesh.rotationQuaternion = BABYLON.Quaternion.RotationAxis(
+          BABYLON.Axis.Y,
+          Math.PI,
+        );
+      if (labelMesh) labelMesh.scaling.x = -Math.abs(labelMesh.scaling.x);
+      // seat the upright glass at the hand (mouth), nudged forward + down —
+      // measured from the glass bbox so it's robust to the cup's internal origin
+      if (beerMesh) {
+        root.position.set(0, 0, 0);
+        av.hand.computeWorldMatrix(true);
+        beerMesh.computeWorldMatrix(true);
+        const gl = BABYLON.Vector3.TransformCoordinates(
+          beerMesh.getBoundingInfo().boundingBox.centerWorld,
+          BABYLON.Matrix.Invert(av.hand.getWorldMatrix()),
+        );
+        root.position.set(-gl.x, -gl.y - 0.35, -gl.z + 0.15);
+      }
+      // amber fill INSIDE the glass — parented to the glass mesh, on its cup axis (x/z 0),
+      // sized to fit the cup; shrinks as you drink
+      const fbH = 1.35,
+        fbBottom = -0.83,
+        cx = 0,
+        cz = 0;
+      const fluid = BABYLON.MeshBuilder.CreateCylinder(
+        "beerFluid",
+        { height: fbH, diameter: 1.4, tessellation: 16 },
+        scene,
+      );
+      fluid.parent = beerMesh || root;
+      fluid.isPickable = false;
+      fluid.material = beerMat;
+      const ctl = {
+        root,
+        fluid,
+        cx,
+        cz,
+        fbH,
+        fbBottom,
+        level: 1,
+        sipT: -1,
+        nextSip: 1.5 + Math.random() * 2,
+      };
+      setBeerLevel(ctl, 1);
+      return ctl;
+    }
+    function setBeerLevel(ctl, lvl) {
+      ctl.level = lvl;
+      const h = Math.max(0.001, ctl.fbH * lvl);
+      ctl.fluid.scaling.y = lvl;
+      ctl.fluid.position.set(ctl.cx, ctl.fbBottom + h / 2, ctl.cz);
+    }
+
+    // cigbot's cigarette model (3-material cylinder), scaled up, with a glowing
+    // ember + smoke added at the burning tip.
+    function makeCigarette(av) {
+      const inst = cigContainer.instantiateModelsToScene((n) => n, false, {
+        doNotInstantiate: true,
+      });
+      const root = inst.rootNodes[0];
+      root.parent = av.hand;
+      // detach the skeleton so the cig renders at FULL length (its rest pose collapses it to a stub);
+      // the raw geometry runs along root-local Y (filter +Y, burning tip -Y)
+      for (const m of root.getChildMeshes(false)) {
+        m.isPickable = false;
+        m.skeleton = null;
+      }
+      const S = 0.5; // ~3x bigger than the old procedural cig
+      root.scaling.setAll(S);
+      root.rotationQuaternion = null; // drop the glTF import flip
+      root.rotation.set(-Math.PI / 2, 0, 0); // lay the cig horizontal: filter at the mouth, tip out
+      root.position.set(0.0, 0.22, 0.12);
+      // glowing ember + smoke at the burning tip (-Y end), sized to the cig's gauge
+      const ember = BABYLON.MeshBuilder.CreateSphere(
+        "cigEmber",
+        { diameter: 0.4, segments: 8 },
+        scene,
+      );
+      ember.material = emberMat;
+      ember.isPickable = false;
+      ember.parent = root;
+      ember.position.set(0, -1.03, -0.945); // burning tip
+      const ps = new BABYLON.ParticleSystem("smoke", 220, scene);
+      ps.particleTexture = smokeTex;
+      ps.isAnimationSheetEnabled = true;
+      ps.spriteCellWidth = 256;
+      ps.spriteCellHeight = 256; // 1792 / 7
+      ps.startSpriteCellID = 0;
+      ps.endSpriteCellID = 45;
+      ps.spriteRandomStartCell = true;
+      ps.spriteCellChangeSpeed = 1.4;
+      ps.emitter = ember; // world-space (isLocal false): trail stays in the room
+      ps.minEmitBox = ps.maxEmitBox = BABYLON.Vector3.Zero();
+      ps.color1 = new BABYLON.Color4(0.64, 0.64, 0.64, 1);
+      ps.color2 = new BABYLON.Color4(0.58, 0.58, 0.58, 1);
+      ps.minLifeTime = 4;
+      ps.maxLifeTime = 11; // long-lived -> accumulates
+      ps.emitRate = 6; // ambient smolder — a drag puffs extra (see updateHold)
+      ps.minSize = 0.36;
+      ps.maxSize = 0.36;
+      ps.direction1 = new BABYLON.Vector3(-0.05, 0.55, -0.05);
+      ps.direction2 = new BABYLON.Vector3(0.05, 0.68, 0.05);
+      ps.minEmitPower = 0.25;
+      ps.maxEmitPower = 0.5;
+      ps.blendMode = BABYLON.ParticleSystem.BLENDMODE_STANDARD;
+      ps.updateFunction = smokeUpdate;
+      ps.start();
+      anyCig++;
+      return {
+        root,
+        ember,
+        ps,
+        actT: -1, // >=0 while a drag is in progress
+        nextAct: 1.5 + Math.random() * 2.5, // remotes auto-drag on this timer
+        ambientEmit: 6,
+      };
+    }
+
+    function equipHold(av, type) {
+      if (av.holdType === type) return;
+      if (av.item) {
+        if (av.item.ps) {
+          anyCig--;
+          av.item.ps.stop();
+          const s = av.item.ps;
+          setTimeout(() => s.dispose(), 12000);
+        }
+        if (av.item.root) av.item.root.dispose(false, true);
+        av.item = null;
+      }
+      av.holdType = type;
+      if (type === "beer") av.item = makeBeer(av);
+      else if (type === "cig") av.item = makeCigarette(av);
+    }
+
+    // ---- cigarette machine + beer conveyor + shelf glasses (cosmetic) ----------
+    // Two walk-up dispensers tucked in the SW corner: a cigarette vending machine
+    // on the south wall (between the fireplace and the bar) and a beer conveyor
+    // that runs out of the west wall onto the bar's south end. Walk up and tap
+    // either one to grab that item; the 🍺/🚬 buttons then use what you hold.
+    function unlitTexMat(name, tex) {
+      const m = new BABYLON.StandardMaterial(name, scene);
+      m.diffuseTexture = tex;
+      m.emissiveTexture = tex; // self-lit so the painted panel reads at true color
+      m.emissiveColor = new BABYLON.Color3(1, 1, 1);
+      m.diffuseColor = new BABYLON.Color3(0, 0, 0);
+      m.disableLighting = true;
+      m.specularColor = new BABYLON.Color3(0, 0, 0);
+      m.backFaceCulling = false; // panel is viewed from its back side (like the door labels)
+      return m;
+    }
+
+    // painted front panel for the cig machine: header sign, a glass case of packs,
+    // a pull knob + coin slot + a dark dispensing tray.
+    function cigMachineTex() {
+      const W = 128,
+        Hh = 224;
+      const dt = new BABYLON.DynamicTexture(
+        "cigMachineTex",
+        { width: W, height: Hh },
+        scene,
+        false,
+      );
+      const c = dt.getContext();
+      c.fillStyle = "#2a1838";
+      c.fillRect(0, 0, W, Hh); // deep purple cabinet
+      c.fillStyle = "#c22";
+      c.fillRect(8, 8, W - 16, 32); // header
+      c.fillStyle = "#ffe8c0";
+      c.font = "bold 24px 'Arial Black',Impact,sans-serif";
+      c.textAlign = "center";
+      c.textBaseline = "middle";
+      c.fillText("CIGS", W / 2, 25);
+      c.fillStyle = "#0b0b14";
+      c.fillRect(10, 48, W - 20, 116); // glass case
+      const packCol = [
+        "#d8d0c0",
+        "#c02a2a",
+        "#e0b020",
+        "#1e7a3a",
+        "#3050c0",
+        "#b0b0b8",
+      ];
+      for (let r = 0; r < 4; r++)
+        for (let col = 0; col < 3; col++) {
+          const x = 16 + col * 34,
+            y = 54 + r * 27;
+          c.fillStyle = packCol[(r * 3 + col) % packCol.length];
+          c.fillRect(x, y, 28, 22);
+          c.fillStyle = "rgba(255,255,255,.7)";
+          c.fillRect(x, y, 28, 5); // filter band
+        }
+      c.fillStyle = "#9a9aa2";
+      c.fillRect(18, 176, 22, 12); // pull knob
+      c.fillStyle = "#c8b060";
+      c.fillRect(W - 40, 178, 22, 6); // coin slot
+      c.fillStyle = "#000";
+      c.fillRect(14, 196, W - 28, 20); // dispensing tray
+      dt.update();
+      dt.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
+      return dt;
+    }
+
+    // dark belt texture (light/dark stripes) — scrolled toward the lip for motion.
+    function beltTex() {
+      const dt = new BABYLON.DynamicTexture(
+        "beltTex",
+        { width: 16, height: 8 },
+        scene,
+        false,
+      );
+      const c = dt.getContext();
+      c.fillStyle = "#141414";
+      c.fillRect(0, 0, 16, 8);
+      c.fillStyle = "#2c2c2c";
+      c.fillRect(0, 0, 8, 8);
+      dt.update();
+      dt.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
+      dt.wrapU = dt.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
+      return dt;
+    }
+
+    // A static cybeer glass (label facing `yaw`) for the back shelf and as the
+    // "ready" beer on the conveyor. Mirrors makeBeer's label fix; full amber fill.
+    function makeStaticCybeer(pos, yaw, S, prefix, pickable, withFluid) {
+      const inst = cybeerContainer.instantiateModelsToScene((n) => n, false, {
+        doNotInstantiate: true,
+      });
+      const root = inst.rootNodes[0];
+      const holder = new BABYLON.TransformNode(prefix + "_holder", scene);
+      root.parent = holder;
+      let beerMesh = null,
+        labelMesh = null;
+      for (const m of root.getChildMeshes(false)) {
+        if (m.name === "beer") beerMesh = m;
+        else if (m.name === "cybeer") labelMesh = m;
+        else {
+          m.setEnabled(false); // drop the arm + camera helper
+          continue;
+        }
+        m.isPickable = pickable;
+        m.name = prefix + "_" + (m === labelMesh ? "label" : "glass");
+        m.receiveShadows = true;
+        shadow.addShadowCaster(m);
+      }
+      root.scaling.setAll(S);
+      if (beerMesh) beerMesh.addRotation(0, Math.PI, 0); // handle away, label out
+      if (labelMesh) labelMesh.scaling.x *= -1; // un-mirror the flipped decal
+      if (withFluid) {
+        // full amber pint on the cup axis (the conveyor's ready beer only;
+        // the back-shelf glasses stay empty)
+        const fluid = BABYLON.MeshBuilder.CreateCylinder(
+          prefix + "_fluid",
+          { height: 1.35, diameter: 1.4, tessellation: 16 },
+          scene,
+        );
+        fluid.parent = beerMesh || root;
+        fluid.isPickable = pickable;
+        fluid.material = beerMat;
+        fluid.position.set(0, -0.155, 0);
+      }
+      root.position.set(0.36 * S, -1.21 * S, 0.19 * S); // glass centre -> holder origin
+      holder.position.copyFrom(pos);
+      holder.rotation.y = yaw;
+      return holder;
+    }
+
+    function buildDispensers() {
+      // -- cigarette vending machine: south wall, between the fireplace and bar --
+      // (the bar is on the +x/east wall in-game, so the "corner between the
+      // fireplace and the bar" is the SE corner — hence the +x coordinates.)
+      const cm = { x: 6.0, z: 11.1, w: 1.2, h: 2.3, d: 0.62 };
+      const cy = floorTopY + cm.h / 2;
+      const body = BABYLON.MeshBuilder.CreateBox(
+        "disp_cig_body",
+        { width: cm.w, height: cm.h, depth: cm.d },
+        scene,
+      );
+      body.material = metalMat;
+      body.position.set(cm.x, cy, cm.z);
+      body.receiveShadows = true;
+      shadow.addShadowCaster(body);
+      const front = BABYLON.MeshBuilder.CreatePlane(
+        "disp_cig_front",
+        { width: cm.w * 0.94, height: cm.h * 0.94 },
+        scene,
+      );
+      front.material = unlitTexMat("cigFrontMat", cigMachineTex());
+      front.position.set(cm.x, cy, cm.z - cm.d / 2 - 0.011);
+      front.rotation.y = Math.PI; // face -z, into the room
+      front.scaling.x = -1; // un-mirror the text (rotated 180° about Y)
+      colliders.push({
+        minX: cm.x - cm.w / 2,
+        maxX: cm.x + cm.w / 2,
+        minZ: cm.z - cm.d / 2,
+        maxZ: cm.z + cm.d / 2,
+      });
+      dispensers.push({
+        kind: "cig",
+        grabPos: new BABYLON.Vector3(cm.x, 0, cm.z - cm.d / 2),
+        standPos: new BABYLON.Vector3(cm.x, 0, cm.z - cm.d / 2 - 0.9),
+        radius: PICKUP_R,
+      });
+
+      // -- beer conveyor: runs out of the east wall ACROSS the bar to its
+      // room-facing edge, so you can walk up to the bar and grab the beer --
+      const cv = { wallX: 11.8, lipX: 7.9, y: 1.3, z: 5.5, w: 0.86 };
+      const len = cv.wallX - cv.lipX;
+      const midX = (cv.wallX + cv.lipX) / 2;
+      const chan = BABYLON.MeshBuilder.CreateBox(
+        "disp_beer_chan",
+        { width: len, height: 0.18, depth: cv.w },
+        scene,
+      );
+      chan.material = darkMat;
+      chan.position.set(midX, cv.y - 0.12, cv.z);
+      chan.receiveShadows = true;
+      shadow.addShadowCaster(chan);
+      for (const s of [-1, 1]) {
+        const rail = BABYLON.MeshBuilder.CreateBox(
+          "disp_beer_rail",
+          { width: len, height: 0.12, depth: 0.06 },
+          scene,
+        );
+        rail.material = metalMat;
+        rail.position.set(midX, cv.y - 0.02, cv.z + s * (cv.w / 2 - 0.03));
+      }
+      const beltMat = new BABYLON.StandardMaterial("beltMat", scene);
+      beltMat.diffuseTexture = beltTex();
+      beltMat.diffuseTexture.uScale = len / 0.34;
+      beltMat.specularColor = new BABYLON.Color3(0, 0, 0);
+      beltMat.emissiveColor = new BABYLON.Color3(0.06, 0.06, 0.06);
+      const belt = BABYLON.MeshBuilder.CreatePlane(
+        "disp_beer_belt",
+        { width: len, height: cv.w - 0.12 },
+        scene,
+      );
+      belt.material = beltMat;
+      belt.rotation.x = -Math.PI / 2; // lie flat, face up
+      belt.position.set(midX, cv.y - 0.02, cv.z);
+      belt.isPickable = false;
+      scene.onBeforeRenderObservable.add(() => {
+        beltMat.diffuseTexture.uOffset -= (engine.getDeltaTime() / 1000) * 0.5; // scroll toward the lip
+      });
+      // the "ready" beer waiting at the lip (grabbable, full), logo facing the room (-x)
+      makeStaticCybeer(
+        new BABYLON.Vector3(cv.lipX + 0.28, cv.y + 0.26, cv.z),
+        -Math.PI / 2,
+        0.3,
+        "disp_beer",
+        true,
+        true,
+      );
+      dispensers.push({
+        kind: "beer",
+        grabPos: new BABYLON.Vector3(cv.lipX + 0.28, 0, cv.z),
+        standPos: new BABYLON.Vector3(cv.lipX - 1.6, 0, cv.z),
+        radius: PICKUP_R,
+      });
+    }
+
+    function buildShelfGlasses() {
+      // line cybeer glasses along the back shelf above the bar (+x/east wall),
+      // logos facing out into the room (-x)
+      const shelfTopY = 2.73,
+        gx = 11.15,
+        S = 0.3,
+        gy = shelfTopY + 0.24;
+      for (const z of [-4.9, -3.0, -1.0, 1.0, 3.0, 4.9])
+        makeStaticCybeer(
+          new BABYLON.Vector3(gx, gy, z),
+          -Math.PI / 2,
+          S,
+          "shelf_glass",
+          false,
+          false, // empty glasses on the shelf
+        );
+    }
+
+    // wall sconces near the corners (2 per wall) — warm point lights + a glowing
+    // fixture; they carry the room now that the overhead key/fill are dimmed.
+    function buildSconces() {
+      const glow = new BABYLON.StandardMaterial("sconceGlow", scene);
+      glow.emissiveColor = new BABYLON.Color3(1.0, 0.66, 0.28);
+      glow.diffuseColor = new BABYLON.Color3(0, 0, 0);
+      glow.specularColor = new BABYLON.Color3(0, 0, 0);
+      glow.disableLighting = true;
+      const Y = 2.7;
+      // [x, z, inwardX, inwardZ] — south sits at ±5 to clear the cig machine;
+      // east at ±7 to clear the bar/shelf run
+      const specs = [
+        [-6, -11.7, 0, 1],
+        [6, -11.7, 0, 1], // north wall
+        [-5, 11.7, 0, -1],
+        [5, 11.7, 0, -1], // south wall
+        [11.7, -7, -1, 0],
+        [11.7, 7, -1, 0], // east wall
+        [-11.7, -6, 1, 0],
+        [-11.7, 6, 1, 0], // west wall
+      ];
+      specs.forEach(([x, z, nx, nz], i) => {
+        const br = BABYLON.MeshBuilder.CreateBox(
+          "sconce_br" + i,
+          { width: 0.14, height: 0.34, depth: 0.16 },
+          scene,
+        );
+        br.material = darkMat;
+        br.position.set(x + nx * 0.08, Y - 0.06, z + nz * 0.08);
+        br.isPickable = false;
+        const bulb = BABYLON.MeshBuilder.CreateSphere(
+          "sconce_b" + i,
+          { diameter: 0.26, segments: 10 },
+          scene,
+        );
+        bulb.material = glow;
+        bulb.position.set(x + nx * 0.22, Y + 0.06, z + nz * 0.22);
+        bulb.isPickable = false;
+        const L = new BABYLON.PointLight(
+          "sconceL" + i,
+          new BABYLON.Vector3(x + nx * 0.32, Y + 0.06, z + nz * 0.32),
+          scene,
+        );
+        L.diffuse = new BABYLON.Color3(1.0, 0.68, 0.34);
+        L.specular = new BABYLON.Color3(0, 0, 0);
+        L.intensity = 0.5;
+        L.range = 9;
+      });
+    }
+
+    // grab an item from a dispenser (no put-down; grabbing the other one swaps)
+    function grabFromDispenser(kind) {
+      if (me.holdType === kind) return;
+      equipHold(me, kind);
+      net.sendHold(HOLD_TYPES.indexOf(kind));
+      reflectHoldBtns();
+    }
+    // start a one-shot sip (beer) / drag (cig) on the local avatar's held item
+    function startAction(av) {
+      const it = av.item;
+      if (!it) return;
+      if (av.holdType === "beer" && it.sipT < 0) it.sipT = 0;
+      else if (av.holdType === "cig" && it.actT < 0) it.actT = 0;
+    }
+    function triggerAction(type) {
+      if (me.holdType !== type) {
+        flashHint(
+          type === "beer"
+            ? "Grab a 🍺 from the conveyor"
+            : "Grab a 🚬 from the machine",
+        );
+        return;
+      }
+      startAction(me);
+    }
+    let hintEl = null,
+      hintT = null;
+    function flashHint(text) {
+      if (!hintEl) {
+        hintEl = document.createElement("div");
+        Object.assign(hintEl.style, {
+          position: "absolute",
+          bottom: "120px",
+          left: "50%",
+          transform: "translateX(-50%)",
+          padding: "7px 14px",
+          borderRadius: "16px",
+          background: "rgba(20,40,20,0.86)",
+          color: "#e8ffd8",
+          fontWeight: "bold",
+          fontSize: "14px",
+          fontFamily: "Arial, sans-serif",
+          pointerEvents: "none",
+          zIndex: "60",
+        });
+        document.getElementById("overlay").appendChild(hintEl);
+      }
+      hintEl.textContent = text;
+      hintEl.style.display = "block";
+      if (hintT) clearTimeout(hintT);
+      hintT = setTimeout(() => (hintEl.style.display = "none"), 1500);
+    }
+
+    // per-frame: item rides the ball's bob; a sip/drag is triggered by the button
+    // (local) or a gentle auto-loop (remotes). The face changes to match.
+    function updateHold(av, dt, isLocal) {
+      if (!av.hand) return;
+      av.hand.position.copyFrom(HAND_LOCAL);
+      av.hand.position.y += av.bob ? av.bob.position.y : 0;
+      av.hand.rotation.set(0, 0, 0);
+      const it = av.item;
+      let face = null;
+      if (it && av.holdType === "beer") {
+        if (it.sipT < 0) {
+          if (!isLocal) {
+            it.nextSip -= dt;
+            if (it.nextSip <= 0) it.sipT = 0; // remotes sip on a loop
+          }
+        } else {
+          it.sipT += dt;
+          const T = 1.5,
+            u = Math.min(1, it.sipT / T);
+          const tip = Math.sin(Math.min(1, u / 0.9) * Math.PI); // 0 -> 1 -> 0
+          av.hand.rotation.x = -tip * 1.35; // tip the mug so the rim meets the mouth
+          face = "drink"; // buck teeth while a sip is in progress
+          if (u > 0.4 && u < 0.75)
+            setBeerLevel(it, Math.max(0, it.level - (dt / 0.9) * 0.34));
+          if (u >= 1) {
+            it.sipT = -1;
+            it.nextSip = 2.5 + Math.random() * 2.5;
+            if (it.level <= 0.05) setBeerLevel(it, 1); // empty -> fresh pint
+          }
+        }
+      } else if (it && av.holdType === "cig") {
+        // a lit cig smolders; a drag flares the ember on the inhale, then exhales
+        if (it.actT < 0) {
+          it.ps.emitRate = it.ambientEmit;
+          it.ember.scaling.setAll(1);
+          if (!isLocal) {
+            it.nextAct -= dt;
+            if (it.nextAct <= 0) it.actT = 0; // remotes drag on a loop
+          }
+        } else {
+          it.actT += dt;
+          const T = 1.4,
+            u = Math.min(1, it.actT / T);
+          face = "o"; // round "O" mouth through the drag
+          it.ember.scaling.setAll(u < 0.5 ? 1.6 : 1); // ember flares on the inhale
+          it.ps.emitRate = u > 0.5 ? 52 : it.ambientEmit; // exhale puff
+          if (u >= 1) {
+            it.actT = -1;
+            it.nextAct = 3 + Math.random() * 3;
+            it.ps.emitRate = it.ambientEmit;
+          }
+        }
+      }
+      if (av.curFace !== face) {
+        setFace(av, face);
+        av.curFace = face;
+      }
+    }
+
+    // FACE_OFFSET tunes which way the gball's eyes point vs travel direction.
+    const FACE_OFFSET = 0; // face the direction of travel
+
+    // -- local avatar (small random offset so players don't stack on spawn) --
+    const me = spawnAvatar();
+    me.wrapper.position.set(
+      spawn.x + (Math.random() - 0.5) * 4,
+      avatarY,
+      spawn.z + (Math.random() - 0.5) * 4,
+    );
+    let myYaw = 0;
+    setClip(me, "bounce");
+
+    // dress the room: shelf glasses + the two walk-up dispensers + wall sconces
+    buildShelfGlasses();
+    buildDispensers();
+    buildSconces();
+    // sconces push the room past Babylon's default 4-lights-per-mesh cap
+    for (const m of scene.materials) m.maxSimultaneousLights = 12;
+
+    // -- input state --
+    const keys = Object.create(null);
+    let typing = false;
+    let moveTarget = null; // click-to-move point (Vector3) or null
+
+    addEventListener("keydown", (e) => {
+      if (typing) return;
+      keys[e.key.toLowerCase()] = true;
+    });
+    addEventListener("keyup", (e) => {
+      keys[e.key.toLowerCase()] = false;
+    });
+
+    scene.onPointerObservable.add((pi) => {
+      if (pi.type !== BABYLON.PointerEventTypes.POINTERPICK) return;
+      const p = pi.pickInfo;
+      if (!p || !p.hit || !p.pickedMesh) return;
+      const nm = p.pickedMesh.name || "";
+      const door = doors.find(
+        (d) => nm.startsWith("door_" + d.kind) || p.pickedMesh === d.mesh,
+      );
+      if (door) return goToDoor(door.kind);
+      // dispensers: near enough -> grab it; otherwise walk over first
+      const dkind = nm.startsWith("disp_cig")
+        ? "cig"
+        : nm.startsWith("disp_beer")
+          ? "beer"
+          : null;
+      if (dkind) {
+        const d = dispensers.find((x) => x.kind === dkind);
+        if (d) {
+          const dx = d.grabPos.x - me.wrapper.position.x;
+          const dz = d.grabPos.z - me.wrapper.position.z;
+          if (dx * dx + dz * dz <= d.radius * d.radius)
+            grabFromDispenser(dkind);
+          else moveTarget = d.standPos.clone();
+          return;
+        }
+      }
+      // otherwise walk to the picked point
+      moveTarget = p.pickedPoint.clone();
+    });
+
+    // -- networking --
+    const net = new ClubhouseNet(WS_URL, MY_NAME, MY_AREA);
+    const remotes = new Map(); // id -> { av, x,z,ry, tx,tz,try, moving, seen }
+    net.onSnapshot = (playersArr, broadcasts) => {
+      const nowSeen = Date.now();
+      for (const p of playersArr) {
+        if (p.id === net.playerId) continue;
+        if ((p.area || 0) !== MY_AREA) continue; // only show players in the same room
+        let r = remotes.get(p.id);
+        if (!r) {
+          const av = spawnAvatar();
+          av.wrapper.position.set(p.x, avatarY, p.z);
+          setClip(av, "bounce");
+          r = {
+            av,
+            x: p.x,
+            z: p.z,
+            ry: p.ry || 0,
+            tx: p.x,
+            tz: p.z,
+            try_: p.ry || 0,
+            moving: false,
+            name: p.name,
+            seen: nowSeen,
+          };
+          remotes.set(p.id, r);
+          makeTag(p.id, p.name);
+        }
+        r.tx = p.x;
+        r.tz = p.z;
+        r.try_ = p.ry || 0;
+        r.moving = !!p.moving;
+        r.name = p.name;
+        r.seen = nowSeen;
+        const ht = HOLD_TYPES[p.hold || 0] || "none";
+        if (r.av.holdType !== ht) equipHold(r.av, ht); // reflect what they're holding
+      }
+      for (const b of broadcasts || []) {
+        if (b.type === "feed") pushFeed(b.data);
+      }
+      // cull players not seen in this snapshot
+      for (const [id, r] of remotes) {
+        if (r.seen !== nowSeen) {
+          if (r.av.item && r.av.item.ps) r.av.item.ps.dispose(); // stop their smoke
+          r.av.wrapper.dispose(false, true);
+          removeTag(id);
+          removeBubble(id);
+          remotes.delete(id);
+        }
+      }
+    };
+    net.onChat = (msg) => {
+      pushFeed(`${msg.playerName}: ${msg.text}`);
+      const targetId = msg.playerId === net.playerId ? "me" : msg.playerId;
+      showBubble(targetId, msg.text);
+    };
+    net.connect();
+
+    // -- chat + overlay UI --
+    const ui = buildChatUI();
+    ui.input.addEventListener("focus", () => (typing = true));
+    ui.input.addEventListener("blur", () => (typing = false));
+    ui.input.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        const t = ui.input.value.trim();
+        if (t) net.sendChat(t);
+        ui.input.value = "";
+        ui.input.blur();
+      } else if (e.key === "Escape") {
+        ui.input.value = "";
+        ui.input.blur();
+      }
+    });
+
+    // -- virtual joystick (bottom-left) so mobile / no-keyboard players can move --
+    const joy = { x: 0, y: 0 };
+    (function buildJoystick() {
+      const R = 56; // knob travel radius (px)
+      const base = document.createElement("div");
+      Object.assign(base.style, {
+        position: "absolute",
+        left: "20px",
+        bottom: "20px",
+        width: R * 2 + "px",
+        height: R * 2 + "px",
+        borderRadius: "50%",
+        background:
+          "radial-gradient(circle at 50% 38%, rgba(255,255,255,.22), rgba(30,90,45,.30))",
+        border: "3px solid rgba(255,255,255,.5)",
+        boxShadow: "inset 0 2px 10px rgba(0,0,0,.25)",
+        touchAction: "none",
+        pointerEvents: "auto",
+        zIndex: "50",
+      });
+      const knob = document.createElement("div");
+      Object.assign(knob.style, {
+        position: "absolute",
+        left: "50%",
+        top: "50%",
+        width: "54px",
+        height: "54px",
+        marginLeft: "-27px",
+        marginTop: "-27px",
+        borderRadius: "50%",
+        background: "linear-gradient(180deg,#4fc46a,#2e8b48)",
+        border: "2px solid rgba(255,255,255,.6)",
+        boxShadow:
+          "0 4px 10px rgba(20,90,40,.45), inset 0 2px 6px rgba(255,255,255,.6)",
+        pointerEvents: "none",
+        transition: "transform .04s linear",
+      });
+      base.appendChild(knob);
+      document.getElementById("overlay").appendChild(base);
+      let pid = null;
+      const setKnob = (dx, dy) => {
+        knob.style.transform = "translate(" + dx + "px," + dy + "px)";
+      };
+      const move = (e) => {
+        const r = base.getBoundingClientRect();
+        let dx = e.clientX - (r.left + r.width / 2),
+          dy = e.clientY - (r.top + r.height / 2);
+        const len = Math.hypot(dx, dy) || 1,
+          cl = Math.min(len, R);
+        dx = (dx / len) * cl;
+        dy = (dy / len) * cl;
+        setKnob(dx, dy);
+        const nx = dx / R,
+          ny = dy / R,
+          dead = 0.16;
+        joy.x = Math.abs(nx) < dead ? 0 : nx;
+        joy.y = Math.abs(ny) < dead ? 0 : -ny; // pushing up = forward
+      };
+      const end = (e) => {
+        if (pid != null && e.pointerId !== pid) return;
+        pid = null;
+        joy.x = 0;
+        joy.y = 0;
+        setKnob(0, 0);
+      };
+      base.addEventListener("pointerdown", (e) => {
+        pid = e.pointerId;
+        base.setPointerCapture(pid);
+        move(e);
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      base.addEventListener("pointermove", (e) => {
+        if (e.pointerId === pid) {
+          move(e);
+          e.preventDefault();
+        }
+      });
+      base.addEventListener("pointerup", end);
+      base.addEventListener("pointercancel", end);
+    })();
+
+    // -- beer / cigarette buttons: golf-style glossy green circles, stacked bottom-right --
+    const holdBar = document.createElement("div");
+    Object.assign(holdBar.style, {
+      position: "absolute",
+      right: "18px",
+      bottom: "18px",
+      display: "flex",
+      flexDirection: "column",
+      gap: "12px",
+      zIndex: "50",
+    });
+    const HOLD_OFF =
+      "0 5px 14px rgba(20,90,40,.45), inset 0 2px 6px rgba(255,255,255,.6)";
+    const HOLD_ON = "0 0 0 3px #f4c430, " + HOLD_OFF;
+    function holdBtn(label, title) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.title = title;
+      Object.assign(b.style, {
+        pointerEvents: "auto",
+        width: "60px",
+        height: "60px",
+        borderRadius: "50%",
+        border: "3px solid rgba(255,255,255,.6)",
+        cursor: "pointer",
+        fontSize: "30px",
+        lineHeight: "1",
+        padding: "0",
+        color: "#fff",
+        background: "linear-gradient(180deg,#4fc46a,#2e8b48)",
+        boxShadow: HOLD_OFF,
+      });
+      b.addEventListener("pointerdown", (e) => e.stopPropagation());
+      return b;
+    }
+    const beerBtn = holdBtn("🍺", "Sip your beer");
+    const cigBtn = holdBtn("🚬", "Take a drag");
+    holdBar.appendChild(beerBtn);
+    holdBar.appendChild(cigBtn);
+    document.getElementById("overlay").appendChild(holdBar);
+    // The buttons no longer spawn items — you grab those from the dispensers.
+    // They now sip / drag whatever you hold; the held item's button glows and
+    // the other is dimmed.
+    function reflectHoldBtns() {
+      beerBtn.style.boxShadow = me.holdType === "beer" ? HOLD_ON : HOLD_OFF;
+      cigBtn.style.boxShadow = me.holdType === "cig" ? HOLD_ON : HOLD_OFF;
+      beerBtn.style.filter =
+        me.holdType === "beer" ? "brightness(1.12)" : "none";
+      cigBtn.style.filter = me.holdType === "cig" ? "brightness(1.12)" : "none";
+      beerBtn.style.opacity = me.holdType === "beer" ? "1" : "0.5";
+      cigBtn.style.opacity = me.holdType === "cig" ? "1" : "0.5";
+    }
+    reflectHoldBtns();
+    beerBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      triggerAction("beer");
+    });
+    cigBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      triggerAction("cig");
+    });
+
+    // door prompt element
+    const prompt = document.createElement("div");
+    Object.assign(prompt.style, {
+      position: "absolute",
+      bottom: "84px",
+      left: "50%",
+      transform: "translateX(-50%)",
+      padding: "7px 14px",
+      borderRadius: "16px",
+      background: "rgba(20,40,20,0.82)",
+      color: "#e8ffd8",
+      fontWeight: "bold",
+      fontSize: "15px",
+      display: "none",
+      pointerEvents: "none",
+      zIndex: "40",
+    });
+    document.getElementById("overlay").appendChild(prompt);
+
+    // -- collision (circle vs furniture boxes) + camera-occlusion fade --
+    const AV_RADIUS = AV_SCALE * 0.9;
+    function resolveCollisions(x, z, r) {
+      for (let pass = 0; pass < 2; pass++) {
+        for (const c of colliders) {
+          const minX = c.minX - r,
+            maxX = c.maxX + r,
+            minZ = c.minZ - r,
+            maxZ = c.maxZ + r;
+          if (x > minX && x < maxX && z > minZ && z < maxZ) {
+            const dL = x - minX,
+              dR = maxX - x,
+              dT = z - minZ,
+              dB = maxZ - z;
+            const mn = Math.min(dL, dR, dT, dB);
+            if (mn === dL) x = minX;
+            else if (mn === dR) x = maxX;
+            else if (mn === dT) z = minZ;
+            else z = maxZ;
+          }
+        }
+      }
+      return { x, z };
+    }
+    const occRay = new BABYLON.Ray(
+      BABYLON.Vector3.Zero(),
+      BABYLON.Vector3.Forward(),
+      1,
+    );
+    const occPredicate = (m) => clubMeshes.has(m);
+    const occSet = new Set();
+    for (const m of clubMeshes) m.visibility = 1;
+    // wainscot/molding grouped by wall (n/s/e/w) so it fades with its wall — rays
+    // reliably hit the big flat walls but slip past the thin trim pieces
+    const wainscotByWall = { n: [], s: [], e: [], w: [] };
+    for (const m of clubMeshes) {
+      const g = /^(?:trim|cream_field)_([nsew])/.exec(m.name);
+      if (g) wainscotByWall[g[1]].push(m);
+    }
+
+    // -- per-frame update --
+    let sendAcc = 0;
+    let fireTime = 0;
+    let lastSent = { x: 1e9, z: 1e9, ry: 0, moving: false };
+    scene.onBeforeRenderObservable.add(() => {
+      const dt = Math.min(0.05, engine.getDeltaTime() / 1000);
+
+      // flicker the low-poly log fire
+      if (flameMeshes.length) {
+        fireTime += dt;
+        for (let i = 0; i < flameMeshes.length; i++) {
+          const f =
+            0.82 +
+            0.22 * Math.sin(fireTime * 7 + i * 2.3) +
+            0.09 * Math.sin(fireTime * 19 + i);
+          flameMeshes[i].scaling.y = f;
+          flameMeshes[i].scaling.x = flameMeshes[i].scaling.z =
+            1 + (1 - f) * 0.35;
+        }
+        if (fireLight)
+          fireLight.intensity =
+            0.72 +
+            0.26 * Math.sin(fireTime * 6 + 1) +
+            0.12 * Math.sin(fireTime * 21);
+      }
+
+      // movement input (camera-relative)
+      let fx = 0,
+        fz = 0;
+      if (keys["w"] || keys["arrowup"]) fz += 1;
+      if (keys["s"] || keys["arrowdown"]) fz -= 1;
+      if (keys["a"] || keys["arrowleft"]) fx -= 1;
+      if (keys["d"] || keys["arrowright"]) fx += 1;
+      fx += joy.x;
+      fz += joy.y; // virtual joystick (touch / no keyboard)
+
+      let dir = null;
+      if (fx || fz) {
+        moveTarget = null;
+        const fwd = camera.getTarget().subtract(camera.position); // camera → target = forward
+        fwd.y = 0;
+        if (fwd.lengthSquared() < 1e-4) fwd.set(0, 0, 1);
+        fwd.normalize();
+        const right = BABYLON.Vector3.Cross(BABYLON.Axis.Y, fwd); // screen-right (fixes A/D)
+        right.normalize();
+        dir = fwd.scale(fz).add(right.scale(fx));
+        if (dir.lengthSquared() > 1e-6) dir.normalize();
+      } else if (moveTarget) {
+        const d = moveTarget.subtract(me.wrapper.position);
+        d.y = 0;
+        if (d.length() < 0.25) moveTarget = null;
+        else dir = d.normalize();
+      }
+
+      let moving = false;
+      if (dir) {
+        const step = MOVE_SPEED * dt;
+        let nx = clamp(
+          me.wrapper.position.x + dir.x * step,
+          bounds.minX,
+          bounds.maxX,
+        );
+        let nz = clamp(
+          me.wrapper.position.z + dir.z * step,
+          bounds.minZ,
+          bounds.maxZ,
+        );
+        let res = resolveCollisions(nx, nz, AV_RADIUS);
+        nx = res.x;
+        nz = res.z;
+        // don't walk through other characters
+        const minD = AV_SCALE * 2;
+        for (const rp of remotes.values()) {
+          const dx = nx - rp.x,
+            dz = nz - rp.z;
+          const d = Math.hypot(dx, dz);
+          if (d > 1e-4 && d < minD) {
+            const p = minD - d;
+            nx += (dx / d) * p;
+            nz += (dz / d) * p;
+          }
+        }
+        res = resolveCollisions(nx, nz, AV_RADIUS); // re-resolve furniture after the push
+        me.wrapper.position.x = clamp(res.x, bounds.minX, bounds.maxX);
+        me.wrapper.position.z = clamp(res.z, bounds.minZ, bounds.maxZ);
+        me.wrapper.position.y = avatarY;
+        myYaw = Math.atan2(dir.x, dir.z) + FACE_OFFSET;
+        moving = true;
+      }
+      me.wrapper.rotation.y = myYaw;
+      setClip(me, moving ? "walk" : "bounce");
+      animateAvatar(me, dt);
+      updateBlink(me, dt);
+      updateHold(me, dt, true);
+
+      // flicker every lit cigarette ember (one shared material)
+      if (anyCig > 0) {
+        const fl = 0.85 + Math.random() * 0.3;
+        emberMat.emissiveColor.set(1.0 * fl, 0.32 * fl, 0.03 * fl);
+      }
+
+      // camera follows the avatar (keeps user's orbit)
+      camera.target.copyFrom(me.wrapper.position);
+      camera.target.y += 1.0;
+
+      // door proximity
+      let near = null;
+      for (const d of doors) {
+        const dx = d.pos.x - me.wrapper.position.x;
+        const dz = d.pos.z - me.wrapper.position.z;
+        if (dx * dx + dz * dz < DOOR_RADIUS * DOOR_RADIUS) near = d.kind;
+      }
+      if (near) {
+        prompt.style.display = "block";
+        const d = doors.find((dd) => dd.kind === near);
+        prompt.textContent = "▸ " + (d ? d.label : "") + " (click the door)";
+      } else {
+        prompt.style.display = "none";
+      }
+
+      // interpolate remotes
+      for (const r of remotes.values()) {
+        const k = Math.min(1, dt * 10);
+        r.x += (r.tx - r.x) * k;
+        r.z += (r.tz - r.z) * k;
+        r.ry = lerpAngle(r.ry, r.try_, k);
+        r.av.wrapper.position.set(r.x, avatarY, r.z);
+        r.av.wrapper.rotation.y = r.ry;
+        setClip(r.av, r.moving ? "walk" : "bounce");
+        animateAvatar(r.av, dt);
+        updateBlink(r.av, dt);
+        updateHold(r.av, dt, false);
+      }
+
+      // network send (throttled, on change)
+      sendAcc += dt;
+      if (sendAcc >= 1 / SEND_HZ) {
+        sendAcc = 0;
+        const px = me.wrapper.position.x,
+          pz = me.wrapper.position.z;
+        if (
+          Math.abs(px - lastSent.x) > 0.01 ||
+          Math.abs(pz - lastSent.z) > 0.01 ||
+          Math.abs(myYaw - lastSent.ry) > 0.01 ||
+          moving !== lastSent.moving
+        ) {
+          net.sendMove(px, pz, myYaw, moving);
+          lastSent = { x: px, z: pz, ry: myYaw, moving };
+        }
+      }
+
+      // fade any building mesh between the camera and the avatar. Rays reliably
+      // catch the big flat walls but slip past the thin wainscot, so when a wall
+      // goes see-through, drag its molding/wainscot along with it.
+      occSet.clear();
+      const toHead = me.wrapper.position
+        .add(new BABYLON.Vector3(0, 0.9, 0))
+        .subtract(camera.position);
+      const distCam = toHead.length();
+      if (distCam > 0.001) {
+        occRay.origin.copyFrom(camera.position);
+        occRay.direction.copyFrom(toHead.scale(1 / distCam));
+        occRay.length = Math.max(0, distCam - 1.2);
+        const picks = scene.multiPickWithRay(occRay, occPredicate);
+        if (picks)
+          for (const p of picks) if (p.pickedMesh) occSet.add(p.pickedMesh);
+        for (const m of [...occSet]) {
+          const wall = /^cream_wall_([nsew])/.exec(m.name);
+          if (wall) for (const w of wainscotByWall[wall[1]]) occSet.add(w);
+        }
+      }
+
+      // horizontal parallax on the window vistas: slide the painted scene with
+      // the camera's position along each window's wall, for an illusion of depth
+      for (const w of parallaxWindows) {
+        const s = BABYLON.Vector3.Dot(
+          camera.position.subtract(w.center),
+          w.along,
+        );
+        w.tex.uOffset = clamp(0.09 + s * 0.006, 0, 0.18);
+      }
+      const fk = Math.min(1, dt * 12);
+      for (const m of clubMeshes) {
+        const goal = occSet.has(m) ? 0.22 : 1.0;
+        m.visibility += (goal - m.visibility) * fk;
+      }
+
+      // project nametags + bubbles to screen
+      updateTags(scene, engine, camera, me, remotes, net.playerId);
+    });
+
+    engine.runRenderLoop(() => scene.render());
+    addEventListener("resize", () => engine.resize());
+
+    function goToDoor(kind) {
+      const d = doors.find((dd) => dd.kind === kind);
+      if (!d || !d.url) return;
+      net.close();
+      location.href = d.url;
+    }
+  }
+
+  // ---- networking module -----------------------------------------------------
+  function ClubhouseNet(url, name, area) {
+    this.url = url;
+    this.name = name;
+    this.area = area || 0;
+    this.ws = null;
+    this.playerId = null;
+    this.offline = false;
+    this.seq = 0;
+    this.onSnapshot = null;
+    this.onChat = null;
+  }
+  ClubhouseNet.prototype.connect = function () {
+    let ws;
+    try {
+      ws = new WebSocket(this.url);
+    } catch (e) {
+      this.offline = true;
+      return;
+    }
+    this.ws = ws;
+    ws.onopen = () => {
+      this._send({ t: "auth", token: "" });
+      this._send({ t: "join", name: this.name });
+    };
+    ws.onmessage = (ev) => {
+      let m;
+      try {
+        m = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      if (m.t === "welcome") {
+        this.playerId = m.playerId;
+        this.sendArea(this.area);
+      } else if (m.t === "gameSnapshot") {
+        if (this.onSnapshot)
+          this.onSnapshot(m.players || [], m.broadcasts || []);
+      } else if (m.t === "chat") {
+        if (this.onChat) this.onChat(m);
+      }
+      // ignore bootstrapRequired and anything else
+    };
+    ws.onerror = () => {
+      this.offline = true;
+    };
+    ws.onclose = () => {
+      this.offline = true;
+    };
+  };
+  ClubhouseNet.prototype._send = function (obj) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(JSON.stringify(obj));
+      } catch {}
+    }
+  };
+  // movement reuses the `in` input message: mx=x, mz=z, yaw, jump=moving
+  ClubhouseNet.prototype.sendMove = function (x, z, yaw, moving) {
+    this._send({
+      t: "in",
+      seq: ++this.seq,
+      mx: x,
+      mz: z,
+      yaw: yaw,
+      jump: !!moving,
+    });
+  };
+  ClubhouseNet.prototype.sendChat = function (text) {
+    this._send({ t: "chat", text: String(text).slice(0, 200) });
+  };
+  // tell the server which room we're in so clients can filter who they see
+  ClubhouseNet.prototype.sendArea = function (area) {
+    this._send({ t: "action", action: "area", direction: area });
+  };
+  // tell everyone what we're holding (0=none, 1=beer, 2=cig)
+  ClubhouseNet.prototype.sendHold = function (code) {
+    this._send({ t: "action", action: "hold", direction: code });
+  };
+  ClubhouseNet.prototype.close = function () {
+    if (this.ws) {
+      try {
+        this.ws.close();
+      } catch {}
+      this.ws = null;
+    }
+  };
+
+  // ---- DOM: chat feed, input, nametags, bubbles ------------------------------
+  const tags = new Map(); // id -> div (nametag)
+  const bubbles = new Map(); // id -> {el, until}
+  let feedEl = null;
+
+  function buildChatUI() {
+    const wrap = document.createElement("div");
+    Object.assign(wrap.style, {
+      position: "absolute",
+      left: "12px",
+      top: "12px",
+      width: "300px",
+      maxWidth: "70vw",
+      zIndex: "50",
+      pointerEvents: "none",
+      fontFamily: "Arial, sans-serif",
+    });
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "Press Enter to chat…";
+    input.maxLength = 200;
+    Object.assign(input.style, {
+      width: "100%",
+      boxSizing: "border-box",
+      pointerEvents: "auto",
+      padding: "8px 12px",
+      borderRadius: "16px",
+      border: "3px solid #476a23",
+      background: "rgba(255,255,255,0.9)",
+      fontSize: "14px",
+      outline: "none",
+    });
+    // feed sits BELOW the entry, newest on top, older scrolling downward and
+    // fading out ~halfway; scrollable to read older lines
+    feedEl = document.createElement("div");
+    const fade =
+      "linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,1) 38%, rgba(0,0,0,0) 82%)";
+    Object.assign(feedEl.style, {
+      marginTop: "8px",
+      maxHeight: "42vh",
+      overflowY: "auto",
+      display: "flex",
+      flexDirection: "column",
+      gap: "4px",
+      fontSize: "13px",
+      color: "#08240f",
+      textShadow: "0 1px 2px rgba(255,255,255,0.5)",
+      pointerEvents: "auto",
+      scrollbarWidth: "none", // thin/hidden scrollbar (still scrollable)
+      WebkitMaskImage: fade,
+      maskImage: fade,
+    });
+    wrap.appendChild(input);
+    wrap.appendChild(feedEl);
+    document.body.appendChild(wrap);
+    return { input };
+  }
+
+  function pushFeed(text) {
+    if (!feedEl) return;
+    const line = document.createElement("div");
+    line.textContent = text;
+    Object.assign(line.style, {
+      background: "rgba(200,230,200,0.72)",
+      borderRadius: "10px",
+      padding: "3px 9px",
+      alignSelf: "flex-start",
+      maxWidth: "100%",
+      flex: "0 0 auto",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+    });
+    feedEl.insertBefore(line, feedEl.firstChild); // newest on top
+    while (feedEl.children.length > 40) feedEl.removeChild(feedEl.lastChild);
+    feedEl.scrollTop = 0; // keep the newest message in view
+  }
+
+  function makeTag(id, name) {
+    const d = document.createElement("div");
+    d.textContent = name;
+    Object.assign(d.style, {
+      position: "absolute",
+      transform: "translate(-50%,-100%)",
+      padding: "1px 6px",
+      borderRadius: "8px",
+      background: "rgba(20,40,20,0.7)",
+      color: "#eaffea",
+      fontSize: "12px",
+      fontWeight: "bold",
+      fontFamily: "Arial, sans-serif",
+      whiteSpace: "nowrap",
+      pointerEvents: "none",
+    });
+    document.getElementById("overlay").appendChild(d);
+    tags.set(id, d);
+  }
+  function removeTag(id) {
+    const d = tags.get(id);
+    if (d) d.remove();
+    tags.delete(id);
+  }
+
+  function showBubble(id, text) {
+    removeBubble(id);
+    const el = document.createElement("div");
+    el.textContent = text;
+    Object.assign(el.style, {
+      position: "absolute",
+      transform: "translate(-50%,-100%)",
+      padding: "5px 10px",
+      borderRadius: "12px",
+      background: "rgba(255,255,255,0.95)",
+      color: "#123",
+      fontSize: "13px",
+      maxWidth: "180px",
+      textAlign: "center",
+      border: "2px solid #476a23",
+      pointerEvents: "none",
+      fontFamily: "Arial, sans-serif",
+    });
+    document.getElementById("overlay").appendChild(el);
+    bubbles.set(id, { el, until: Date.now() + 4200 });
+  }
+  function removeBubble(id) {
+    const b = bubbles.get(id);
+    if (b) b.el.remove();
+    bubbles.delete(id);
+  }
+
+  function projectToScreen(scene, engine, camera, worldPos) {
+    const v = BABYLON.Vector3.Project(
+      worldPos,
+      BABYLON.Matrix.Identity(),
+      scene.getTransformMatrix(),
+      camera.viewport.toGlobal(
+        engine.getRenderWidth(),
+        engine.getRenderHeight(),
+      ),
+    );
+    // behind camera?
+    const toPt = worldPos.subtract(camera.position);
+    if (BABYLON.Vector3.Dot(toPt, camera.getForwardRay().direction) < 0)
+      return null;
+    return v;
+  }
+
+  function updateTags(scene, engine, camera, me, remotes, myId) {
+    const dpr = engine.getHardwareScalingLevel ? 1 : 1;
+    const now = Date.now();
+    // helper to place an element over an avatar head
+    function place(map, id, wrapper, extraY) {
+      const head = wrapper.position.clone();
+      head.y += extraY;
+      const p = projectToScreen(scene, engine, camera, head);
+      const el = map.get(id);
+      if (!el) return;
+      const node = el.el || el;
+      if (!p) {
+        node.style.display = "none";
+        return;
+      }
+      node.style.display = "block";
+      node.style.left = p.x / dpr + "px";
+      node.style.top = p.y / dpr + "px";
+    }
+    // remote nametags
+    for (const [id, r] of remotes) place(tags, id, r.av.wrapper, 1.8);
+    // bubbles (remotes + me)
+    for (const [id, b] of bubbles) {
+      if (now > b.until) {
+        removeBubble(id);
+        continue;
+      }
+      const wrapper =
+        id === "me"
+          ? me.wrapper
+          : remotes.get(id) && remotes.get(id).av.wrapper;
+      if (!wrapper) {
+        removeBubble(id);
+        continue;
+      }
+      place(bubbles, id, wrapper, 2.4);
+    }
+  }
+
+  // ---- small utils -----------------------------------------------------------
+  function clamp(v, a, b) {
+    return v < a ? a : v > b ? b : v;
+  }
+  function lerp(a, b, t) {
+    return a + (b - a) * t;
+  }
+
+  // Walk/hop keyframes [phase, yOffset, scaleXZ, scaleY] — Apple Royale's hop
+  // (crouch → launch-stretch → peak → land → impact-squash), base pinned to floor.
+  const WALK_KEYS = [
+    [0.0, 0.0, 1.0, 1.0],
+    [0.103, -0.16, 1.1, 0.84],
+    [0.241, 0.21, 0.92, 1.16],
+    [0.345, 0.4, 0.97, 1.06],
+    [0.517, 0.22, 1.0, 1.0],
+    [0.655, 0.0, 1.0, 1.0],
+    [0.759, -0.2, 1.12, 0.8],
+    [0.897, 0.06, 0.97, 1.06],
+    [1.0, 0.0, 1.0, 1.0],
+  ];
+  function sampleWalk(phase) {
+    for (let i = 1; i < WALK_KEYS.length; i++) {
+      if (phase <= WALK_KEYS[i][0]) {
+        const a = WALK_KEYS[i - 1],
+          b = WALK_KEYS[i];
+        const t = (phase - a[0]) / (b[0] - a[0] || 1);
+        return {
+          y: lerp(a[1], b[1], t),
+          sxy: lerp(a[2], b[2], t),
+          sz: lerp(a[3], b[3], t),
+        };
+      }
+    }
+    const l = WALK_KEYS[WALK_KEYS.length - 1];
+    return { y: l[1], sxy: l[2], sz: l[3] };
+  }
+  function lerpAngle(a, b, t) {
+    let d = ((b - a + Math.PI) % (2 * Math.PI)) - Math.PI;
+    if (d < -Math.PI) d += 2 * Math.PI;
+    return a + d * t;
+  }
+})();

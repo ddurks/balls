@@ -56,10 +56,10 @@ const CONFIG = {
     NORMAL_MAP_PATH: "assets/texture/groundnormals.png",
   },
   BALL: {
-    COLLIDER_DIAMETER: 0.4,
+    COLLIDER_DIAMETER: 0.0427, // real golf ball = 42.7 mm (1 unit = 1 m)
     MASS: 0.045,
     FRICTION: 0.9,
-    RESTITUTION: 0.6,
+    RESTITUTION: 0.3, // turf-like: real balls barely bounce on grass (was 0.6 = hard court)
     LINEAR_DAMPING: 0.3,
     ANGULAR_DAMPING: 1.2,
   },
@@ -79,16 +79,23 @@ const CONFIG = {
     FOV_AIM: 1.5,
     FOV_PLAY: 1.5,
     FOLLOW_SMOOTH: 0.1,
-    POSITION_LERP_SPEED: 0.15,
+    POSITION_LERP_SPEED: 0.25, // gentle ease — used for the shot-review reveal
+    // Tight follow during live play. The airborne ball's path is noise-free
+    // (constant gravity + constant wind + damping, one physics step per frame),
+    // so we can track it closely without any jitter — which lets us drop the old
+    // hard distance-clamp that was pinning the camera to the ball's velocity
+    // direction and causing the shake. ~0.19 m of lag at driver speed.
+    POSITION_LERP_SPEED_PLAY: 2.0,
     ANGLE_LERP_SPEED: 0.08,
   },
   GRASS: {
-    VIEW_RADIUS: 30,
-    UPDATE_THRESHOLD: 5,
-    BLADES_PER_CELL: 100, // blades per 25-unit cell
-    CELL_SIZE: 25, // Smaller cells = more density
-    GREEN_EXCLUSION_RADIUS: 31, // Don't spawn within 35 units of pins
-    TERRAIN_RADIUS: 183, // Match ground disc radius
+    VIEW_RADIUS: 16, // grass radius (m) around the CAMERA
+    BLADES_PER_CELL: 200, // blades per CELL_SIZE² chunk (~12/m²)
+    CELL_SIZE: 4, // chunk size (m); grass only rebuilds when the camera crosses one
+    BLADE_SIZE: 0.08, // crossed-quad blade ≈ 8 cm (matches the 42.7 mm ball scale)
+    FREEZE_ABOVE_SPEED: 8, // m/s: stop rebuilding grass while the ball flies (anti-jitter)
+    GREEN_EXCLUSION_RADIUS: 31, // keep grass this far from each pin/green
+    TERRAIN_RADIUS: 183, // practice-mode flat-disc radius
   },
   LIGHTING: {
     AMBIENT_INTENSITY: 0.75,
@@ -102,33 +109,36 @@ const CONFIG = {
     STANDARD_SPECULAR: 0.03,
   },
   AIM_VIEW: {
-    CAMERA_DISTANCE: 5,
-    CAMERA_HEIGHT: 1.5,
-    CAMERA_HEIGHT_MIN: 1.5,
-    CAMERA_HEIGHT_MAX: 10,
+    CAMERA_DISTANCE: 0.25,
+    CAMERA_HEIGHT: 0.075,
+    CAMERA_HEIGHT_MIN: 0.075,
+    CAMERA_HEIGHT_MAX: 0.5,
     MOUSE_ROTATION_SENSITIVITY: 0.005,
-    MOUSE_HEIGHT_SENSITIVITY: 0.01,
+    MOUSE_HEIGHT_SENSITIVITY: 0.001,
     CLICK_DETECTION_THRESHOLD: 5,
   },
   TRAJECTORY: {
     ARROW_LENGTH: 12,
     ARROW_RADIUS: 0.15,
-    ARROW_Y_OFFSET: 0.5,
+    ARROW_Y_OFFSET: 0.05,
   },
   FOLLOW_CAMERA: {
+    // PLAY view = the strike-swipe and in-flight/spin-swipe camera. Kept as close
+    // as AIM_VIEW so the ball is the same prominent size (easy to swipe on to
+    // strike and to spin). The brief "watch the club" zoom-out lives separately in
+    // SwingCoordinator.executeSwing.
     PLAY_VIEW_OFFSET_X: 0,
-    PLAY_VIEW_OFFSET_Y: 0,
-    PLAY_VIEW_OFFSET_Z: 2,
-    PLAY_VIEW_LOOK_OFFSET_Y: 1.5,
-    PLAY_VIEW_LOOK_OFFSET_Z: -5,
-    PLAY_VIEW_MAX_DISTANCE: 40, // Maximum distance camera can zoom out during shot review
-    FULL_SHOT_VIEW_MIN_HEIGHT: 8,
-    FULL_SHOT_VIEW_MIN_Z: 15,
-    FULL_SHOT_VIEW_LOOK_Z: -30,
-    FULL_SHOT_VIEW_SCALE_X: 0.2,
-    FULL_SHOT_VIEW_SCALE_Y: 0.35,
-    FULL_SHOT_VIEW_SCALE_Z: 0.5,
-    FULL_SHOT_VIEW_SCALE_LOOK_Z: 0.6,
+    PLAY_VIEW_OFFSET_Y: 0.075,
+    PLAY_VIEW_OFFSET_Z: 0.25,
+    PLAY_VIEW_LOOK_OFFSET_Y: 0.05,
+    PLAY_VIEW_LOOK_OFFSET_Z: 0,
+    FULL_SHOT_VIEW_MIN_HEIGHT: 0.8,
+    FULL_SHOT_VIEW_MIN_Z: 1.5,
+    FULL_SHOT_VIEW_LOOK_Z: -3,
+    FULL_SHOT_VIEW_SCALE_X: 0.05,
+    FULL_SHOT_VIEW_SCALE_Y: 0.08,
+    FULL_SHOT_VIEW_SCALE_Z: 0.12,
+    FULL_SHOT_VIEW_SCALE_LOOK_Z: 0.12,
     OVERVIEW_ORBIT_SENSITIVITY: 0.005,
   },
   GOLF_BALL: {
@@ -159,20 +169,20 @@ const CONFIG = {
   },
   PINS: {
     GREEN_RADIUS: 30,
-    PIN_HEIGHT: 12.0,
-    PIN_DIAMETER: 0.2,
-    PIN_Y_OFFSET: 6.0,
+    PIN_HEIGHT: 2.13, // real flagstick = 7 ft
+    PIN_DIAMETER: 0.013, // real flagstick ≈ 1/2"
+    PIN_Y_OFFSET: 1.065, // = PIN_HEIGHT / 2 so the base sits on the green
     GREEN_Y_OFFSET: 0.001,
     GREEN_TEXTURE_PATH: "assets/texture/puttingground.png",
     GREEN_NORMAL_MAP_PATH: "assets/texture/puttinggroundnormals.png",
     GREEN_UV_TILING: 10,
-    PIN_COLLISION_RADIUS: 0.3,
+    PIN_COLLISION_RADIUS: 0.06,
     PIN_COLLISION_MIN_SPEED: 0.5,
     PIN_FLASH_SCALE_Y: 2,
     PIN_FLASH_DURATION_MS: 100,
-    FLAG_WIDTH: 4.0,
-    FLAG_HEIGHT: 2.4,
-    HOLE_RADIUS: 0.8,
+    FLAG_WIDTH: 0.36,
+    FLAG_HEIGHT: 0.3,
+    HOLE_RADIUS: 0.054, // real cup = 108 mm diameter
     HOLE_Y_OFFSET: 0.35,
     FLAG_WIND_THRESHOLD: 2.235, // ~5 mph in m/s
   },
@@ -181,7 +191,7 @@ const CONFIG = {
     MAX_AGE_MS: 3000,
     MIN_DISTANCE_BETWEEN_POINTS: 4,
     UPDATE_FREQUENCY: 1,
-    TRAIL_RADIUS: 0.06,
+    TRAIL_RADIUS: 0.02,
   },
   SWIPE_OVERLAY: {
     START_X_PCT: 0.5,
@@ -1075,20 +1085,24 @@ const Utils = {
 // ─── CLUB DATA ──────────────────────────────────────────────────────────────
 
 class ClubData {
+  // maxDistance = the club's estimate in metres (shown as yards in the UI).
+  // v0 = full-power launch speed (m/s) at the club's loft, CALIBRATED so carry ≈
+  //   maxDistance on the range with no wind. Regenerate after changing maxDistance
+  //   (or ball physics) with: node scripts/club-calibrate.js
   static CLUBS = [
-    { id: 0, name: "Putter", angle: 0, maxDistance: 11 },
-    { id: 1, name: "Lob Wedge", angle: 60, maxDistance: 55 },
-    { id: 2, name: "Pitching Wedge", angle: 45, maxDistance: 66 },
-    { id: 3, name: "9 Iron", angle: 42, maxDistance: 88 },
-    { id: 4, name: "8 Iron", angle: 39, maxDistance: 109 },
-    { id: 5, name: "7 Iron", angle: 37, maxDistance: 131 },
-    { id: 6, name: "6 Iron", angle: 34, maxDistance: 153 },
-    { id: 7, name: "5 Iron", angle: 31, maxDistance: 175 },
-    { id: 8, name: "4 Iron", angle: 28, maxDistance: 197 },
-    { id: 9, name: "Hybrid", angle: 20, maxDistance: 241 },
-    { id: 10, name: "3 Wood", angle: 16, maxDistance: 263 },
-    { id: 11, name: "5 Wood", angle: 19, maxDistance: 252 },
-    { id: 12, name: "Driver", angle: 12, maxDistance: 306 },
+    { id: 0, name: "Putter", angle: 0, maxDistance: 11, v0: 11.5 },
+    { id: 1, name: "Lob Wedge", angle: 60, maxDistance: 55, v0: 40 },
+    { id: 2, name: "Pitching Wedge", angle: 45, maxDistance: 66, v0: 37.7 },
+    { id: 3, name: "9 Iron", angle: 42, maxDistance: 88, v0: 45.4 },
+    { id: 4, name: "8 Iron", angle: 39, maxDistance: 109, v0: 52.4 },
+    { id: 5, name: "7 Iron", angle: 37, maxDistance: 131, v0: 59.6 },
+    { id: 6, name: "6 Iron", angle: 34, maxDistance: 153, v0: 66.4 },
+    { id: 7, name: "5 Iron", angle: 31, maxDistance: 175, v0: 73 },
+    { id: 8, name: "4 Iron", angle: 28, maxDistance: 197, v0: 80.2 },
+    { id: 9, name: "Hybrid", angle: 20, maxDistance: 241, v0: 93.3 },
+    { id: 10, name: "3 Wood", angle: 16, maxDistance: 263, v0: 102.1 },
+    { id: 11, name: "5 Wood", angle: 19, maxDistance: 252, v0: 96.9 },
+    { id: 12, name: "Driver", angle: 12, maxDistance: 306, v0: 117 },
   ];
 
   static getClub(id) {
@@ -1110,7 +1124,7 @@ class PinIndicatorArrow {
     this.isLoaded = false;
     this.bobTimer = 0;
     this.bobSpeed = 2; // cycles per second
-    this.bobHeight = 3;
+    this.bobHeight = 0.3;
     this.loadArrowModel();
   }
 
@@ -1153,6 +1167,7 @@ class PinIndicatorArrow {
     }
 
     this.arrow = this.arrowTemplate.clone("pinIndicatorArrow_instance");
+    this.arrow.scaling.scaleInPlace(0.107); // Phase 1: match real golf-ball scale
     this.arrow.setEnabled(true);
     this.arrow.rotation = new BABYLON.Vector3(Math.PI / 2, 0, 0); // Point downward
     this.arrow.rotationQuaternion = null;
@@ -1195,7 +1210,7 @@ class PinIndicatorArrow {
     const bobAmount = Math.sin(this.bobTimer * Math.PI * 2) * this.bobHeight;
 
     const pos = this.pinPosition.clone();
-    pos.y += 15 + bobAmount; // 15 = height above pin, + bob
+    pos.y += 2.6 + bobAmount; // sits just above the 2.13 m flag, + bob
 
     this.arrow.position = pos;
     this.arrow.rotation.x = Math.PI / 2; // Keep pointing downward
@@ -1270,6 +1285,7 @@ class TrajectoryArrow {
 
     // Clone the arrow model
     this.arrow = this.arrowTemplate.clone("trajectoryArrow_instance");
+    this.arrow.scaling.scaleInPlace(0.107); // Phase 1: match real golf-ball scale
     this.arrow.setEnabled(true);
 
     // Reset rotations to identity on the cloned instance
@@ -1573,8 +1589,11 @@ class AimView {
     this.onPointerMove = (e) => {
       if (!this.isDragging || !this.isActive) return;
 
-      // User is rotating camera - allow auto-select to track new aim
-      this.clubSelector.enableAutoSelect();
+      // NOTE: rotating the camera must NOT wipe a manual club pick. Auto-select
+      // already tracks the aim every frame in update() while manuallySelectedClub
+      // is false; the old enableAutoSelect() here only cleared the player's choice,
+      // so switching clubs and then nudging the aim fired the shot with the
+      // suggested club instead of the one you picked.
 
       const deltaX = e.clientX - this.lastMouseX;
       const deltaY = e.clientY - this.lastMouseY;
@@ -1759,7 +1778,7 @@ class AimView {
       ballPos.y + this.cameraHeight,
       cameraZ,
     );
-    this.camera.setTarget(ballPos.add(new BABYLON.Vector3(0, 1, 0)));
+    this.camera.setTarget(ballPos.add(new BABYLON.Vector3(0, 0.05, 0)));
 
     // Always get the current club (will be used for arrow and calculations)
     const club = ClubData.getClub(this.clubSelector.currentClub);
@@ -1881,6 +1900,18 @@ class GolfBallGuy {
   // constant decel. ~3.0 m/s² stops slopes up to ~18°; steeper banks still roll.
   static ROLL_BRAKE_SPEED = 2.5;
   static ROLL_BRAKE_DECEL = 3.0;
+  // Anti-tunnel guard: a real-size (42.7 mm) ball at ~100 m/s moves far more than
+  // its own radius per physics step, so on a fast terrain impact (tee-shot into a
+  // rise, or a hard landing) it can punch straight through the thin triangle-MESH
+  // terrain. No substep rate is high enough to catch that reliably, so we sweep it
+  // back on top each frame instead. Only meaningful above this speed.
+  static TUNNEL_GUARD_MIN_SPEED = 6;
+  // Above this height over the terrain the ball can't tunnel through it, so we skip
+  // the (costly) per-frame terrain ray-pick — it only matters in the last metre or
+  // two before the surface. Comfortably clears one frame's fall at drive speed.
+  static TUNNEL_GUARD_MAX_HEIGHT = 3;
+  static _surfPred = (m) =>
+    m.name && m.name.startsWith("surf_") && !m.name.startsWith("surf_water");
 
   constructor(mesh, physicsBody, skeleton, scene) {
     // Physics properties
@@ -2016,44 +2047,88 @@ class GolfBallGuy {
     }
   }
 
+  // Swept anti-tunnel guard (see TUNNEL_GUARD_MIN_SPEED). If the ball ended a step
+  // below the terrain surface at its x,z, it tunneled through — bounce it off the
+  // surface (reflect velocity by restitution) and lift it back on top.
+  preventTunneling() {
+    if (!this.body || this._teleportRestoreFrames > 0) return;
+    if (this.getSpeed() < GolfBallGuy.TUNNEL_GUARD_MIN_SPEED) return;
+    // Skip the terrain ray-pick while the ball is well above the ground — it can't
+    // tunnel from up there, and picking every frame of the whole flight is what
+    // spikes frame times (and makes the follow camera look jittery). getHeight() is
+    // an O(1) height-grid read, so this early-out is essentially free.
+    if (this.getHeight() > GolfBallGuy.TUNNEL_GUARD_MAX_HEIGHT) return;
+    const p = this.mesh.getAbsolutePosition();
+    const r = CONFIG.BALL.COLLIDER_DIAMETER / 2;
+    const ray =
+      this._tgRay ||
+      (this._tgRay = new BABYLON.Ray(
+        new BABYLON.Vector3(),
+        new BABYLON.Vector3(0, -1, 0),
+        80,
+      ));
+    ray.origin.set(p.x, p.y + 3, p.z);
+    const hit = this.scene.pickWithRay(ray, GolfBallGuy._surfPred);
+    if (!hit || !hit.hit) return;
+    const surfaceY = hit.pickedPoint.y;
+    if (p.y >= surfaceY + r - 0.03) return; // on/above the surface — nothing to do
+    // Reflect the into-surface velocity component (a bounce), then lift on top.
+    const v = this._tgV || (this._tgV = new BABYLON.Vector3());
+    this.body.getLinearVelocityToRef(v);
+    let n = hit.getNormal(true);
+    if (!n) n = new BABYLON.Vector3(0, 1, 0);
+    const vn = v.x * n.x + v.y * n.y + v.z * n.z;
+    if (vn < 0) {
+      const e = CONFIG.BALL.RESTITUTION;
+      v.x -= (1 + e) * vn * n.x;
+      v.y -= (1 + e) * vn * n.y;
+      v.z -= (1 + e) * vn * n.z;
+      this.body.setLinearVelocity(v);
+    }
+    this.mesh.position.y = surfaceY + r + 0.01;
+    this.body.disablePreStep = false;
+    this._teleportRestoreFrames = 2;
+    this.mesh.computeWorldMatrix(true);
+  }
+
   applyHit(
     deltaX,
     deltaY,
     force,
     aimedDirection = 0,
     clubLaunchAngle = 0,
-    clubMaxDistance = 100,
+    clubLaunchSpeed = 40,
   ) {
     const swipeStrength = Math.min(
       force / 100,
       CONFIG.GOLF_BALL.MAX_HIT_STRENGTH,
     );
-    // Scale forward force based on club's max distance (e.g., Driver 280m vs Wedge 60m)
-    // Use sqrt scaling to soften the differences while maintaining realistic ratios
-    const distanceMultiplier = Math.sqrt(clubMaxDistance / 100);
-    const forwardForce =
-      PhysicsConfig.HIT_FORWARD_FORCE * swipeStrength * distanceMultiplier;
-    // Club launch angle directly scales upward force: 0° = roll, 45° = high loft
-    const angleRadians = (clubLaunchAngle * Math.PI) / 180;
-    const upwardForce =
-      PhysicsConfig.HIT_UPWARD_FORCE *
-      swipeStrength *
-      Math.sin(angleRadians) *
-      2;
-    const horizontalDeviation =
-      -deltaX * CONFIG.GOLF_BALL.HIT_HORIZONTAL_DEVIATION_FACTOR;
+    // Distance is driven by a per-club launch SPEED (calibrated so full-power
+    // carry ≈ the club's estimate — see scripts/club-distance-test.js), launched
+    // at the club's loft. The old model derived speed from ad-hoc force constants
+    // × sqrt(distance) for forward and × sin(loft) for lift, which were coupled to
+    // neither each other nor the target — so short/high-loft clubs flew ~2.5× their
+    // number and the whole set bunched into a narrow band.
+    const powerRatio = swipeStrength / CONFIG.GOLF_BALL.MAX_HIT_STRENGTH; // 0..1
+    const theta = (clubLaunchAngle * Math.PI) / 180;
+    const speed = clubLaunchSpeed * powerRatio;
+    const vForward = speed * Math.cos(theta);
+    const vUp = speed * Math.sin(theta);
+    // Sideways component of the swipe curves the shot. Kept on the same Δv scale as
+    // the old force path (force→impulse/mass·dt) so left/right feel is unchanged.
+    const vLateral =
+      (-deltaX *
+        CONFIG.GOLF_BALL.HIT_HORIZONTAL_DEVIATION_FACTOR *
+        CONFIG.SWIPE_OVERLAY.PHYSICS_STEP_SECONDS) /
+      CONFIG.BALL.MASS;
 
-    const localForce = new BABYLON.Vector3(
-      horizontalDeviation,
-      upwardForce,
-      -forwardForce,
-    );
+    const localVel = new BABYLON.Vector3(vLateral, vUp, -vForward);
     const { x: rotX, z: rotZ } = Utils.rotate2D(
-      localForce.x,
-      localForce.z,
+      localVel.x,
+      localVel.z,
       aimedDirection,
     );
-    const rotatedForce = new BABYLON.Vector3(rotX, localForce.y, rotZ);
+    const launchVel = new BABYLON.Vector3(rotX, localVel.y, rotZ);
 
     const impactPoint = this.getPosition().add(
       new BABYLON.Vector3(
@@ -2063,14 +2138,9 @@ class GolfBallGuy {
       ),
     );
 
-    // Deliver the strike as an instantaneous impulse (J = mass·Δv) instead of a
-    // force integrated over one variable-length physics step. applyForce made the
-    // launch speed depend on frame length (a long frame = a bigger hit) and it
-    // didn't match the trajectory preview, which models Δv = force/mass · dt with
-    // dt = PHYSICS_STEP_SECONDS. Scaling the force by that same dt makes the two
-    // agree and makes the shot frame-rate independent (identical at 60 fps).
-    const impulse = rotatedForce.scale(CONFIG.SWIPE_OVERLAY.PHYSICS_STEP_SECONDS);
-    this.body.applyImpulse(impulse, impactPoint);
+    // From rest, an impulse J = m·Δv delivers Δv = launchVel exactly, so the launch
+    // speed is the calibrated value regardless of frame length (frame-rate safe).
+    this.body.applyImpulse(launchVel.scale(CONFIG.BALL.MASS), impactPoint);
     this.body.setAngularVelocity(BABYLON.Vector3.Zero());
   }
 
@@ -2526,11 +2596,11 @@ class FollowCamera {
     const mid = BABYLON.Vector3.Lerp(this.shotStartPosition, ballPos, 0.5);
 
     this.setOffsets(
-      Math.max(8, dist * CONFIG.FOLLOW_CAMERA.FULL_SHOT_VIEW_SCALE_X),
-      Math.max(12, dist * CONFIG.FOLLOW_CAMERA.FULL_SHOT_VIEW_SCALE_Y),
-      Math.max(20, dist * CONFIG.FOLLOW_CAMERA.FULL_SHOT_VIEW_SCALE_Z),
-      1,
-      -Math.max(35, dist * CONFIG.FOLLOW_CAMERA.FULL_SHOT_VIEW_SCALE_LOOK_Z),
+      Math.max(0.8, dist * CONFIG.FOLLOW_CAMERA.FULL_SHOT_VIEW_SCALE_X),
+      Math.max(1.2, dist * CONFIG.FOLLOW_CAMERA.FULL_SHOT_VIEW_SCALE_Y),
+      Math.max(2, dist * CONFIG.FOLLOW_CAMERA.FULL_SHOT_VIEW_SCALE_Z),
+      0.1,
+      -Math.max(3.5, dist * CONFIG.FOLLOW_CAMERA.FULL_SHOT_VIEW_SCALE_LOOK_Z),
       mid,
     );
   }
@@ -2578,7 +2648,13 @@ class FollowCamera {
     // f approaches 1 as dt grows, giving consistent feel at any fps
     const f = 1 - Math.exp(-this.smoothSpeed * 60 * dt);
     const fAngle = 1 - Math.exp(-this.cameraAngleLerpSpeed * 60 * dt);
-    const fPos = 1 - Math.exp(-CONFIG.CAMERA.POSITION_LERP_SPEED * 60 * dt);
+    // Track tightly during live play (the ball path is smooth, so tight ≠ jittery);
+    // keep the gentle ease for the shot-review reveal.
+    const posSpeed =
+      this.viewMode === CameraViewMode.PLAY
+        ? CONFIG.CAMERA.POSITION_LERP_SPEED_PLAY
+        : CONFIG.CAMERA.POSITION_LERP_SPEED;
+    const fPos = 1 - Math.exp(-posSpeed * 60 * dt);
 
     this.offsetX = BABYLON.Scalar.Lerp(this.offsetX, this.targetOffsetX, f);
     this.offsetY = BABYLON.Scalar.Lerp(this.offsetY, this.targetOffsetY, f);
@@ -2615,24 +2691,11 @@ class FollowCamera {
       referencePoint.z + offsetZ,
     );
 
-    // Clamp camera distance in PLAY view mode
-    if (this.viewMode === CameraViewMode.PLAY) {
-      const dx = newPosition.x - referencePoint.x;
-      const dz = newPosition.z - referencePoint.z;
-      const distFromRef = Math.hypot(dx, dz);
-      if (
-        distFromRef > CONFIG.FOLLOW_CAMERA.PLAY_VIEW_MAX_DISTANCE &&
-        distFromRef > 1e-6
-      ) {
-        const k = CONFIG.FOLLOW_CAMERA.PLAY_VIEW_MAX_DISTANCE / distFromRef;
-        newPosition.x = referencePoint.x + dx * k;
-        newPosition.z = referencePoint.z + dz * k;
-      }
-    }
-
     // Smooth in place, then copy values into the camera's own position vector
     // (keeping them separate objects so engine-side normalization can't perturb
-    // our smoothing source).
+    // our smoothing source). No distance-clamp: the tight PLAY follow rate keeps
+    // the ball framed on its own, and the old clamp was what pinned the camera to
+    // the ball's (fast-rotating) velocity direction and made it shake.
     BABYLON.Vector3.LerpToRef(
       this.lastPosition,
       newPosition,
@@ -2646,98 +2709,35 @@ class FollowCamera {
       this.lookOffsetZ,
       this.cameraAngle,
     );
-    const lookTarget = this._camLook || (this._camLook = new BABYLON.Vector3());
-    lookTarget.set(
+    const newLook = this._newLook || (this._newLook = new BABYLON.Vector3());
+    newLook.set(
       referencePoint.x + lookX,
       referencePoint.y + this.lookOffsetY,
       referencePoint.z + lookZ,
     );
+    // Smooth the look target too (same rate as position) so any transient in the
+    // aim point — an impact, a landing bounce — can't snap the view's rotation.
+    const lookTarget = this._camLook || (this._camLook = newLook.clone());
+    BABYLON.Vector3.LerpToRef(lookTarget, newLook, fPos, lookTarget);
     this.camera.setTarget(lookTarget);
   }
 }
 
-// ─── SPATIAL GRID (REUSABLE PARTITIONING SYSTEM) ──────────────────────────────
-// Efficient spatial partitioning for culling and querying objects by proximity.
-// Can be used by any system: grass, particles, NPCs, etc.
-
-class SpatialGrid {
-  constructor(worldSize, cellSize) {
-    this.worldSize = worldSize; // Terrain width/height (e.g., 2500)
-    this.cellSize = cellSize; // Individual cell size (e.g., 50)
-    this.grid = new Map(); // cellId -> Set of objects
-  }
-
-  getCellId(x, z) {
-    const cellX = Math.floor(x / this.cellSize);
-    const cellZ = Math.floor(z / this.cellSize);
-    return `${cellX},${cellZ}`;
-  }
-
-  insert(obj) {
-    const cellId = this.getCellId(obj.position.x, obj.position.z);
-    if (!this.grid.has(cellId)) {
-      this.grid.set(cellId, new Set());
-    }
-    this.grid.get(cellId).add(obj);
-    obj._gridCell = cellId; // Store for fast removal
-  }
-
-  remove(obj) {
-    if (obj._gridCell && this.grid.has(obj._gridCell)) {
-      this.grid.get(obj._gridCell).delete(obj);
-    }
-  }
-
-  // Update object position in grid (call when object moves significantly)
-  update(obj, oldPos) {
-    const oldCellId = this.getCellId(oldPos.x, oldPos.z);
-    const newCellId = this.getCellId(obj.position.x, obj.position.z);
-
-    if (oldCellId !== newCellId) {
-      this.remove(obj);
-      this.insert(obj);
-    }
-  }
-
-  // Query all objects within radius of center point
-  queryRadius(centerPos, radius) {
-    const results = [];
-    const cellRadius = Math.ceil(radius / this.cellSize);
-    const centerCellX = Math.floor(centerPos.x / this.cellSize);
-    const centerCellZ = Math.floor(centerPos.z / this.cellSize);
-
-    for (let dx = -cellRadius; dx <= cellRadius; dx++) {
-      for (let dz = -cellRadius; dz <= cellRadius; dz++) {
-        const cellId = `${centerCellX + dx},${centerCellZ + dz}`;
-        if (this.grid.has(cellId)) {
-          results.push(...this.grid.get(cellId));
-        }
-      }
-    }
-
-    return results;
-  }
-
-  clear() {
-    this.grid.clear();
-  }
-}
-
 // ─── GRASS SYSTEM ──────────────────────────────────────────────────────────
-// Dynamic instanced mesh rendering with spatial grid culling.
-// Spawns/despawns grass around ball position only within terrain bounds.
+// GPU thin-instanced grass. Each texture variant is ONE mesh drawn in a single
+// call from a matrix buffer — no per-blade scene nodes, no per-frame billboarding.
+// Blades are crossed quads (an "X" from above) so they read as volume from any
+// angle without facing the camera. Grass is generated in fixed CELL_SIZE chunks
+// around the CAMERA and only rebuilt when the camera crosses a chunk boundary.
 
 class GrassSystem {
   constructor(scene) {
     this.scene = scene;
-    this.grassBaseMeshes = [];
-    this.grassInstances = new Map(); // cellKey -> instances array
-    this.lastGrassGridPos = null;
-    this.spatialGrid = new SpatialGrid(
-      CONFIG.TERRAIN.WIDTH,
-      CONFIG.GRASS.CELL_SIZE,
-    );
-    // Course-mode hooks (null in practice → original flat behavior).
+    this.grassMeshes = []; // one crossed-quad template per grass texture
+    this.chunks = new Map(); // "cx,cz" -> { mats: Float32Array[] } (per variant)
+    this.activeKeys = new Set();
+    this.lastCenter = null; // last center chunk {cx, cz}; gates rebuilds
+    // Course-mode hooks (null in practice → flat disc at y=0).
     // groundYAt(x,z) → terrain height for the blade; playableAt(x,z) → whether
     // grass is allowed there (fairway/rough only, not water/sand/off-hole).
     this.groundYAt = null;
@@ -2745,165 +2745,199 @@ class GrassSystem {
   }
 
   async initialize() {
-    // 6 base blades: 3 grass textures × 2 mirror flips. Each (texture, flip) gets
-    // its OWN Texture — the old code shared one Texture per variant and negated
-    // uScale on the material, which mutated the shared texture (last-write-wins),
-    // so the "flip" produced two identical variants.
+    // One crossed-quad template per grass texture. Variety comes from the texture
+    // plus a random per-blade yaw baked into each instance matrix (which subsumes
+    // the old mirror-flip variant). Each template is thin-instanced → one draw call.
     for (let i = 0; i < 3; i++) {
-      for (let flip = 0; flip < 2; flip++) {
-        const tex = new BABYLON.Texture(
-          `./assets/grass/grass${i + 1}.png`,
-          this.scene,
-        );
-        tex.hasAlpha = true;
-        tex.uWrapMode = BABYLON.Texture.CLAMP_ADDRESSMODE;
-        tex.vWrapMode = BABYLON.Texture.CLAMP_ADDRESSMODE;
-        tex.uOffset = 0.01;
-        tex.vOffset = 0.01;
-        tex.uScale = flip === 0 ? 0.98 : -0.98; // mirror the flipped variant
-        tex.vScale = 0.98;
-
-        const baseBlade = BABYLON.MeshBuilder.CreatePlane(
-          `grassBlade_${i}_${flip}`,
-          { width: 0.5, height: 0.5 },
-          this.scene,
-        );
-
-        const mat = new BABYLON.StandardMaterial(
-          `grassMat_${i}_${flip}`,
-          this.scene,
-        );
-        mat.diffuseColor = new BABYLON.Color3(1, 1, 1);
-        mat.diffuseTexture = tex;
-        mat.useAlphaFromDiffuseTexture = true;
-        // Alpha-TEST (cutout) rather than alpha-BLEND: no per-frame transparency
-        // sorting / overdraw across the thousands of instanced blades.
-        mat.transparencyMode = BABYLON.Material.MATERIAL_ALPHATEST;
-        mat.alphaCutOff = 0.4;
-        mat.backFaceCulling = false;
-
-        baseBlade.material = mat;
-        baseBlade.isPickable = false;
-        baseBlade.position.y = 0.25;
-
-        this.grassBaseMeshes.push(baseBlade);
-      }
+      this.grassMeshes.push(this.makeBladeTemplate(i));
     }
   }
 
-  update(ballPos, pinPositions = []) {
-    // Only update if ball position changed significantly
-    const minDist = CONFIG.GRASS.UPDATE_THRESHOLD;
+  // Two planes crossed at 90°, merged into one mesh with its base at y=0, so a blade
+  // reads as volume from any direction and never needs to be billboarded.
+  makeBladeTemplate(index) {
+    const s = CONFIG.GRASS.BLADE_SIZE;
+    const a = BABYLON.MeshBuilder.CreatePlane(
+      `grassPlaneA_${index}`,
+      { width: s, height: s },
+      this.scene,
+    );
+    const b = BABYLON.MeshBuilder.CreatePlane(
+      `grassPlaneB_${index}`,
+      { width: s, height: s },
+      this.scene,
+    );
+    a.position.y = s / 2; // lift so the merged blade's base sits on the ground
+    b.position.y = s / 2;
+    b.rotation.y = Math.PI / 2; // cross the second quad → an "X" seen from above
+    const blade = BABYLON.Mesh.MergeMeshes([a, b], true, true); // bakes transforms
 
-    if (
-      this.lastGrassGridPos &&
-      BABYLON.Vector3.Distance(ballPos, this.lastGrassGridPos) < minDist
-    ) {
+    const tex = new BABYLON.Texture(
+      `./assets/grass/grass${index + 1}.png`,
+      this.scene,
+    );
+    tex.hasAlpha = true;
+    tex.uWrapMode = BABYLON.Texture.CLAMP_ADDRESSMODE;
+    tex.vWrapMode = BABYLON.Texture.CLAMP_ADDRESSMODE;
+    tex.uOffset = 0.01;
+    tex.vOffset = 0.01;
+    tex.uScale = 0.98;
+    tex.vScale = 0.98;
+
+    const mat = new BABYLON.StandardMaterial(`grassMat_${index}`, this.scene);
+    mat.diffuseTexture = tex;
+    mat.useAlphaFromDiffuseTexture = true;
+    // Alpha-TEST (cutout), not alpha-BLEND: no transparency sorting / overdraw.
+    mat.transparencyMode = BABYLON.Material.MATERIAL_ALPHATEST;
+    mat.alphaCutOff = 0.4;
+    mat.backFaceCulling = false; // both faces of each quad visible
+    mat.specularColor = new BABYLON.Color3(0, 0, 0); // grass isn't shiny
+
+    blade.name = `grassBlade_${index}`;
+    blade.material = mat;
+    blade.isPickable = false;
+    blade.thinInstanceEnablePicking = false;
+    // Instances cover the whole field; the template's own bounds are tiny, so keep
+    // it always active rather than letting frustum culling drop the entire field.
+    blade.alwaysSelectAsActiveMesh = true;
+    blade.setEnabled(false);
+    return blade;
+  }
+
+  // Deterministic PRNG (mulberry32) so a chunk that stays in view regenerates the
+  // SAME blades every rebuild — no shuffling / pop-in. Seeded by chunk coords.
+  static _rng(seed) {
+    let t = seed >>> 0;
+    return () => {
+      t = (t + 0x6d2b79f5) >>> 0;
+      let x = Math.imul(t ^ (t >>> 15), 1 | t);
+      x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+      return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Build one chunk's blade matrices, split per texture variant (Float32Array each).
+  buildChunk(cx, cz, pinPositions) {
+    const S = CONFIG.GRASS.CELL_SIZE;
+    const density = CONFIG.GRASS.BLADES_PER_CELL;
+    const exclSq =
+      CONFIG.GRASS.GREEN_EXCLUSION_RADIUS * CONFIG.GRASS.GREEN_EXCLUSION_RADIUS;
+    const terrainRSq = CONFIG.GRASS.TERRAIN_RADIUS * CONFIG.GRASS.TERRAIN_RADIUS;
+    const nVar = this.grassMeshes.length;
+    const rng = GrassSystem._rng(Math.imul(cx, 73856093) ^ Math.imul(cz, 19349663));
+    const out = Array.from({ length: nVar }, () => []);
+    const scale = new BABYLON.Vector3();
+    const quat = new BABYLON.Quaternion();
+    const pos = new BABYLON.Vector3();
+    const mat = new BABYLON.Matrix();
+    for (let i = 0; i < density; i++) {
+      const x = cx * S + rng() * S;
+      const z = cz * S + rng() * S;
+      // Course mode: only grow on playable turf. Practice mode: the flat disc.
+      if (this.playableAt) {
+        if (!this.playableAt(x, z)) continue;
+      } else if (x * x + z * z > terrainRSq) {
+        continue;
+      }
+      let skip = false; // keep grass off greens
+      for (const p of pinPositions) {
+        const dx = x - p.x,
+          dz = z - p.z;
+        if (dx * dx + dz * dz < exclSq) {
+          skip = true;
+          break;
+        }
+      }
+      if (skip) continue;
+      const y = this.groundYAt ? this.groundYAt(x, z) : 0;
+      const sc = 0.8 + rng() * 0.6; // per-blade size variation
+      scale.set(sc, sc, sc);
+      BABYLON.Quaternion.RotationYawPitchRollToRef(rng() * Math.PI * 2, 0, 0, quat);
+      pos.set(x, y, z);
+      BABYLON.Matrix.ComposeToRef(scale, quat, pos, mat);
+      const arr = out[Math.floor(rng() * nVar)];
+      for (let k = 0; k < 16; k++) arr.push(mat.m[k]);
+    }
+    return out.map((a) => Float32Array.from(a));
+  }
+
+  // Concatenate every active chunk's matrices per variant and upload as one buffer.
+  rebuildBuffers() {
+    for (let v = 0; v < this.grassMeshes.length; v++) {
+      let total = 0;
+      for (const key of this.activeKeys) {
+        total += this.chunks.get(key).mats[v].length;
+      }
+      const mesh = this.grassMeshes[v];
+      if (total === 0) {
+        mesh.thinInstanceCount = 0;
+        mesh.setEnabled(false);
+        continue;
+      }
+      const buf = new Float32Array(total);
+      let off = 0;
+      for (const key of this.activeKeys) {
+        const a = this.chunks.get(key).mats[v];
+        buf.set(a, off);
+        off += a.length;
+      }
+      mesh.thinInstanceSetBuffer("matrix", buf, 16, true);
+      mesh.setEnabled(true);
+    }
+  }
+
+  update(refPos, pinPositions = []) {
+    if (!this.grassMeshes.length) return;
+    const S = CONFIG.GRASS.CELL_SIZE;
+    const cx = Math.floor(refPos.x / S);
+    const cz = Math.floor(refPos.z / S);
+    // Nothing to do until the reference crosses into a new chunk. This early-out is
+    // what makes grass ~free per frame: no scene nodes to touch, no billboarding.
+    if (this.lastCenter && this.lastCenter.cx === cx && this.lastCenter.cz === cz) {
       return;
     }
+    this.lastCenter = { cx, cz };
 
-    this.lastGrassGridPos = ballPos.clone();
-    const viewRadius = CONFIG.GRASS.VIEW_RADIUS;
-    const cellSize = CONFIG.GRASS.CELL_SIZE;
-    const cellRadius = Math.ceil(viewRadius / cellSize);
-    const centerCellX = Math.floor(ballPos.x / cellSize);
-    const centerCellZ = Math.floor(ballPos.z / cellSize);
-
-    const cellKeys = new Set();
-    const greenExclusionRadius = CONFIG.GRASS.GREEN_EXCLUSION_RADIUS;
-
-    // Create instances for cells within view radius
-    for (let dx = -cellRadius; dx <= cellRadius; dx++) {
-      for (let dz = -cellRadius; dz <= cellRadius; dz++) {
-        const cellX = centerCellX + dx;
-        const cellZ = centerCellZ + dz;
-        const key = `${cellX},${cellZ}`;
-        cellKeys.add(key);
-
-        if (!this.grassInstances.has(key)) {
-          const instances = [];
-          const density = CONFIG.GRASS.BLADES_PER_CELL;
-
-          for (let i = 0; i < density; i++) {
-            const posX = cellX * cellSize + (Math.random() - 0.5) * cellSize;
-            const posZ = cellZ * cellSize + (Math.random() - 0.5) * cellSize;
-
-            // Course mode: only grow grass on playable turf (fairway/rough),
-            // and follow the terrain height. Practice mode keeps the flat disc.
-            if (this.playableAt) {
-              if (!this.playableAt(posX, posZ)) continue;
-            } else {
-              const distFromCenter = Math.sqrt(posX * posX + posZ * posZ);
-              if (distFromCenter > CONFIG.GRASS.TERRAIN_RADIUS) continue;
-            }
-
-            const baseY = this.groundYAt ? this.groundYAt(posX, posZ) : 0;
-            const pos = new BABYLON.Vector3(posX, baseY + 0.25, posZ);
-
-            // Skip if near any pin/green
-            let tooCloseToGreen = false;
-            for (const pinPos of pinPositions) {
-              if (
-                BABYLON.Vector3.Distance(pos, pinPos) < greenExclusionRadius
-              ) {
-                tooCloseToGreen = true;
-                break;
-              }
-            }
-
-            if (tooCloseToGreen) {
-              continue;
-            }
-
-            const baseMesh =
-              this.grassBaseMeshes[
-                Math.floor(Math.random() * this.grassBaseMeshes.length)
-              ];
-            const instance = baseMesh.createInstance(`grass_${key}_${i}`);
-            instance.position = pos;
-            instance.billboardMode = BABYLON.Mesh.BILLBOARDMODE_Y;
-            instance.isPickable = false;
-
-            this.spatialGrid.insert(instance);
-            instances.push(instance);
-          }
-
-          if (instances.length > 0) {
-            this.grassInstances.set(key, instances);
-          }
+    const R = Math.ceil(CONFIG.GRASS.VIEW_RADIUS / S);
+    const need = new Set();
+    for (let dx = -R; dx <= R; dx++) {
+      for (let dz = -R; dz <= R; dz++) {
+        const key = `${cx + dx},${cz + dz}`;
+        need.add(key);
+        if (!this.chunks.has(key)) {
+          this.chunks.set(key, {
+            mats: this.buildChunk(cx + dx, cz + dz, pinPositions),
+          });
         }
       }
     }
-
-    // Dispose instances for cells outside view radius
-    const toDelete = [];
-    for (const [key, instances] of this.grassInstances) {
-      if (!cellKeys.has(key)) {
-        instances.forEach((inst) => {
-          this.spatialGrid.remove(inst);
-          inst.dispose();
-        });
-        toDelete.push(key);
-      }
+    // Drop chunks that left the view so the cache stays bounded.
+    for (const key of this.chunks.keys()) {
+      if (!need.has(key)) this.chunks.delete(key);
     }
+    this.activeKeys = need;
+    this.rebuildBuffers();
+  }
 
-    toDelete.forEach((key) => this.grassInstances.delete(key));
+  // Clear all grass (e.g. between holes — the terrain height/playable mask changed).
+  reset() {
+    this.chunks.clear();
+    this.activeKeys = new Set();
+    this.lastCenter = null;
+    for (const mesh of this.grassMeshes) {
+      mesh.thinInstanceCount = 0;
+      mesh.setEnabled(false);
+    }
   }
 
   dispose() {
-    // Dispose all instances
-    for (const [, instances] of this.grassInstances) {
-      instances.forEach((inst) => inst.dispose());
+    for (const mesh of this.grassMeshes) {
+      mesh.dispose(false, true); // also dispose material + textures
     }
-    this.grassInstances.clear();
-
-    // Dispose base meshes
-    for (const baseMesh of this.grassBaseMeshes) {
-      baseMesh.dispose();
-    }
-    this.grassBaseMeshes = [];
-
-    this.spatialGrid.clear();
+    this.grassMeshes = [];
+    this.chunks.clear();
+    this.activeKeys = new Set();
+    this.lastCenter = null;
   }
 }
 
@@ -3174,32 +3208,47 @@ class InputHandler {
     return null;
   }
 
-  predictLandingRangeForStrength(strength, dt, linearDamping, gAbs) {
-    const initialForwardVel =
-      ((PhysicsConfig.HIT_FORWARD_FORCE * strength) / PhysicsConfig.BALL_MASS) *
-      dt;
-    const initialUpVel =
-      ((PhysicsConfig.HIT_UPWARD_FORCE * strength) / PhysicsConfig.BALL_MASS) *
-      dt;
-
-    let vx = initialForwardVel;
-    let vy = initialUpVel;
-    let y = 0;
+  // Damped point-mass range for a launch at (speed, loft). Used only to shape the
+  // power curve for the ideal-swipe assist — its absolute output is normalised out
+  // in predictLandingRangeForStrength, which anchors full power to the club's
+  // calibrated carry.
+  simFlightRange(launchSpeed, loftRad, dt, linearDamping, gAbs) {
+    let vx = launchSpeed * Math.cos(loftRad);
+    let vy = launchSpeed * Math.sin(loftRad);
     let x = 0;
-
+    let y = 0;
     for (let i = 0; i < 600; i++) {
       vy += (-gAbs - linearDamping * vy) * dt;
       vx += -linearDamping * vx * dt;
       y += vy * dt;
       x += vx * dt;
-
       if (i > 1 && y <= 0) break;
     }
-
     return Math.max(0, x);
   }
 
-  solveSwipeStrengthForDistance(worldDistance, dt, linearDamping, gAbs) {
+  // Predicted carry for a swipe strength with `club`, under the same per-club launch
+  // model as applyHit: launch at the club's loft with speed club.v0·powerRatio. Full
+  // power is anchored to the club's calibrated carry (maxDistance) so the assist
+  // agrees with what the ball actually does; the flight sim only supplies the shape
+  // of the power curve between 0 and full.
+  predictLandingRangeForStrength(strength, dt, linearDamping, gAbs, club) {
+    const powerRatio = strength / CONFIG.GOLF_BALL.MAX_HIT_STRENGTH;
+    const loftRad = (club.angle * Math.PI) / 180;
+    const full = this.simFlightRange(club.v0, loftRad, dt, linearDamping, gAbs);
+    // Putter (loft 0) rolls rather than flies — sim range is ~0; approximate linearly.
+    if (full <= 0.01) return club.maxDistance * powerRatio;
+    const atPower = this.simFlightRange(
+      club.v0 * powerRatio,
+      loftRad,
+      dt,
+      linearDamping,
+      gAbs,
+    );
+    return (club.maxDistance * atPower) / full;
+  }
+
+  solveSwipeStrengthForDistance(worldDistance, dt, linearDamping, gAbs, club) {
     // This binary search runs a 600-step integration 14× and is called every
     // frame while aiming. The target distance barely moves frame-to-frame (the
     // ball is at rest), so memoize on the inputs and skip the ~8,400-step solve.
@@ -3209,13 +3258,13 @@ class InputHandler {
       c.dt === dt &&
       c.damping === linearDamping &&
       c.g === gAbs &&
+      c.clubId === club.id &&
       Math.abs(c.dist - worldDistance) < 0.5
     ) {
       return c.strength;
     }
 
-    const minStrength =
-      CONFIG.SWIPE_OVERLAY.MIN_FORWARD_FORCE / PhysicsConfig.HIT_FORWARD_FORCE;
+    const minStrength = CONFIG.SWIPE_OVERLAY.MIN_FORWARD_FORCE / 100;
     const maxStrength = CONFIG.GOLF_BALL.MAX_HIT_STRENGTH;
     let low = minStrength;
     let high = maxStrength;
@@ -3227,6 +3276,7 @@ class InputHandler {
         dt,
         linearDamping,
         gAbs,
+        club,
       );
       if (predictedRange < worldDistance) {
         low = mid;
@@ -3241,6 +3291,7 @@ class InputHandler {
       dt,
       damping: linearDamping,
       g: gAbs,
+      clubId: club.id,
       strength,
     };
     return strength;
@@ -3294,11 +3345,14 @@ class InputHandler {
     const dt = CONFIG.SWIPE_OVERLAY.PHYSICS_STEP_SECONDS;
     const linearDamping = PhysicsConfig.BALL_LINEAR_DAMPING;
     const gAbs = Math.abs(PhysicsConfig.GRAVITY.y);
+    // Assist is for the club the player will actually hit with.
+    const club = ClubData.getClub(this.game?.aimView?.currentClub ?? 12);
     const swipeStrength = this.solveSwipeStrengthForDistance(
       best.worldDistance,
       dt,
       linearDamping,
       gAbs,
+      club,
     );
     const { deltaX, deltaY } = this.buildIdealSwipeVector(
       best,
@@ -4338,8 +4392,9 @@ class SwingCoordinator {
     // Reset camera flag before starting swing
     this.game.swingCameraRestored = false;
 
-    // Zoom camera out for swing view
-    this.camera.setOffsets(0, 14, 20, 7, 0);
+    // Zoom camera out for swing view (scaled to the 42.7 mm ball; old values
+    // 0,14,20,7,0 were for the ~0.4 m ball → framed way too far/high now).
+    this.camera.setOffsets(0, 1.5, 2.1, 0.75, 0);
 
     // Trigger club swing animation (visual only, no physics pause)
     if (this.clubSystem && this.clubSystem.isLoaded) {
@@ -4357,7 +4412,7 @@ class SwingCoordinator {
           force,
           shotDirection,
           club.angle,
-          club.maxDistance,
+          club.v0,
         );
       };
 
@@ -5040,6 +5095,9 @@ class ClubSystem {
       // built-in coordinate conversion (GLBs bake scaling/rotation into __root__)
       this.clubPivot = new BABYLON.TransformNode("clubPivot", this.scene);
       this.clubPivot.position = ballPosition.clone();
+      // Match the real golf-ball scale (clubs.glb is authored at the old ~0.4 m
+      // ball size); shrink the whole rig ~9.4× so the club fits the 42.7 mm ball.
+      this.clubPivot.scaling = new BABYLON.Vector3(0.107, 0.107, 0.107);
       result.meshes[0].parent = this.clubPivot;
 
       this.clubsModel = result.meshes[0];
@@ -5260,6 +5318,10 @@ class PhysicsManager {
     const havokInstance = await HavokPhysics();
     const physicsPlugin = new BABYLON.HavokPlugin(true, havokInstance);
     scene.enablePhysics(PhysicsConfig.GRAVITY, physicsPlugin);
+    // (No sub-stepping: the Havok V2 plugin steps the world once per frame by the
+    // frame delta and ignores the engine's subTimeStep, so setSubTimeStep(1/240)
+    // was a no-op. Tunneling of the real-size ball is handled by the swept guard
+    // GolfBallGuy.preventTunneling(), not by a higher physics rate.)
     return physicsPlugin;
   }
 }
@@ -5473,7 +5535,7 @@ class GolfGame {
       if (mesh) {
         mesh.parent = bodyMesh;
         mesh.position = BABYLON.Vector3.Zero();
-        mesh.scaling = new BABYLON.Vector3(0.25, 0.25, 0.25);
+        mesh.scaling = new BABYLON.Vector3(0.0254, 0.0254, 0.0254);
       }
     });
 
@@ -5765,7 +5827,7 @@ class GolfGame {
     this.greenPositions = greenPositions;
 
     for (const pos of greenPositions) {
-      pinManager.addGreen(pos, 30, this.scene);
+      pinManager.addGreen(pos, 12, this.scene);
       pos.y = 0.2;
       pinManager.addPin(pos, this.scene);
     }
@@ -6181,6 +6243,8 @@ class GolfGame {
         const windForce = this.wind.getForceVector();
         this.golfBall.body.applyForce(windForce, this.golfBall.getPosition());
       }
+      // Keep the small, fast ball from tunneling through the thin terrain mesh.
+      this.golfBall.preventTunneling();
       // Rolling resistance so the ball actually settles on undulations.
       this.golfBall.applyRollingResistance(this.engine.getDeltaTime() / 1000);
 
@@ -6198,7 +6262,18 @@ class GolfGame {
       this.aimView?.isActive && this.aimView.update();
       const pinPositions =
         this.scene.pinManager?.pins?.map((p) => p.holePosition) || [];
-      this.grassSystem?.update(this.golfBall.getPosition(), pinPositions);
+      // Grow grass around the CAMERA, not the ball, and NOT while the ball is moving
+      // fast: in flight the camera chases the ball across a chunk boundary every few
+      // frames, and each rebuild's buffer alloc + GPU upload (~5 ms) spikes the frame
+      // — which, against the smoothed follow-cam, reads as the ball jittering. Gated
+      // on speed (not isAirborne(), which is unreliable at rest when heightRef lags);
+      // grass resumes as the ball slows to a stop.
+      if (this.golfBall.getSpeed() < CONFIG.GRASS.FREEZE_ABOVE_SPEED) {
+        this.grassSystem?.update(
+          this.camera?.camera?.position || this.golfBall.getPosition(),
+          pinPositions,
+        );
+      }
       if (this.cloudSystem) {
         this.cloudSystem.update(this.golfBall.getPosition(), this.wind);
       }
@@ -6252,7 +6327,7 @@ class GolfGame {
 // Per-hole definition. Tee, pin/cup and tree placements come from marker meshes
 // baked into each .glb; only par/name/notes live here.
 // Bump when hole .glb geometry is rebuilt (assets are served immutable-cached).
-const HOLE_ASSET_VERSION = "coursefix1";
+const HOLE_ASSET_VERSION = "flattee2";
 const COURSE_HOLES = [
   { id: 1, glb: "assets/3d/holes/hole1.glb", par: 4, name: "Wet and Wild" },
   { id: 2, glb: "assets/3d/holes/hole2.glb", par: 3, name: "Rock and Roll" },
@@ -7015,6 +7090,7 @@ class CourseManager {
       : -100;
 
     this.buildHeightGrid(); // cheap height/playable lookup for grass + ball
+    this.game.grassSystem?.reset(); // drop last hole's grass (terrain changed)
 
     // A hole is unplayable without its tee/pin markers — bail cleanly rather than
     // throwing a TypeError deep in the render loop if the .glb is malformed.
@@ -7137,23 +7213,38 @@ class CourseManager {
     }
   }
 
-  placeBallAtTee(yOffset = 0.4) {
+  placeBallAtTee(yOffset = 0.05) {
     const pos = this.tee.clone();
-    pos.y += yOffset;
+    // Rest on the real pad surface — the marker can sit well below the pad.
+    pos.y = this.teeSurfaceY() + yOffset;
     this.game.ballStartPosition = pos.clone();
     this.game.golfBall.startPosition = pos.clone();
     this.game.golfBall.reset();
     this.lastLie = pos.clone();
   }
 
-  // Low-poly wooden tee peg for driver tee shots on the longer holes.
+  // Actual pad-surface height at the tee (the marker can sit below the pad).
+  teeSurfaceY() {
+    const ray = new BABYLON.Ray(
+      new BABYLON.Vector3(this.tee.x, this.tee.y + 50, this.tee.z),
+      new BABYLON.Vector3(0, -1, 0),
+      100,
+    );
+    const hit = this.scene.pickWithRay(
+      ray,
+      (m) => m.name && m.name.startsWith("surf_"),
+    );
+    return hit && hit.hit ? hit.pickedPoint.y : this.tee.y;
+  }
+
+  // Real-size wooden tee peg (~5 cm) for driver tee shots on the longer holes.
   makeTeePeg(pos, pegH) {
     const peg = BABYLON.MeshBuilder.CreateCylinder(
       "teePeg",
-      { height: pegH, diameterTop: 0.6, diameterBottom: 0.14, tessellation: 7 },
+      { height: pegH, diameterTop: 0.05, diameterBottom: 0.012, tessellation: 10 },
       this.scene,
     );
-    peg.position = new BABYLON.Vector3(pos.x, pos.y + pegH / 2, pos.z);
+    peg.position = new BABYLON.Vector3(pos.x, this.teeSurfaceY() + pegH / 2, pos.z);
     const mat = new BABYLON.StandardMaterial("teePegMat", this.scene);
     mat.diffuseColor = new BABYLON.Color3(0.95, 0.9, 0.82);
     mat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
@@ -7195,8 +7286,8 @@ class CourseManager {
     const bestClub =
       this.game.aimView?.clubSelector?.findBestClubForDistance(distYd) ?? 0;
     const useTee = bestClub >= 10; // 3 Wood / 5 Wood / Driver
-    const pegH = 1.4;
-    this.placeBallAtTee(useTee ? pegH + 0.25 : 0.4);
+    const pegH = 0.05; // visible tee height ≈ 5 cm
+    this.placeBallAtTee(useTee ? pegH + 0.03 : 0.05);
     if (useTee) this.teePeg = this.makeTeePeg(this.tee, pegH);
 
     // Aim the camera down the hole toward the pin (behind-ball view).
@@ -7258,8 +7349,13 @@ class CourseManager {
     if (zoneNow && zoneNow !== this._treeZone) this.treeBounce(ball);
     this._treeZone = zoneNow;
 
-    // Remove the tee peg once the ball has been struck off it.
-    if (this.teePeg && this.tee && BABYLON.Vector3.Distance(bp, this.tee) > 3) {
+    // Remove the tee peg once the ball has been struck off it. Compare in the
+    // horizontal plane only (the tee marker can sit below the ball's rest height).
+    if (
+      this.teePeg &&
+      this.tee &&
+      Math.hypot(bp.x - this.tee.x, bp.z - this.tee.z) > 0.3
+    ) {
       this.disposeTeePeg();
     }
   }
@@ -7421,7 +7517,28 @@ async function startGame(options = {}) {
 // in the course module appended below. Guarded so this file can be require()d in
 // Node (no DOM) for unit tests without auto-booting the menu.
 if (typeof document !== "undefined") {
-  BallsMenu.init(startGame);
+  // The clubhouse (index.html) is the game's root; its doors link here as
+  // game.html?mode=course|practice. With a mode in the URL we boot straight
+  // into that mode and skip the Practice/Course menu; otherwise show the menu.
+  const urlMode = new URLSearchParams(location.search).get("mode");
+  if (urlMode === "course" || urlMode === "practice") {
+    BallsMenu.startFn = startGame; // wire for any in-game "back to menu" paths
+    startGame({ mode: urlMode });
+  } else {
+    BallsMenu.init(startGame);
+  }
+  // "back to clubhouse" affordance, always available on the golf page
+  const back = document.createElement("button");
+  back.id = "toClubhouse";
+  back.textContent = "← Clubhouse";
+  back.onclick = () => (location.href = "index.html");
+  Object.assign(back.style, {
+    position: "fixed", top: "12px", left: "50%", transform: "translateX(-50%)",
+    zIndex: "3000", padding: "8px 14px", borderRadius: "18px", cursor: "pointer",
+    border: "3px solid #476a23", background: "rgba(144,200,150,0.92)",
+    color: "#123", fontFamily: "Arial, sans-serif", fontWeight: "bold", fontSize: "15px",
+  });
+  document.body.appendChild(back);
 }
 
 // Node-only export seam: lets the framework-free gameplay logic (unit math, club
