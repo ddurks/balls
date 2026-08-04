@@ -419,10 +419,20 @@
         document.head.appendChild(script);
       }
 
+      // Load same-origin scripts in sequence, each after the previous onload.
+      function loadLocalScripts(srcs) {
+        let i = 0;
+        (function next() {
+          if (i >= srcs.length) return;
+          const s = document.createElement("script");
+          s.src = srcs[i++];
+          s.onload = next;
+          document.head.appendChild(s);
+        })();
+      }
       function loadGameScript() {
-        const gameScript = document.createElement("script");
-        gameScript.src = "game.js";
-        document.head.appendChild(gameScript);
+        // Shared helper modules load (in order) before game.js.
+        loadLocalScripts(["shared.js", "balls.js", "materials.js", "game.js"]);
       }
 
       // Start the chain

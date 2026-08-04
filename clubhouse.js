@@ -13,6 +13,16 @@
 (function () {
   "use strict";
 
+  // Shared math helpers (from shared.js, loaded first). Aliased so the existing
+  // clamp()/lerp()/lerpAngle() call sites below are unchanged.
+  const { clamp, lerp, lerpAngle } = Shared;
+
+  // Shared flat-material helpers (materials.js). Aliased here — ABOVE start() —
+  // so flatMat()/colorMat() are initialized before start() runs (const has no
+  // hoisting, unlike the function declarations these replaced).
+  const flatMat = Materials.flat;
+  const colorMat = Materials.color;
+
   // ---- config ----------------------------------------------------------------
   const params = new URLSearchParams(location.search);
   const isLocal =
@@ -264,23 +274,6 @@
     return dt;
   }
 
-  function flatMat(name, scene, tex, tint) {
-    const m = new BABYLON.StandardMaterial(name, scene);
-    m.diffuseTexture = tex || null;
-    m.specularColor = new BABYLON.Color3(0, 0, 0); // no shine -> PS1 flat
-    m.emissiveColor = new BABYLON.Color3(0.13, 0.13, 0.13); // small floor so shadows aren't pure black
-    if (tint) m.diffuseColor = tint;
-    return m;
-  }
-
-  // Flat solid color with a small self-lit floor (so shadows/shading read naturally).
-  function colorMat(name, scene, color) {
-    const m = new BABYLON.StandardMaterial(name, scene);
-    m.diffuseColor = color;
-    m.specularColor = new BABYLON.Color3(0, 0, 0);
-    m.emissiveColor = color.scale(0.16);
-    return m;
-  }
 
   // ---- main ------------------------------------------------------------------
   async function start() {
@@ -522,14 +515,9 @@
     let floorTopY = 0;
     let bounds = { minX: -10, maxX: 10, minZ: -10, maxZ: 10 };
 
-    const room = await BABYLON.SceneLoader.ImportMeshAsync(
-      "",
-      "assets/3d/",
-      ROOM_CFG.glb + "?v=" + ASSET_V,
-      scene,
-      null,
-      ".glb",
-    );
+    const room = await Shared.loadModel(ROOM_CFG.glb, scene, {
+      version: ASSET_V,
+    });
     const DOOR_KINDS = ["course", "range", "vip", "main"];
     for (const mesh of room.meshes) {
       if (!mesh.name || mesh.name === "__root__") continue;
@@ -893,28 +881,19 @@
     }
 
     // -- gball avatar template (loaded once, instanced for local + remotes) --
-    const gballContainer = await BABYLON.SceneLoader.LoadAssetContainerAsync(
-      "assets/3d/",
-      "gball.glb?v=" + ASSET_V,
-      scene,
-      null,
-      ".glb",
-    );
+    const gballContainer = await Shared.loadModel("gball.glb", scene, {
+      container: true,
+      version: ASSET_V,
+    });
     // real held-item models: cybeer's labelled beer glass + cigbot's cigarette
-    const cybeerContainer = await BABYLON.SceneLoader.LoadAssetContainerAsync(
-      "assets/3d/",
-      "cybeer.glb?v=" + ASSET_V,
-      scene,
-      null,
-      ".glb",
-    );
-    const cigContainer = await BABYLON.SceneLoader.LoadAssetContainerAsync(
-      "assets/3d/",
-      "cigarette.glb?v=" + ASSET_V,
-      scene,
-      null,
-      ".glb",
-    );
+    const cybeerContainer = await Shared.loadModel("cybeer.glb", scene, {
+      container: true,
+      version: ASSET_V,
+    });
+    const cigContainer = await Shared.loadModel("cigarette.glb", scene, {
+      container: true,
+      version: ASSET_V,
+    });
 
     function spawnAvatar() {
       // clone (don't hardware-instance) so the eyelids morph survives per-avatar
@@ -977,61 +956,19 @@
           eyelids.morphTargetManager = mgr;
         } catch (e) {}
       }
-      let idx = -1;
-      for (let i = 0; i < mgr.numTargets; i++) {
-        const nm = (mgr.getTarget(i).name || "").toLowerCase();
-        if (
-          nm.includes("closed") ||
-          nm.includes("blink") ||
-          nm.includes("eyelid")
-        ) {
-          idx = i;
-          break;
-        }
-      }
+      let idx = Balls.findBlinkMorphIndex(mgr);
       if (idx < 0 && mgr.numTargets > 0) idx = mgr.numTargets - 1; // "Closed" is the last key
       if (idx < 0) return;
       av.blinkMgr = mgr;
       av.blinkIdx = idx;
-      av.blinkState = "open";
-      av.blinkTimer = 0;
-      av.nextBlink = 2500 + Math.random() * 2500; // ms — randomized so avatars desync
+      av.blink = Balls.newBlinkState();
     }
 
     function updateBlink(av, dt) {
-      if (!av.blinkMgr || av.blinkIdx == null || av.blinkIdx < 0) return;
+      if (!av.blinkMgr || av.blinkIdx == null || av.blinkIdx < 0 || !av.blink)
+        return;
       const tgt = av.blinkMgr.getTarget(av.blinkIdx);
-      if (!tgt) return;
-      av.blinkTimer += dt * 1000;
-      const CLOSE = 100,
-        HOLD = 50,
-        OPEN = 100; // ms, matches the range's blink
-      if (av.blinkState === "open" && av.blinkTimer >= av.nextBlink) {
-        av.blinkState = "closing";
-        av.blinkTimer = 0;
-      }
-      let inf = 0;
-      if (av.blinkState === "closing") {
-        inf = Math.min(av.blinkTimer / CLOSE, 1);
-        if (av.blinkTimer >= CLOSE) {
-          av.blinkState = "closed";
-          av.blinkTimer = 0;
-        }
-      } else if (av.blinkState === "closed") {
-        inf = 1;
-        if (av.blinkTimer >= HOLD) {
-          av.blinkState = "opening";
-          av.blinkTimer = 0;
-        }
-      } else if (av.blinkState === "opening") {
-        inf = 1 - Math.min(av.blinkTimer / OPEN, 1);
-        if (av.blinkTimer >= OPEN) {
-          av.blinkState = "open";
-          av.blinkTimer = 0;
-          av.nextBlink = 2500 + Math.random() * 2500;
-        }
-      }
-      tgt.influence = inf;
+      if (tgt) tgt.influence = Balls.updateBlink(av.blink, dt);
     }
 
     // Procedural bounce/walk: the same squash-and-stretch feel derived from
@@ -1088,15 +1025,7 @@
     // face-swap textures (the gball reuses the golf game's face set): a buck-toothed
     // open mouth while drinking, an "O" mouth while smoking.
     function faceTex(file) {
-      const t = new BABYLON.Texture(
-        "assets/faces/" + file,
-        scene,
-        false,
-        false,
-        BABYLON.Texture.TRILINEAR_SAMPLINGMODE,
-      );
-      t.hasAlpha = true;
-      return t;
+      return Balls.faceTexture(scene, file);
     }
     const faceDrinkTex = faceTex("elated.png"); // open mouth + buck teeth
     const faceSmokeTex = faceTex("o.png"); // round "O" mouth
@@ -1303,17 +1232,8 @@
     // on the south wall (between the fireplace and the bar) and a beer conveyor
     // that runs out of the west wall onto the bar's south end. Walk up and tap
     // either one to grab that item; the 🍺/🚬 buttons then use what you hold.
-    function unlitTexMat(name, tex) {
-      const m = new BABYLON.StandardMaterial(name, scene);
-      m.diffuseTexture = tex;
-      m.emissiveTexture = tex; // self-lit so the painted panel reads at true color
-      m.emissiveColor = new BABYLON.Color3(1, 1, 1);
-      m.diffuseColor = new BABYLON.Color3(0, 0, 0);
-      m.disableLighting = true;
-      m.specularColor = new BABYLON.Color3(0, 0, 0);
-      m.backFaceCulling = false; // panel is viewed from its back side (like the door labels)
-      return m;
-    }
+    // Unlit textured panel — shared helper (materials.js), scene bound in.
+    const unlitTexMat = (name, tex) => Materials.unlitTex(name, scene, tex);
 
     // painted front panel for the cig machine: header sign, a glass case of packs,
     // a pull knob + coin slot + a dark dispensing tray.
@@ -1551,18 +1471,39 @@
       glow.specularColor = new BABYLON.Color3(0, 0, 0);
       glow.disableLighting = true;
       const Y = 2.7;
-      // [x, z, inwardX, inwardZ] — south sits at ±5 to clear the cig machine;
-      // east at ±7 to clear the bar/shelf run
-      const specs = [
-        [-6, -11.7, 0, 1],
-        [6, -11.7, 0, 1], // north wall
-        [-5, 11.7, 0, -1],
-        [5, 11.7, 0, -1], // south wall
-        [11.7, -7, -1, 0],
-        [11.7, 7, -1, 0], // east wall
-        [-11.7, -6, 1, 0],
-        [-11.7, 6, 1, 0], // west wall
-      ];
+      // [x, z, inwardX, inwardZ] — the fixture + warm light are identical in every
+      // room (same principle); only the wall positions differ with room size.
+      let specs;
+      if (ROOM === "main") {
+        // hand-placed for the main clubhouse: south sits at ±5 to clear the cig
+        // machine; east at ±7 to clear the bar/shelf run.
+        specs = [
+          [-6, -11.7, 0, 1],
+          [6, -11.7, 0, 1], // north wall
+          [-5, 11.7, 0, -1],
+          [5, 11.7, 0, -1], // south wall
+          [11.7, -7, -1, 0],
+          [11.7, 7, -1, 0], // east wall
+          [-11.7, -6, 1, 0],
+          [-11.7, 6, 1, 0], // west wall
+        ];
+      } else {
+        // VIP lounge: a 20×20 box — walls centred at ±10 with inner faces at ~±9.7
+        // (S/E/W are solid cream_wall_* meshes; N is the LOBBY door wall). Positions
+        // sit just inside each inner face so the fixtures mount flush and point into
+        // the room; the N pair straddles the door (which is centred at x≈0). Same
+        // specs→fixture pipeline as main, hand-sized to this room.
+        specs = [
+          [-5, -9.6, 0, 1],
+          [5, -9.6, 0, 1], // north wall (LOBBY door), flanking the door
+          [-5, 9.6, 0, -1],
+          [5, 9.6, 0, -1], // south wall
+          [9.6, -5, -1, 0],
+          [9.6, 5, -1, 0], // east wall
+          [-9.6, -5, 1, 0],
+          [-9.6, 5, 1, 0], // west wall
+        ];
+      }
       specs.forEach(([x, z, nx, nz], i) => {
         const br = BABYLON.MeshBuilder.CreateBox(
           "sconce_br" + i,
@@ -1717,9 +1658,16 @@
     let myYaw = 0;
     setClip(me, "bounce");
 
-    // dress the room: shelf glasses + the two walk-up dispensers + wall sconces
-    buildShelfGlasses();
-    buildDispensers();
+    // dress the room. The shelf glasses and the two walk-up dispensers (beer
+    // conveyor + cig machine) live at the main clubhouse's hardcoded bar/wall
+    // coordinates, so they belong to MAIN only — in the smaller VIP lounge they'd
+    // float through the walls. The VIP lounge is "bring your own": you carry items
+    // in through the door (hold is persisted across the room-switch page load).
+    // Sconces run in every room, sized to that room's walls (see buildSconces).
+    if (ROOM === "main") {
+      buildShelfGlasses();
+      buildDispensers();
+    }
     buildSconces();
     // sconces push the room past Babylon's default 4-lights-per-mesh cap
     for (const m of scene.materials) m.maxSimultaneousLights = 12;
@@ -1769,6 +1717,11 @@
 
     // -- networking --
     const net = new ClubhouseNet(WS_URL, MY_NAME, MY_AREA);
+    // On (re)connect, re-announce what we're holding so others see an item we
+    // carried in from another room (the local re-equip already happened on load).
+    net.onReady = () => {
+      if (me.holdType !== "none") net.sendHold(HOLD_TYPES.indexOf(me.holdType));
+    };
     const remotes = new Map(); // id -> { av, x,z,ry, tx,tz,try, moving, seen }
     net.onSnapshot = (playersArr, broadcasts) => {
       const nowSeen = Date.now();
@@ -1977,6 +1930,14 @@
       cigBtn.style.opacity = me.holdType === "cig" ? "1" : "0.5";
     }
     reflectHoldBtns();
+    // Re-equip whatever the player carried in from the previous room (stashed in
+    // goToDoor). The network re-announce happens on connect via net.onReady, so
+    // remotes see the item too even though the socket isn't open yet here.
+    const carriedHold = localStorage.getItem("ballsHold");
+    if (carriedHold === "beer" || carriedHold === "cig") {
+      equipHold(me, carriedHold);
+      reflectHoldBtns();
+    }
     beerBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       triggerAction("beer");
@@ -2230,6 +2191,11 @@
       for (const m of clubMeshes) {
         const goal = occSet.has(m) ? 0.22 : 1.0;
         m.visibility += (goal - m.visibility) * fk;
+        // Snap when within a hair of the target. The lerp only ASYMPTOTES toward
+        // 1.0, so a restored mesh would sit at 0.999… forever — and any visibility
+        // below 1.0 keeps it in Babylon's transparent pass, where the wainscot
+        // z-fights its wall and flickers/vanishes. Exactly 1.0 = opaque again.
+        if (Math.abs(m.visibility - goal) < 0.012) m.visibility = goal;
       }
 
       // project nametags + bubbles to screen
@@ -2242,6 +2208,9 @@
     function goToDoor(kind) {
       const d = doors.find((dd) => dd.kind === kind);
       if (!d || !d.url) return;
+      // Carry whatever you're holding through the door. Rooms are separate page
+      // loads, so stash the current hold and re-equip it on the next room's load.
+      localStorage.setItem("ballsHold", me.holdType);
       net.close();
       location.href = d.url;
     }
@@ -2258,6 +2227,7 @@
     this.seq = 0;
     this.onSnapshot = null;
     this.onChat = null;
+    this.onReady = null; // fired after join is acknowledged (and on every reconnect)
   }
   ClubhouseNet.prototype.connect = function () {
     let ws;
@@ -2282,6 +2252,7 @@
       if (m.t === "welcome") {
         this.playerId = m.playerId;
         this.sendArea(this.area);
+        if (this.onReady) this.onReady();
       } else if (m.t === "gameSnapshot") {
         if (this.onSnapshot)
           this.onSnapshot(m.players || [], m.broadcasts || []);
@@ -2521,14 +2492,6 @@
     }
   }
 
-  // ---- small utils -----------------------------------------------------------
-  function clamp(v, a, b) {
-    return v < a ? a : v > b ? b : v;
-  }
-  function lerp(a, b, t) {
-    return a + (b - a) * t;
-  }
-
   // Walk/hop keyframes [phase, yOffset, scaleXZ, scaleY] — Apple Royale's hop
   // (crouch → launch-stretch → peak → land → impact-squash), base pinned to floor.
   const WALK_KEYS = [
@@ -2557,10 +2520,5 @@
     }
     const l = WALK_KEYS[WALK_KEYS.length - 1];
     return { y: l[1], sxy: l[2], sz: l[3] };
-  }
-  function lerpAngle(a, b, t) {
-    let d = ((b - a + Math.PI) % (2 * Math.PI)) - Math.PI;
-    if (d < -Math.PI) d += 2 * Math.PI;
-    return a + d * t;
   }
 })();

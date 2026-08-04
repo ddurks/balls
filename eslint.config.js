@@ -27,6 +27,10 @@ const browserGlobals = {
   Image: "readonly",
   alert: "readonly",
   module: "writable",
+  globalThis: "readonly",
+  Shared: "readonly", // window.Shared from shared.js (loaded first)
+  Balls: "readonly", // window.Balls from balls.js (loaded first)
+  Materials: "readonly", // window.Materials from materials.js (loaded first)
 };
 
 const nodeGlobals = {
@@ -44,7 +48,7 @@ module.exports = [
   { ignores: ["node_modules/**", "vendor/**", "babylon/**", "assets/**"] },
   js.configs.recommended,
   {
-    files: ["game.js", "clubhouse.js"],
+    files: ["game.js", "clubhouse.js", "shared.js", "balls.js", "materials.js"],
     languageOptions: {
       ecmaVersion: 2022, // game.js uses static class fields (ES2022)
       sourceType: "script",

@@ -33,7 +33,12 @@ globalThis.BABYLON = {
   },
 };
 
-const { Utils, ClubData, Wind, CONFIG } = require("../game.js");
+// game.js expects the shared helpers as globals (loaded before it in the
+// browser via <script>s); provide them the same way for the Node tests.
+globalThis.Shared = require("../shared.js");
+globalThis.Balls = require("../balls.js");
+
+const { Utils, ClubData, Wind, CONFIG, ClubSelector } = require("../game.js");
 
 test("rotate2D rotates a unit vector by 90°", () => {
   const r = Utils.rotate2D(1, 0, Math.PI / 2);
@@ -64,6 +69,24 @@ test("ClubData distances increase from Putter to the longest wood", () => {
   const putter = ClubData.getClub(0).maxDistance;
   const driver = ClubData.getClub(12).maxDistance;
   assert.ok(driver > putter);
+});
+
+test("findBestClubForDistance treats its argument as METRES", () => {
+  const sel = new ClubSelector();
+  // Each club's exact maxDistance (metres) should select that same club.
+  assert.strictEqual(sel.findBestClubForDistance(11), 0); // Putter (11 m)
+  assert.strictEqual(sel.findBestClubForDistance(109), 4); // 8 Iron (109 m)
+  assert.strictEqual(sel.findBestClubForDistance(175), 7); // 5 Iron (175 m)
+  assert.strictEqual(sel.findBestClubForDistance(306), 12); // Driver (306 m)
+});
+
+test("findBestClubForDistance picks the nearest club by carry", () => {
+  const sel = new ClubSelector();
+  // 100 m sits between Pitching Wedge (66) and 9 Iron (88)… nearest is 8 Iron
+  // (109). Regression guard: passing yards (≈109 yd for a 100 m shot) would
+  // wrongly jump a club longer.
+  assert.strictEqual(sel.findBestClubForDistance(100), 4); // 8 Iron, not Hybrid
+  assert.strictEqual(sel.findBestClubForDistance(0), 0); // clamps to Putter
 });
 
 test("Wind vector points due-north at direction 0", () => {

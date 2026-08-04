@@ -49,11 +49,21 @@
         },
       ];
       let chainIndex = 0;
+      // Load same-origin scripts in sequence, each after the previous onload.
+      function loadLocalScripts(srcs) {
+        let i = 0;
+        (function next() {
+          if (i >= srcs.length) return;
+          const s = document.createElement("script");
+          s.src = srcs[i++];
+          s.onload = next;
+          document.head.appendChild(s);
+        })();
+      }
       function loadNextInChain() {
         if (chainIndex >= scriptChain.length) {
-          const s = document.createElement("script");
-          s.src = "clubhouse.js";
-          document.head.appendChild(s);
+          // Shared helper modules load (in order) before the mode script.
+          loadLocalScripts(["shared.js", "balls.js", "materials.js", "clubhouse.js"]);
           return;
         }
         const { local, cdn } = scriptChain[chainIndex];

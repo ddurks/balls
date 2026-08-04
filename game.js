@@ -58,10 +58,19 @@ const CONFIG = {
   BALL: {
     COLLIDER_DIAMETER: 0.0427, // real golf ball = 42.7 mm (1 unit = 1 m)
     MASS: 0.045,
-    FRICTION: 0.9,
-    RESTITUTION: 0.3, // turf-like: real balls barely bounce on grass (was 0.6 = hard court)
-    LINEAR_DAMPING: 0.3,
-    ANGULAR_DAMPING: 1.2,
+    // Havok combines friction by MINIMUM, so THIS value caps grip on every grass
+    // surface — green/fairway/rough are all set ≥0.9, so min() picks the ball's every
+    // time. 0.9 made shots bite/check instead of releasing into roll; ~0.4 is realistic
+    // turf µ. (A rolling ball doesn't slip, so friction doesn't set roll-out distance —
+    // ROLL_BRAKE_DECEL does; friction governs the landing skid/check and spin bite.)
+    FRICTION: 0.4,
+    RESTITUTION: 0.5, // soft-turf COR — bounces without being a superball (0.3 was dead, 0.6 = hard court)
+    LINEAR_DAMPING: 0.3, // air-drag model for flight carry (club distances are calibrated to this — do not retune for roll)
+    // Spin barely decays in air on a real ball. High angular damping instead acts,
+    // through rolling-without-slip friction coupling, as a hidden STRONG rolling
+    // brake that kills roll — worst for putts (pure roll). Keep it near zero and let
+    // ROLL_BRAKE_DECEL be the one, tunable rolling-resistance knob (was 1.2 → froze putts).
+    ANGULAR_DAMPING: 0.1,
   },
   // Swing/hit + landing-detection tuning. Single home for these values; the
   // PhysicsConfig accessor class reads them from here so there's no second copy.
@@ -73,7 +82,11 @@ const CONFIG = {
     MIN_SWIPE_DISTANCE: 3,
     AIRBORNE_HEIGHT: 2,
     GROUND_CONTACT_HEIGHT: 1.5,
-    LANDED_SPEED_THRESHOLD: 0.5,
+    // Speed below which a grounded ball is declared "landed" — which HARD-ZEROES
+    // its velocity. At 0.5 m/s (1.1 mph) that amputated the last ~0.2 m of every
+    // roll and made slow trickle-ins impossible. 0.15 lets the ball roll out; the
+    // rolling-resistance brake (ROLL_BRAKE_DECEL) does the actual settling at 0.06 m/s.
+    LANDED_SPEED_THRESHOLD: 0.15,
   },
   CAMERA: {
     FOV_AIM: 1.5,
@@ -148,13 +161,7 @@ const CONFIG = {
     IMPACT_POINT_OFFSET_Y: -0.3,
     IMPACT_POINT_OFFSET_Z: 0.3,
   },
-  BLINKING: {
-    MIN_INTERVAL_MS: 2500,
-    MAX_INTERVAL_MS: 5000,
-    BLINK_CLOSE_DURATION_MS: 100,
-    BLINK_HOLD_DURATION_MS: 50,
-    BLINK_OPEN_DURATION_MS: 100,
-  },
+  // Eyelid blink timings moved to balls.js (Balls.BLINK), shared with clubhouse.
   EYES: {
     MAX_YAW: 0.25, // radians (~14°) — left/right gaze limit
     MAX_PITCH: 0.18, // radians (~10°) — up/down gaze limit
@@ -248,7 +255,10 @@ const CONFIG = {
     AVOID_FACTOR: 0.05,
     MATCHING_FACTOR: 0.05,
     SEPARATION_WEIGHT: 1.2,
-    SIZE: 4,
+    // Uniform scale for the ballsbird.glb model. It's authored ~2.5 m long, which
+    // dwarfed the world once everything went real-scale (42.7 mm ball); 0.25 brings
+    // it to a believable ~0.6 m bird. Tune up for more presence, down for smaller.
+    MODEL_SCALE: 0.25,
     WANDER_STRENGTH: 0.015,
     CLIMB_ANIMATION_BOOST: 1.5,
     DESCENT_ANIMATION_DAMPEN: 0.6,
@@ -503,6 +513,7 @@ class Boid3D {
     // own control node so we can position/rotate the bird without disturbing it.
     this.mesh = new BABYLON.TransformNode(`bird_${Math.random()}`, scene);
     for (const rn of entries.rootNodes) rn.parent = this.mesh;
+    this.mesh.scaling.setAll(CONFIG.BOIDS.MODEL_SCALE); // real-scale bird (see MODEL_SCALE)
     this.mesh.position = this.position.clone();
     this.mesh.rotationQuaternion = null;
     this.mesh.rotation = BABYLON.Vector3.Zero();
@@ -597,7 +608,7 @@ class Boid3D {
     while (dyaw > Math.PI) dyaw -= 2 * Math.PI;
     while (dyaw < -Math.PI) dyaw += 2 * Math.PI;
     if (this.state !== "perched") {
-      targetRoll = Math.max(-0.5, Math.min(0.5, dyaw * 2.5));
+      targetRoll = Shared.clamp(dyaw * 2.5, -0.5, 0.5);
     }
     this.yaw += dyaw * k;
     this.pitch += (targetPitch - this.pitch) * k;
@@ -630,7 +641,7 @@ class BirdFlockSystem {
     this.groundCenterZ = groundCenterZ;
     this.birdTemplate = null;
     this.isLoaded = false;
-    this.bottomOffset = 0.7; // mesh origin → underside; refined at load
+    this.bottomOffset = 0.7 * CONFIG.BOIDS.MODEL_SCALE; // mesh origin → underside; refined at load
     // Reusable temp vectors — no per-frame allocations in the neighbor loops.
     this._diff = new BABYLON.Vector3();
     this._align = new BABYLON.Vector3();
@@ -644,11 +655,9 @@ class BirdFlockSystem {
     try {
       // Keep the model in a container and stamp independent instances from it —
       // instantiateModelsToScene properly clones + retargets skeleton animations.
-      this.container = await BABYLON.SceneLoader.LoadAssetContainerAsync(
-        "assets/3d/",
-        "ballsbird.glb",
-        this.scene,
-      );
+      this.container = await Shared.loadModel("ballsbird.glb", this.scene, {
+        container: true,
+      });
       this.container.animationGroups.forEach((g) => g.stop());
 
       // Underside offset (level pose) so perched birds sit tangent to the surface.
@@ -657,10 +666,12 @@ class BirdFlockSystem {
         false,
       );
       const proot = probe.rootNodes[0];
+      proot.scaling.setAll(CONFIG.BOIDS.MODEL_SCALE); // measure at the birds' real scale
       proot.computeWorldMatrix(true);
       const bb = proot.getHierarchyBoundingVectors(true);
       this.bottomOffset = proot.getAbsolutePosition().y - bb.min.y;
-      if (!isFinite(this.bottomOffset)) this.bottomOffset = 0.7;
+      if (!isFinite(this.bottomOffset))
+        this.bottomOffset = 0.7 * CONFIG.BOIDS.MODEL_SCALE;
       probe.dispose();
 
       this.init();
@@ -1106,123 +1117,7 @@ class ClubData {
   ];
 
   static getClub(id) {
-    return this.CLUBS[Math.max(0, Math.min(id, this.CLUBS.length - 1))];
-  }
-}
-
-// ─── TRAJECTORY ARROW ──────────────────────────────────────────────────────
-
-// ─── PIN INDICATOR ARROW ──────────────────────────────────────────────────
-// Floating arrow above pin that bobs up and down
-
-class PinIndicatorArrow {
-  constructor(scene) {
-    this.scene = scene;
-    this.arrow = null;
-    this.arrowTemplate = null;
-    this.pinPosition = null;
-    this.isLoaded = false;
-    this.bobTimer = 0;
-    this.bobSpeed = 2; // cycles per second
-    this.bobHeight = 0.3;
-    this.loadArrowModel();
-  }
-
-  async loadArrowModel() {
-    try {
-      const result = await BABYLON.SceneLoader.ImportMeshAsync(
-        "",
-        "assets/3d/",
-        "arrow.glb",
-        this.scene,
-      );
-
-      if (result.meshes && result.meshes.length > 0) {
-        this.arrowTemplate = result.meshes[0];
-        this.arrowTemplate.setEnabled(false);
-        this.arrowTemplate.getChildMeshes().forEach((mesh) => {
-          mesh.setEnabled(false);
-        });
-        this.isLoaded = true;
-      }
-    } catch (error) {
-      console.error("Failed to load arrow.glb for pin indicator:", error);
-    }
-  }
-
-  create(pinPosition) {
-    if (!this.isLoaded || !this.arrowTemplate) return;
-    this.pinPosition = pinPosition.clone();
-
-    if (this.arrow) {
-      if (this.scene.shadowGenerator) {
-        const meshes = [this.arrow, ...this.arrow.getChildMeshes()];
-        meshes.forEach((mesh) => {
-          if (mesh) {
-            this.scene.shadowGenerator.removeShadowCaster(mesh, true);
-          }
-        });
-      }
-      this.arrow.dispose();
-    }
-
-    this.arrow = this.arrowTemplate.clone("pinIndicatorArrow_instance");
-    this.arrow.scaling.scaleInPlace(0.107); // Phase 1: match real golf-ball scale
-    this.arrow.setEnabled(true);
-    this.arrow.rotation = new BABYLON.Vector3(Math.PI / 2, 0, 0); // Point downward
-    this.arrow.rotationQuaternion = null;
-    this.arrow.getChildMeshes().forEach((mesh) => {
-      mesh.setEnabled(true);
-    });
-
-    // Set arrow color to cyan
-    this.applyColor(new BABYLON.Color3(0, 1, 1));
-
-    if (this.scene.shadowGenerator) {
-      const meshes = [this.arrow, ...this.arrow.getChildMeshes()];
-      meshes.forEach((mesh) => {
-        if (mesh) {
-          this.scene.shadowGenerator.addShadowCaster(mesh, true);
-        }
-      });
-    }
-
-    this.bobTimer = 0;
-  }
-
-  applyColor(color) {
-    if (!this.arrow) return;
-    const meshes = [this.arrow, ...this.arrow.getChildMeshes()];
-    meshes.forEach((mesh) => {
-      if (mesh && mesh.material) {
-        if (mesh.material instanceof BABYLON.StandardMaterial) {
-          mesh.material.emissiveColor = color;
-        }
-      }
-    });
-  }
-
-  update(deltaTime) {
-    if (!this.arrow || !this.pinPosition) return;
-
-    // Bob up and down
-    this.bobTimer += deltaTime * this.bobSpeed;
-    const bobAmount = Math.sin(this.bobTimer * Math.PI * 2) * this.bobHeight;
-
-    const pos = this.pinPosition.clone();
-    pos.y += 2.6 + bobAmount; // sits just above the 2.13 m flag, + bob
-
-    this.arrow.position = pos;
-    this.arrow.rotation.x = Math.PI / 2; // Keep pointing downward
-    this.arrow.rotation.y = 0;
-    this.arrow.rotation.z = 0;
-  }
-
-  dispose() {
-    if (this.arrow) {
-      this.arrow.dispose();
-      this.arrow = null;
-    }
+    return this.CLUBS[Shared.clamp(id, 0, this.CLUBS.length - 1)];
   }
 }
 
@@ -1243,12 +1138,7 @@ class TrajectoryArrow {
 
   async loadArrowModel() {
     try {
-      const result = await BABYLON.SceneLoader.ImportMeshAsync(
-        "",
-        "assets/3d/",
-        "arrow.glb",
-        this.scene,
-      );
+      const result = await Shared.loadModel("arrow.glb", this.scene);
 
       // Store the first mesh as the template (parent container for tip and tail)
       if (result.meshes && result.meshes.length > 0) {
@@ -1331,7 +1221,7 @@ class TrajectoryArrow {
     this.arrow.position.y += CONFIG.TRAJECTORY.ARROW_Y_OFFSET;
 
     // Convert club angle to radians (for pitch/tilt)
-    const angleDeg = Math.max(0, Math.min(clubAngle || 12, 60));
+    const angleDeg = Shared.clamp(clubAngle || 12, 0, 60);
     const angleRad = (angleDeg * Math.PI) / 180;
 
     // Set rotations fresh each frame
@@ -1427,7 +1317,10 @@ class ClubSelector {
   }
 
   /**
-   * Find best club for a given distance
+   * Find best club for a given distance.
+   * @param {number} distance target distance in METRES (compared directly
+   *   against ClubData.maxDistance, which is in metres). Callers must NOT
+   *   pass yards.
    */
   findBestClubForDistance(distance) {
     let bestClubId = 12; // Default to driver
@@ -1469,7 +1362,7 @@ class ClubSelector {
    * Manually set club and prevent auto-selection until camera rotates
    */
   selectClub(clubId) {
-    this.currentClub = Math.max(0, Math.min(12, clubId));
+    this.currentClub = Shared.clamp(clubId, 0, 12);
     this.manuallySelectedClub = true;
   }
 
@@ -1788,8 +1681,9 @@ class AimView {
 
     if (pins && pins.length > 0) {
       try {
-        const distanceToPin =
-          this.getDistanceToNearestPin(ballPos) * UNITS.M_TO_YARDS;
+        // Metres, to match ClubData.maxDistance (used for club auto-select AND
+        // the arrow-color ±10 m band below). Do NOT convert to yards here.
+        const distanceToPin = this.getDistanceToNearestPin(ballPos);
 
         // Auto-select best club if user hasn't manually picked one
         if (this.clubSelector.autoSelectClubIfNeeded(distanceToPin)) {
@@ -1897,9 +1791,13 @@ class PhysicsConfig {
 
 class GolfBallGuy {
   // Rolling resistance: only brake once the ball is already slow, and use a
-  // constant decel. ~3.0 m/s² stops slopes up to ~18°; steeper banks still roll.
+  // constant decel. 0.6 m/s² ≈ a medium-fast green (Stimp ~9): a lag putt rolls a
+  // realistic distance and settles. (3.0 was ~5× real green resistance and, with the
+  // old 1.2 angular damping, made putting almost impossible — the ball died in ~1 m.)
+  // Trade-off: 0.6 only holds the ball on slopes up to ~3.5°; steeper banks keep
+  // rolling, which is realistic — a ball won't sit still on a steep green either.
   static ROLL_BRAKE_SPEED = 2.5;
-  static ROLL_BRAKE_DECEL = 3.0;
+  static ROLL_BRAKE_DECEL = 0.6;
   // Anti-tunnel guard: a real-size (42.7 mm) ball at ~100 m/s moves far more than
   // its own radius per physics step, so on a fast terrain impact (tee-shot into a
   // rise, or a hard landing) it can punch straight through the thin triangle-MESH
@@ -1957,14 +1855,11 @@ class GolfBallGuy {
     this.targetRotation = 0;
     this.facingAimDirection = false;
 
-    // Blinking system
+    // Blinking system — the state machine lives in balls.js; this.blink and
+    // this.blinkMorphIdx are set up in initializeEyelids once the model loads.
     this.eyelidsMesh = null;
-    this.blinkState = "open"; // "open" -> "closing" -> "closed" -> "opening" -> "open"
-    this.blinkTimer = 0;
-    this.nextBlinkTime =
-      CONFIG.BLINKING.MIN_INTERVAL_MS +
-      Math.random() *
-        (CONFIG.BLINKING.MAX_INTERVAL_MS - CONFIG.BLINKING.MIN_INTERVAL_MS);
+    this.blink = null;
+    this.blinkMorphIdx = null;
 
     // Eye gaze system
     this.eyeL = null;
@@ -2226,15 +2121,7 @@ class GolfBallGuy {
     for (const [name, filename] of Object.entries(textureMap)) {
       if (!filename) continue;
       try {
-        const tex = new BABYLON.Texture(
-          `./assets/faces/${filename}`,
-          this.scene,
-          false,
-          false,
-          BABYLON.Texture.TRILINEAR_SAMPLINGMODE,
-        );
-        tex.hasAlpha = true;
-        this.faceTextures[name] = tex;
+        this.faceTextures[name] = Balls.faceTexture(this.scene, filename);
       } catch (e) {
         // Texture failed to load, continue
       }
@@ -2257,18 +2144,11 @@ class GolfBallGuy {
       (m) => m.name && m.name.toLowerCase().includes("eyelid"),
     );
 
-    if (this.eyelidsMesh && this.eyelidsMesh.morphTargetManager) {
-      // Schedule first blink
-      this.scheduleNextBlink();
+    const mgr = this.eyelidsMesh && this.eyelidsMesh.morphTargetManager;
+    if (mgr) {
+      this.blink = Balls.newBlinkState();
+      this.blinkMorphIdx = Balls.findBlinkMorphIndex(mgr);
     }
-  }
-
-  scheduleNextBlink() {
-    this.nextBlinkTime =
-      CONFIG.BLINKING.MIN_INTERVAL_MS +
-      Math.random() *
-        (CONFIG.BLINKING.MAX_INTERVAL_MS - CONFIG.BLINKING.MIN_INTERVAL_MS);
-    this.blinkTimer = 0;
   }
 
   initializeEyes(skeleton) {
@@ -2339,80 +2219,11 @@ class GolfBallGuy {
   }
 
   updateBlinking(dt) {
-    if (!this.eyelidsMesh || !this.eyelidsMesh.morphTargetManager) return;
-
-    const morphTargetManager = this.eyelidsMesh.morphTargetManager;
-
-    // Get number of morph targets from _targets array
-    const numMorphs = morphTargetManager._targets?.length ?? 0;
-
-    if (numMorphs === 0) {
+    const mgr = this.eyelidsMesh && this.eyelidsMesh.morphTargetManager;
+    if (!mgr || !this.blink || this.blinkMorphIdx == null || this.blinkMorphIdx < 0)
       return;
-    }
-
-    // Find the "Closed" shape key by checking _targets directly
-    let closedMorphIndex = -1;
-    if (morphTargetManager._targets) {
-      for (let i = 0; i < morphTargetManager._targets.length; i++) {
-        const target = morphTargetManager._targets[i];
-        const targetName = (target?.name || target?.id || "").toLowerCase();
-        if (
-          targetName.includes("closed") ||
-          targetName.includes("blink") ||
-          targetName.includes("eyelid")
-        ) {
-          closedMorphIndex = i;
-          break;
-        }
-      }
-    }
-
-    if (closedMorphIndex === -1) return;
-
-    this.blinkTimer += dt * 1000; // Convert to milliseconds
-
-    const closeDuration = CONFIG.BLINKING.BLINK_CLOSE_DURATION_MS;
-    const holdDuration = CONFIG.BLINKING.BLINK_HOLD_DURATION_MS;
-    const openDuration = CONFIG.BLINKING.BLINK_OPEN_DURATION_MS;
-
-    // Check if it's time to start blinking
-    if (this.blinkTimer >= this.nextBlinkTime && this.blinkState === "open") {
-      this.blinkState = "closing";
-      this.blinkTimer = 0;
-    }
-
-    // Update morph target influence based on blink state
-    let morphInfluence = 0;
-
-    if (this.blinkState === "closing") {
-      // Animate from 0 to 1 over closeDuration
-      morphInfluence = Math.min(this.blinkTimer / closeDuration, 1);
-      if (this.blinkTimer >= closeDuration) {
-        this.blinkState = "closed";
-        this.blinkTimer = 0;
-      }
-    } else if (this.blinkState === "closed") {
-      // Stay fully closed
-      morphInfluence = 1;
-      if (this.blinkTimer >= holdDuration) {
-        this.blinkState = "opening";
-        this.blinkTimer = 0;
-      }
-    } else if (this.blinkState === "opening") {
-      // Animate from 1 to 0 over openDuration
-      morphInfluence = 1 - Math.min(this.blinkTimer / openDuration, 1);
-      if (this.blinkTimer >= openDuration) {
-        this.blinkState = "open";
-        this.blinkTimer = 0;
-        this.scheduleNextBlink();
-      }
-    }
-
-    // Apply morph target influence directly to the target
-    const target = morphTargetManager._targets[closedMorphIndex];
-    if (target) {
-      target.influence = morphInfluence;
-    }
+    const target = mgr.getTarget(this.blinkMorphIdx);
+    if (target) target.influence = Balls.updateBlink(this.blink, dt);
   }
 
   setFace(name, duration = 0) {
@@ -3022,7 +2833,7 @@ class SwipeArrowOverlay {
 
     const ux = dx / len;
     const uy = dy / len;
-    const headLen = Math.max(10, Math.min(18, len * 0.22));
+    const headLen = Shared.clamp(len * 0.22, 10, 18);
     const headW = headLen * 0.6;
     const baseX = end.x - ux * headLen;
     const baseY = end.y - uy * headLen;
@@ -3285,7 +3096,7 @@ class InputHandler {
       }
     }
 
-    const strength = Math.max(minStrength, Math.min(maxStrength, high));
+    const strength = Shared.clamp(high, minStrength, maxStrength);
     this._strengthCache = {
       dist: worldDistance,
       dt,
@@ -3325,7 +3136,7 @@ class InputHandler {
       Math.abs(deltaX) + 6,
     );
 
-    deltaX = Math.max(-(swipeLen - 1), Math.min(swipeLen - 1, deltaX));
+    deltaX = Shared.clamp(deltaX, -(swipeLen - 1), swipeLen - 1);
     let deltaY = -Math.sqrt(Math.max(1, swipeLen * swipeLen - deltaX * deltaX));
 
     const clamped = this.clampSwipeVector(deltaX, deltaY);
@@ -3392,7 +3203,6 @@ class InputHandler {
       this.handlePointerMove(e),
     );
     this.canvas.addEventListener("pointerup", (e) => this.handlePointerUp(e));
-    window.addEventListener("keydown", (e) => this.handleKeyDown(e));
   }
 
   handlePointerDown(event) {
@@ -3487,25 +3297,12 @@ class InputHandler {
     if (this.overviewOrbiting) {
       this.overviewOrbiting = false;
       this.clearInputPreview();
-
-      if (
-        !this.game?.isControlsDisabled &&
-        this.golfBall.isLanded() &&
-        distance < PhysicsConfig.MIN_SWIPE_DISTANCE
-      ) {
-        this.eventManager.emit("input:reset");
-      }
       return;
     }
 
     if (this.game?.isControlsDisabled) return;
 
     if (
-      this.golfBall.isLanded() &&
-      distance < PhysicsConfig.MIN_SWIPE_DISTANCE
-    ) {
-      this.eventManager.emit("input:reset");
-    } else if (
       this.isHitting &&
       this.golfBall.isLanded() &&
       distance > PhysicsConfig.MIN_SWIPE_DISTANCE
@@ -3571,13 +3368,6 @@ class InputHandler {
     }
 
     this.clearInputPreview();
-  }
-
-  handleKeyDown(event) {
-    if (this.game?.isControlsDisabled) return;
-    if (event.code === "Space") {
-      this.eventManager.emit("input:reset");
-    }
   }
 }
 
@@ -3726,7 +3516,7 @@ class CircleUIManager {
     // Update flag via cached data URLs (no network requests, pure memory)
     if (this._statsFlagImg && flagFrame !== this._lastFlagFrame) {
       this._lastFlagFrame = flagFrame;
-      const frameIndex = Math.max(0, Math.min(flagFrame, 6)); // Clamp 0-6
+      const frameIndex = Shared.clamp(flagFrame, 0, 6); // Clamp 0-6
       const dataUrl = CircleUIManager.flagDataUrls.get(frameIndex);
 
       if (dataUrl) {
@@ -3742,7 +3532,7 @@ class CircleUIManager {
 
   // Update power circle
   updatePower(powerPercent) {
-    const percent = Math.max(0, Math.min(100, powerPercent));
+    const percent = Shared.clamp(powerPercent, 0, 100);
     if (this.powerPercent) this.powerPercent.textContent = percent.toFixed(0);
     if (this.powerArc && this._powerCircumference) {
       const offset = this._powerCircumference * (1 - percent / 100);
@@ -3890,16 +3680,6 @@ class UIManager {
         flagFrame,
         pinNumber,
       );
-    } else {
-      // Fallback for old DOM elements (backward compatibility)
-      const speedEl = document.getElementById("circleSpeed");
-      if (speedEl) speedEl.textContent = speed.toFixed(0);
-      const spinEl = document.getElementById("circleSpin");
-      if (spinEl) spinEl.textContent = spin.toFixed(0);
-      const heightEl = document.getElementById("circleHeight");
-      if (heightEl) heightEl.textContent = height.toFixed(0);
-      const distanceEl = document.getElementById("circleDistance");
-      if (distanceEl) distanceEl.textContent = distanceToPin.toFixed(0);
     }
   }
 
@@ -4346,7 +4126,7 @@ class PinManager {
 
       // Calculate angle between aim direction and pin direction
       const dotProd = BABYLON.Vector3.Dot(aimVec, toPinFlat);
-      const angle = Math.acos(Math.max(-1, Math.min(1, dotProd)));
+      const angle = Math.acos(Shared.clamp(dotProd, -1, 1));
 
       if (angle < smallestAngle) {
         smallestAngle = angle;
@@ -4437,44 +4217,6 @@ class SwingCoordinator {
   }
 }
 
-// ─── CAMERA COORDINATOR ──────────────────────────────────────────────────────
-/**
- * Coordinates camera view transitions and state
- */
-class CameraCoordinator {
-  constructor(camera) {
-    this.camera = camera;
-  }
-
-  /**
-   * Transition to aim mode: reset angle and view
-   */
-  transitionToAim() {
-    this.camera.setCameraAngle(0);
-    this.camera.setPlayView();
-  }
-
-  /**
-   * Transition to play mode: set initial shot position
-   */
-  transitionToPlay(ballPosition, shotDirection) {
-    this.camera.setShotStartPosition(ballPosition);
-    // Camera angle convention is opposite to aimView, so negate it.
-    // setCameraAngleImmediate normalizes BOTH cameraAngle and targetCameraAngle;
-    // don't re-assign the raw (un-normalized) value or the follow-cam lerps a
-    // full 360° spin when the pin is dead ahead (cameraRotation ≈ 2π).
-    this.camera.setCameraAngleImmediate(-shotDirection);
-    this.camera.setPlayView();
-  }
-
-  /**
-   * Transition to shot review (after ball lands)
-   */
-  transitionToShotReview() {
-    this.camera.setShotReviewView();
-  }
-}
-
 // ─── GAME STATE COORDINATOR ─────────────────────────────────────────────────
 /**
  * Coordinates game state transitions, reset logic, and landing detection
@@ -4521,34 +4263,6 @@ class GameStateCoordinator {
   }
 
   /**
-   * Reset current shot: go back to AIM for another attempt on this hole
-   * Keeps previous shots' trails visible
-   */
-  resetShot() {
-    this.game.golfBall.reset();
-    this.game.ballTrail.clear();
-    this.game.ballTrail.setVisible(false);
-    // DON'T clear archived trails - we want to see previous shots
-    this.game.gameState = GameState.AIM;
-    this.game.golfBallFacingCamera = false;
-    this.game.swingCameraRestored = false;
-
-    if (this.game.clubSystem) {
-      this.game.clubSystem.resetClubs();
-    }
-
-    // Update UI for aim mode
-    if (this.game.circleUIManager) {
-      this.game.circleUIManager.hidePowerCircle();
-    }
-
-    if (this.game.aimView) {
-      this.game.aimView.cameraRotation = 0; // Face toward center from north side
-      this.game.aimView.activate(); // Re-enable orbit controls
-    }
-  }
-
-  /**
    * Reset for next hole: clear everything for a fresh start
    */
   resetForNextHole() {
@@ -4585,10 +4299,9 @@ class GameStateCoordinator {
       if (this.game.aimView) {
         this.transitionAimToPlay(this.game.aimView.cameraRotation);
       }
-    } else if (this.game.gameState === GameState.PLAY) {
-      // Click club circle while in PLAY mode → reset current shot (go back to AIM)
-      this.resetShot();
     }
+    // (Clicking the club circle in PLAY mode used to reset the shot to the tee;
+    // that mulligan was removed — it fired accidentally and threw the ball back.)
   }
 
   /**
@@ -5084,12 +4797,7 @@ class ClubSystem {
 
   async load(ballPosition) {
     try {
-      const result = await BABYLON.SceneLoader.ImportMeshAsync(
-        "",
-        "assets/3d/",
-        "clubs.glb",
-        this.scene,
-      );
+      const result = await Shared.loadModel("clubs.glb", this.scene);
 
       // Wrap the GLB root in a pivot node so we never overwrite its
       // built-in coordinate conversion (GLBs bake scaling/rotation into __root__)
@@ -5365,7 +5073,6 @@ class GolfGame {
 
     // Coordinators (initialized after scene setup)
     this.swingCoordinator = null;
-    this.cameraCoordinator = null;
 
     // Compass transition tracking for smooth mode switches
     this.compassTransitionFrames = 0;
@@ -5375,10 +5082,6 @@ class GolfGame {
     this.lastCompassRotate = null; // Cache last compass rotation
     this.lastWindSpeedDisplay = null; // Cache last wind speed display
     this.gameStateCoordinator = null;
-
-    // Pin tracking for auto-aim
-    this.lastPinPosition = null;
-    this.pinIndicatorArrow = null;
 
     // Hole tracking
     this.currentHolePin = null;
@@ -5413,9 +5116,6 @@ class GolfGame {
     this.scene = new BABYLON.Scene(this.engine);
     this.scene.clearColor = new BABYLON.Color3(0.53, 0.81, 0.92); // Sky blue
 
-    // Initialize pin indicator arrow
-    this.pinIndicatorArrow = new PinIndicatorArrow(this.scene);
-
     // Setup
     await PhysicsManager.initialize(this.scene);
     if (BABYLON.PhysicsViewer) {
@@ -5436,6 +5136,11 @@ class GolfGame {
       // Setup pins after golfBall is loaded (practice sandbox)
       this.setupPins();
     }
+
+    // Holing out runs one handler for both modes (see GolfGame.onHoleSink);
+    // registered here, after either mode's PinManager exists, so practice and
+    // course share the exact same hole-entry cinematic.
+    this.eventManager.on("pin:holesink", (holePos) => this.onHoleSink(holePos));
 
     // Initialize grass system
     this.grassSystem = new GrassSystem(this.scene);
@@ -5468,7 +5173,6 @@ class GolfGame {
       this.camera,
       this.ballTrail,
     );
-    this.cameraCoordinator = new CameraCoordinator(this.camera);
     this.gameStateCoordinator = new GameStateCoordinator(this);
 
     // Wire club circle click to mode toggle
@@ -5515,12 +5219,7 @@ class GolfGame {
   async loadCharacter() {
     let result;
     try {
-      result = await BABYLON.SceneLoader.ImportMeshAsync(
-        "",
-        "assets/3d/",
-        "gball.glb",
-        this.scene,
-      );
+      result = await Shared.loadModel("gball.glb", this.scene);
     } catch (e) {
       // Non-fatal: the ball still has its physics body + collider mesh, it just
       // won't have the character face/skeleton. Don't kill the whole game.
@@ -5596,11 +5295,13 @@ class GolfGame {
       this.gameStateCoordinator.transitionAimToPlay(
         this.aimView.cameraRotation,
       );
-      // Use cameraCoordinator to update camera
-      this.cameraCoordinator.transitionToPlay(
-        this.golfBall.getPosition(),
-        this.aimedDirection,
-      );
+      // Transition the follow-camera to play view. Camera angle convention is
+      // opposite to aimView, so negate it; setCameraAngleImmediate normalizes
+      // both angle fields so the follow-cam doesn't lerp a full 360° spin when
+      // the pin is dead ahead (cameraRotation ≈ 2π).
+      this.camera.setShotStartPosition(this.golfBall.getPosition());
+      this.camera.setCameraAngleImmediate(-this.aimedDirection);
+      this.camera.setPlayView();
       // Start compass transition blend
       this.compassTransitionFrames = 0;
       // Ensure aimView is fully deactivated after transitioning
@@ -5646,11 +5347,6 @@ class GolfGame {
     this.eventManager.on("input:spin", (data) => {
       this.gameStateCoordinator.applySpin(data.spinAxis, data.spinAmount);
     });
-
-    this.eventManager.on("input:reset", () => {
-      this.gameStateCoordinator.resetShot();
-      // resetShot() abandons current shot and returns to AIM mode
-    });
   }
 
   disableControls() {
@@ -5673,6 +5369,39 @@ class GolfGame {
     // Re-enable UI circles
     if (this.circleUIManager) {
       this.circleUIManager.showAllCircles();
+    }
+  }
+
+  // Single holing-out handler for BOTH modes, registered once in initialize().
+  // The cinematic half — freeze aim, reveal every shot's trail, swing to the
+  // shot-review camera — is identical in practice and course; only the tail
+  // differs. Practice pops the "Continue" overlay; course scores + auto-advances
+  // (its review camera shows during the advance delay). Keeping this in one
+  // place means the two modes can't drift apart or double-fire.
+  onHoleSink(holePos) {
+    if (this.holeSinkProcessed) return; // ball still vibrating in the cup re-emits
+    this.holeSinkProcessed = true;
+
+    // Freeze aim; each mode then shows a make result and resets. No shot
+    // overview / review camera for now — just result + reset.
+    if (this.aimView) {
+      this.aimView.isActive = false;
+      this.aimView.removeOrbitControls();
+    }
+
+    const shotCount = this.currentHoleShotCount;
+
+    // ── mode-specific completion tail ──
+    if (this.courseManager) {
+      this.courseManager.onHoleComplete(shotCount);
+    } else {
+      const holeNumber =
+        (this.scene.pinManager?.pins?.findIndex(
+          (pin) => BABYLON.Vector3.Distance(pin.holePosition, holePos) < 1,
+        ) ?? 0) + 1;
+      this.eventManager.emit("game:showShotReview", { holeNumber, shotCount });
+      this.currentHolePin = null; // reset hole tracking (practice)
+      this.currentHoleShotCount = 0;
     }
   }
 
@@ -5837,35 +5566,9 @@ class GolfGame {
       // Handle pin hit if needed
     });
 
-    this.eventManager.on("pin:holesink", (holePos) => {
-      // Guard against repeated holesink events from ball vibrating in hole
-      if (this.holeSinkProcessed) return;
-      this.holeSinkProcessed = true;
-      // Disable orbit controls before transitioning to shot review
-      if (this.aimView) {
-        this.aimView.isActive = false;
-        this.aimView.removeOrbitControls();
-      }
-      // Show all archived trails for the hole overview
-      this.showArchivedTrails();
-      // Transition to shot review view when hole is sunk
-      this.camera.setShotReviewView();
-
-      if (this.scene.pinManager && this.scene.pinManager.pins) {
-        const holeNumber =
-          this.scene.pinManager.pins.findIndex(
-            (pin) => BABYLON.Vector3.Distance(pin.holePosition, holePos) < 1,
-          ) + 1;
-        this.eventManager.emit("game:showShotReview", {
-          holeNumber,
-          shotCount: this.currentHoleShotCount,
-        });
-      }
-      this.currentHolePin = null; // Reset hole tracking
-      this.currentHoleShotCount = 0;
-      // Play resumes when the player clicks "Continue" on the review overlay
-      // (showShotReviewMessage → resetForNextHole).
-    });
+    // pin:holesink is handled by GolfGame.onHoleSink — one handler shared by
+    // both modes, registered once in initialize(). setupPins only wires the
+    // practice-only "Continue" review overlay below.
 
     // Listen for shot review event
     this.eventManager.on("game:showShotReview", (reviewData) => {
@@ -5890,8 +5593,14 @@ class GolfGame {
       this._awaitingSettle = this.gameState !== GameState.LANDED;
     }
 
-    // Enter aim mode only after the ball has stopped completely for 1 second.
-    if (this._awaitingSettle && this.gameState !== GameState.AIM) {
+    // Enter aim mode only after the ball has stopped for 1 second — but NOT
+    // while a hole-out is being processed (holeSinkProcessed), so the make
+    // result + reset isn't interrupted by an auto re-aim.
+    if (
+      this._awaitingSettle &&
+      this.gameState !== GameState.AIM &&
+      !this.holeSinkProcessed
+    ) {
       if (this.golfBall.getSpeed() < 0.15 && !this.golfBall.isAirborne()) {
         this._settleTimer += this.engine.getDeltaTime() / 1000;
         if (this._settleTimer >= 1.0) {
@@ -6025,15 +5734,6 @@ class GolfGame {
     }
     this.shotTrails = [];
     this.holeSinkProcessed = false; // Reset guard for next hole
-  }
-
-  showArchivedTrails() {
-    // Show all archived trails for hole sink overview
-    for (const { trail } of this.shotTrails) {
-      if (trail) {
-        trail.setEnabled(true);
-      }
-    }
   }
 
   setupCompass() {
@@ -6287,13 +5987,6 @@ class GolfGame {
         );
       }
 
-      // Update pin indicator arrow
-      if (this.pinIndicatorArrow && this.lastPinPosition) {
-        if (!this.pinIndicatorArrow.arrow) {
-          this.pinIndicatorArrow.create(this.lastPinPosition);
-        }
-        this.pinIndicatorArrow.update(this.engine.getDeltaTime() / 1000);
-      }
     });
 
     // Update camera AFTER physics so it reads the ball's post-step position,
@@ -6359,12 +6052,7 @@ class CourseDecor {
   async load() {
     let res;
     try {
-      res = await BABYLON.SceneLoader.ImportMeshAsync(
-        "",
-        "assets/3d/",
-        "decor.glb",
-        this.scene,
-      );
+      res = await Shared.loadModel("decor.glb", this.scene);
     } catch (e) {
       // Non-fatal: without decor sources, place() returns null and holes simply
       // render with no trees/rocks rather than the whole round failing to load.
@@ -6558,7 +6246,7 @@ class DroneCamera {
         return BABYLON.Vector3.Lerp(
           a[prop],
           b[prop],
-          Math.max(0, Math.min(1, local)),
+          Shared.clamp(local, 0, 1),
         );
       };
 
@@ -6665,7 +6353,6 @@ class CourseUI {
     @keyframes cfpop{0%{transform:translate(-50%,-50%) scale(.4);opacity:0}
       60%{transform:translate(-50%,-52%) scale(1.08);opacity:1}
       100%{transform:translate(-50%,-50%) scale(1);opacity:1}}
-
     .balls-overlay{position:absolute;inset:0;z-index:2000;display:flex;align-items:center;
       justify-content:center;background:radial-gradient(circle at 50% 30%,rgba(135,207,235,.6),rgba(90,150,200,.75));
       font-family:'Trebuchet MS',Arial,sans-serif;-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px);}
@@ -6735,13 +6422,13 @@ class BallsMenu {
     BallsMenu.showModeSelect();
   }
 
-  static _overlay(contentHtml) {
-    const existing = document.getElementById("ballsMenu");
+  static _overlay(contentHtml, { id = "ballsMenu", cardClass = "aero-card" } = {}) {
+    const existing = document.getElementById(id);
     if (existing) existing.remove();
     const o = document.createElement("div");
-    o.id = "ballsMenu";
+    o.id = id;
     o.className = "balls-overlay";
-    o.innerHTML = `<div class="aero-card">${contentHtml}</div>`;
+    o.innerHTML = `<div class="${cardClass}">${contentHtml}</div>`;
     document.body.appendChild(o);
     return o;
   }
@@ -6835,18 +6522,15 @@ class Scoreboard {
         ? `<div class="aero-sub">🏆 ${winners.join(" & ")} win${winners.length > 1 ? "" : "s"} (${best})</div>`
         : `<div class="aero-sub">${best - totalPar === 0 ? "Even par" : (best - totalPar > 0 ? "+" : "") + (best - totalPar)} for the round</div>`;
 
-    const o = document.createElement("div");
-    o.id = "ballsScoreboard";
-    o.className = "balls-overlay";
-    o.innerHTML = `<div class="aero-card score-card">
-      <div class="aero-title score-title">SCORECARD</div>
+    const o = BallsMenu._overlay(
+      `<div class="aero-title score-title">SCORECARD</div>
       ${winLine}
       <table class="scorecard"><thead>${head}${parRow}</thead>
       <tbody class="players">${rows}</tbody></table>
       <button class="aero-btn" id="sbAgain">▶ Play Again</button>
-      <button class="aero-btn secondary" id="sbMenu">Main Menu</button>
-    </div>`;
-    document.body.appendChild(o);
+      <button class="aero-btn secondary" id="sbMenu">Main Menu</button>`,
+      { id: "ballsScoreboard", cardClass: "aero-card score-card" },
+    );
     o.querySelector("#sbAgain").onclick = () => location.reload();
     o.querySelector("#sbMenu").onclick = () => location.reload();
     // tag total row styling
@@ -6898,9 +6582,8 @@ class CourseManager {
     this.scene.pinManager = this.pinManager;
 
     this.game.eventManager.on("ball:landed", (pos) => this.onBallLanded(pos));
-    this.game.eventManager.on("pin:holesink", (holePos) =>
-      this.onHoleSink(holePos),
-    );
+    // Holing out is handled by GolfGame.onHoleSink (shared cinematic), which
+    // calls this.onHoleComplete() for the course-specific score + advance tail.
     this.scene.onBeforeRenderObservable.add(() => this.frame());
   }
 
@@ -6984,10 +6667,10 @@ class CourseManager {
     if (!hg) return 0;
     const fx = (x - hg.minX) / hg.cell,
       fz = (z - hg.minZ) / hg.cell;
-    let i = Math.max(0, Math.min(hg.nx - 2, Math.floor(fx)));
-    let j = Math.max(0, Math.min(hg.nz - 2, Math.floor(fz)));
-    const tx = Math.max(0, Math.min(1, fx - i)),
-      tz = Math.max(0, Math.min(1, fz - j));
+    let i = Shared.clamp(Math.floor(fx), 0, hg.nx - 2);
+    let j = Shared.clamp(Math.floor(fz), 0, hg.nz - 2);
+    const tx = Shared.clamp(fx - i, 0, 1),
+      tz = Shared.clamp(fz - j, 0, 1);
     const H = (a, b) => hg.height[a * hg.nz + b];
     return (
       H(i, j) * (1 - tx) * (1 - tz) +
@@ -7023,14 +6706,10 @@ class CourseManager {
     // to pick up rebuilt geometry. Force the glb loader since the query hides the ext.
     let res;
     try {
-      res = await BABYLON.SceneLoader.ImportMeshAsync(
-        "",
-        "",
-        cfg.glb + "?v=" + HOLE_ASSET_VERSION,
-        this.scene,
-        null,
-        ".glb",
-      );
+      res = await Shared.loadModel(cfg.glb, this.scene, {
+        root: "",
+        version: HOLE_ASSET_VERSION,
+      });
     } catch (e) {
       console.error(`Hole ${index + 1} geometry (${cfg.glb}) failed to load.`, e);
       this.busy = false;
@@ -7281,10 +6960,11 @@ class CourseManager {
     this.disposeTeePeg();
 
     // Tee the ball up when the shot warrants a wood/driver (by distance to pin).
-    const distYd =
-      BABYLON.Vector3.Distance(this.tee, this.cup) * UNITS.M_TO_YARDS;
+    // Metres, to match ClubData.maxDistance (findBestClubForDistance compares
+    // against it directly). Passing yards here biased tee shots toward woods.
+    const distToPin = BABYLON.Vector3.Distance(this.tee, this.cup);
     const bestClub =
-      this.game.aimView?.clubSelector?.findBestClubForDistance(distYd) ?? 0;
+      this.game.aimView?.clubSelector?.findBestClubForDistance(distToPin) ?? 0;
     const useTee = bestClub >= 10; // 3 Wood / 5 Wood / Driver
     const pegH = 0.05; // visible tee height ≈ 5 cm
     this.placeBallAtTee(useTee ? pegH + 0.03 : 0.05);
@@ -7417,15 +7097,21 @@ class CourseManager {
     this.applyPenalty("💦 Water — +1");
   }
 
-  onHoleSink(holePos) {
-    if (this.holeComplete) return;
+  // Course tail of holing out, invoked by GolfGame.onHoleSink after the shared
+  // cinematic. Re-entry is already guarded by GolfGame.holeSinkProcessed.
+  onHoleComplete(shotCount) {
     this.holeComplete = true;
     this.busy = true;
     const par = COURSE_HOLES[this.holeIndex].par;
-    const strokes = Math.max(1, this.game.currentHoleShotCount);
+    const strokes = Math.max(1, shotCount);
     this.players[this.currentPlayer].scores[this.holeIndex] = strokes;
     this.hud.flash(CourseUI.scoreName(strokes, par), 2600);
-    setTimeout(() => this.advance(), 2800);
+    // Show the make result, then advance to the next hole (no shot overview for
+    // now). clearArchivedTrails releases this hole's trails before the teardown.
+    setTimeout(() => {
+      this.game.clearArchivedTrails();
+      this.advance();
+    }, 2200);
   }
 
   advance() {
@@ -7527,18 +7213,6 @@ if (typeof document !== "undefined") {
   } else {
     BallsMenu.init(startGame);
   }
-  // "back to clubhouse" affordance, always available on the golf page
-  const back = document.createElement("button");
-  back.id = "toClubhouse";
-  back.textContent = "← Clubhouse";
-  back.onclick = () => (location.href = "index.html");
-  Object.assign(back.style, {
-    position: "fixed", top: "12px", left: "50%", transform: "translateX(-50%)",
-    zIndex: "3000", padding: "8px 14px", borderRadius: "18px", cursor: "pointer",
-    border: "3px solid #476a23", background: "rgba(144,200,150,0.92)",
-    color: "#123", fontFamily: "Arial, sans-serif", fontWeight: "bold", fontSize: "15px",
-  });
-  document.body.appendChild(back);
 }
 
 // Node-only export seam: lets the framework-free gameplay logic (unit math, club
