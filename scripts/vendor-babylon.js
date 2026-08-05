@@ -72,6 +72,8 @@ for (const bundle of bundles) {
     }
 
     fs.copyFileSync(sourcePath, outputPath);
-    console.log(`Copied ${bundle.packageName}/${sourceRelativePath} -> babylon/${outputFileName}`);
+    console.log(
+      `Copied ${bundle.packageName}/${sourceRelativePath} -> babylon/${outputFileName}`,
+    );
   }
 }

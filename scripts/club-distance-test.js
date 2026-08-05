@@ -13,8 +13,7 @@
 
 const puppeteer = require("puppeteer");
 
-const URL =
-  process.env.URL || "http://localhost:3000/game.html?mode=practice";
+const URL = process.env.URL || "http://localhost:3000/game.html?mode=practice";
 const HEADLESS = process.env.HEADLESS === "false" ? false : "new";
 
 // Runs in the PAGE. Fires one full-power straight shot for `clubId`, no wind,
@@ -147,7 +146,9 @@ function pad(s, n, right = false) {
   }
 
   console.log("\n" + "=".repeat(78));
-  console.log("CLUB CARRY TEST — full power, dead straight, no wind (practice range)\n");
+  console.log(
+    "CLUB CARRY TEST — full power, dead straight, no wind (practice range)\n",
+  );
   const H = [
     pad("Club", 15),
     pad("Loft", 5, true),
@@ -188,7 +189,9 @@ function pad(s, n, right = false) {
     console.log("\nClubs off estimate by >12% (carry vs est):");
     for (const r of off) {
       const pct = Math.round((r.carryYd / r.estYd) * 100);
-      console.log(`  ${pad(r.name, 15)} ${r.carryYd}yd / ${r.estYd}yd = ${pct}%`);
+      console.log(
+        `  ${pad(r.name, 15)} ${r.carryYd}yd / ${r.estYd}yd = ${pct}%`,
+      );
     }
   } else {
     console.log("\nAll clubs within 12% of estimate on carry.");

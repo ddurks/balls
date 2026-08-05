@@ -334,7 +334,9 @@
         if (!filename) continue;
         try {
           this.faceTextures[name] = Balls.faceTexture(this.scene, filename);
-        } catch (e) {}
+        } catch (e) {
+          console.warn(`Face texture "${filename}" failed to load:`, e);
+        }
       }
 
       if (this.faceMaterial) {

@@ -79,71 +79,18 @@
 
   // ---- PS1 procedural textures ----------------------------------------------
   // Small, nearest-sampled, painterly = "impressionist PS1".
+  // Wood (3 planks) + shag come from the shared generator (src/shared/textures.js);
+  // the locker room builds the same building with its own name/knobs.
   function woodTexture(scene) {
-    const S = 128;
-    const dt = new BABYLON.DynamicTexture("woodTex", S, scene, false);
-    const ctx = dt.getContext();
-    for (let y = 0; y < S; y++) {
-      const t = Math.sin(y * 0.26) * 0.5 + Math.sin(y * 0.07 + 1) * 0.5;
-      const sh = 1 + t * 0.16;
-      ctx.fillStyle = `rgb(${(150 * sh) | 0},${(96 * sh) | 0},${(48 * sh) | 0})`;
-      ctx.fillRect(0, y, S, 1);
-    }
-    for (let i = 0; i < 190; i++) {
-      const y0 = Math.random() * S;
-      const dark = Math.random() < 0.55;
-      ctx.strokeStyle = dark
-        ? `rgba(78,44,18,${0.2 + Math.random() * 0.35})`
-        : `rgba(208,156,96,${0.14 + Math.random() * 0.3})`;
-      ctx.lineWidth = 1 + Math.random();
-      ctx.beginPath();
-      let yy = y0;
-      ctx.moveTo(0, yy);
-      for (let x = 0; x <= S; x += 6) {
-        yy += (Math.random() - 0.5) * 2.0;
-        ctx.lineTo(x, yy);
-      }
-      ctx.stroke();
-    }
-    ctx.strokeStyle = "rgba(42,22,8,0.85)";
-    ctx.lineWidth = 1;
-    for (let p = 1; p < 3; p++) {
-      const y = (p * S) / 3;
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(S, y);
-      ctx.stroke();
-    }
-    dt.update();
-    dt.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
-    dt.wrapU = dt.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
-    return dt;
+    return Textures.wood(scene, {
+      name: "woodTex",
+      grainStrokes: 190,
+      planks: 3,
+    });
   }
 
   function shagTexture(scene) {
-    const S = 96;
-    const dt = new BABYLON.DynamicTexture("shagTex", S, scene, false);
-    const ctx = dt.getContext();
-    ctx.fillStyle = "rgb(18,46,26)";
-    ctx.fillRect(0, 0, S, S);
-    for (let i = 0; i < 4200; i++) {
-      const x = Math.random() * S;
-      const y = Math.random() * S;
-      const len = 2 + Math.random() * 4;
-      const lift = Math.random();
-      const r = 10 + lift * 34;
-      const g = 40 + lift * 70;
-      const b = 20 + lift * 30;
-      ctx.strokeStyle = `rgba(${r | 0},${g | 0},${b | 0},0.5)`;
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(x + (Math.random() - 0.5) * 1.5, y - len);
-      ctx.stroke();
-    }
-    dt.update();
-    dt.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
-    dt.wrapU = dt.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
-    return dt;
+    return Textures.shag(scene, { name: "shagTex" });
   }
 
   // Build a tangent-space normal map from a height function (finite differences),
@@ -1854,11 +1801,18 @@
             data: b.data.img || null,
           });
       }
-      // cull players not seen in this snapshot
+      // cull players not seen in this snapshot — free ALL their resources
       for (const [id, r] of remotes) {
         if (r.seen !== nowSeen) {
-          if (r.av.item && r.av.item.ps) r.av.item.ps.dispose(); // stop their smoke
+          // Drop shadow-map references before the meshes go: the generator keeps
+          // the caster in its render list otherwise (avatar body + any hat).
+          for (const m of r.av.wrapper.getChildMeshes(false))
+            shadow.removeShadowCaster(m);
+          equipHold(r.av, "none"); // decrements anyCig + disposes held item/smoke
+          if (r.av.customFaceTex) r.av.customFaceTex.dispose();
           r.av.wrapper.dispose(false, true);
+          faceStore.delete(id); // these per-player blob caches grow unbounded otherwise
+          skinImgStore.delete(id);
           removeTag(id);
           removeBubble(id);
           remotes.delete(id);
@@ -2375,17 +2329,24 @@
     this.onSnapshot = null;
     this.onChat = null;
     this.onReady = null; // fired after join is acknowledged (and on every reconnect)
+    this._intentionalClose = false; // set by close() so we don't fight a deliberate leave
+    this._reconnectDelay = 0; // ms; grows on repeated failures (see _scheduleReconnect)
+    this._reconnectTimer = null;
   }
   ClubhouseNet.prototype.connect = function () {
+    this._intentionalClose = false;
     let ws;
     try {
       ws = new WebSocket(this.url);
     } catch {
       this.offline = true;
+      this._scheduleReconnect();
       return;
     }
     this.ws = ws;
     ws.onopen = () => {
+      this.offline = false;
+      this._reconnectDelay = 0; // a good connection resets the backoff
       this._send({ t: "auth", token: "" });
       this._send({ t: "join", name: this.name });
     };
@@ -2396,24 +2357,45 @@
       } catch {
         return;
       }
-      if (m.t === "welcome") {
-        this.playerId = m.playerId;
-        this.sendArea(this.area);
-        if (this.onReady) this.onReady();
-      } else if (m.t === "gameSnapshot") {
-        if (this.onSnapshot)
-          this.onSnapshot(m.players || [], m.broadcasts || []);
-      } else if (m.t === "chat") {
-        if (this.onChat) this.onChat(m);
+      // A malformed frame must not throw mid-mutation and wedge the client: the
+      // handlers below touch untrusted server fields + Babylon/DOM state.
+      try {
+        if (m.t === "welcome") {
+          this.playerId = m.playerId;
+          this.sendArea(this.area);
+          if (this.onReady) this.onReady();
+        } else if (m.t === "gameSnapshot") {
+          if (this.onSnapshot)
+            this.onSnapshot(m.players || [], m.broadcasts || []);
+        } else if (m.t === "chat") {
+          if (this.onChat) this.onChat(m);
+        }
+        // ignore bootstrapRequired and anything else
+      } catch (e) {
+        console.warn("clubhouse: dropped a bad server message", e);
       }
-      // ignore bootstrapRequired and anything else
     };
     ws.onerror = () => {
       this.offline = true;
     };
     ws.onclose = () => {
       this.offline = true;
+      this.ws = null;
+      if (!this._intentionalClose) this._scheduleReconnect();
     };
+  };
+  // Exponential backoff reconnect (1s → 2s → … capped at 15s). onReady re-fires on
+  // the fresh welcome and re-announces hold/hat/skin/face so remotes re-sync.
+  ClubhouseNet.prototype._scheduleReconnect = function () {
+    if (this._intentionalClose || this._reconnectTimer) return;
+    this._reconnectDelay = Math.min(
+      this._reconnectDelay ? this._reconnectDelay * 2 : 1000,
+      15000,
+    );
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      this.connect();
+    }, this._reconnectDelay);
   };
   ClubhouseNet.prototype._send = function (obj) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -2464,6 +2446,11 @@
     this._send({ t: "action", action: "hold", direction: code });
   };
   ClubhouseNet.prototype.close = function () {
+    this._intentionalClose = true;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     if (this.ws) {
       try {
         this.ws.close();

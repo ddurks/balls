@@ -16,63 +16,19 @@
 
   const $ = (id) => document.getElementById(id);
 
-  // Warm oak DynamicTexture (a compact copy of the clubhouse's, so the locker
-  // room's wainscot + floor read the same PS1-flat way).
+  // Warm oak wainscot/floor + dark-green shag come from the shared generator
+  // (src/shared/textures.js), so the locker room reads the same PS1-flat way as
+  // the clubhouse. The locker wood is a seamless field (no plank lines).
   function woodTex(scene) {
-    const S = 128;
-    const dt = new BABYLON.DynamicTexture("lkWood", S, scene, false);
-    const ctx = dt.getContext();
-    for (let y = 0; y < S; y++) {
-      const t = Math.sin(y * 0.26) * 0.5 + Math.sin(y * 0.07 + 1) * 0.5;
-      const sh = 1 + t * 0.16;
-      ctx.fillStyle = `rgb(${(150 * sh) | 0},${(96 * sh) | 0},${(48 * sh) | 0})`;
-      ctx.fillRect(0, y, S, 1);
-    }
-    for (let i = 0; i < 160; i++) {
-      const y0 = Math.random() * S;
-      const dark = Math.random() < 0.55;
-      ctx.strokeStyle = dark
-        ? `rgba(78,44,18,${0.2 + Math.random() * 0.35})`
-        : `rgba(208,156,96,${0.14 + Math.random() * 0.3})`;
-      ctx.lineWidth = 1 + Math.random();
-      ctx.beginPath();
-      let yy = y0;
-      ctx.moveTo(0, yy);
-      for (let x = 0; x <= S; x += 6) {
-        yy += (Math.random() - 0.5) * 2.0;
-        ctx.lineTo(x, yy);
-      }
-      ctx.stroke();
-    }
-    dt.update();
-    dt.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
-    dt.wrapU = dt.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
-    return dt;
+    return Textures.wood(scene, {
+      name: "lkWood",
+      grainStrokes: 160,
+      planks: 1,
+    });
   }
 
-  // Dark-green shag carpet (a compact copy of the clubhouse's), so the locker
-  // room floor matches the rest of the building.
   function shagTex(scene) {
-    const S = 96;
-    const dt = new BABYLON.DynamicTexture("lkShag", S, scene, false);
-    const ctx = dt.getContext();
-    ctx.fillStyle = "rgb(18,46,26)";
-    ctx.fillRect(0, 0, S, S);
-    for (let i = 0; i < 4200; i++) {
-      const x = Math.random() * S,
-        y = Math.random() * S;
-      const len = 2 + Math.random() * 4,
-        lift = Math.random();
-      ctx.strokeStyle = `rgba(${(10 + lift * 34) | 0},${(40 + lift * 70) | 0},${(20 + lift * 30) | 0},0.5)`;
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(x + (Math.random() - 0.5) * 1.5, y - len);
-      ctx.stroke();
-    }
-    dt.update();
-    dt.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
-    dt.wrapU = dt.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
-    return dt;
+    return Textures.shag(scene, { name: "lkShag" });
   }
 
   function buildRoom(scene, shadow) {

@@ -1,5 +1,6 @@
 node_modules
 vendor
+babylon
 assets
 package-lock.json
 *.glb

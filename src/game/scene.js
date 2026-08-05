@@ -27,7 +27,11 @@
           }
           scene.environmentTexture = envTexture;
         }
-      } catch (err) {}
+      } catch (err) {
+        // Fail soft (scene renders without skybox/IBL) but leave a breadcrumb —
+        // a silent miss here shows up only as a washed-out scene, hard to debug.
+        console.warn("Skybox/environment texture failed to load:", err);
+      }
 
       const ambientLight = new BABYLON.HemisphericLight(
         "ambient",

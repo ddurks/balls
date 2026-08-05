@@ -32,6 +32,7 @@ const browserGlobals = {
   Shared: "readonly", // window.Shared from shared.js (loaded first)
   Balls: "readonly", // window.Balls from balls.js (loaded first)
   Materials: "readonly", // window.Materials from materials.js (loaded first)
+  Textures: "readonly", // window.Textures from textures.js (loaded first)
   BallsStyle: "readonly", // window.BallsStyle from style.js (loaded first)
   ImageData: "readonly",
   Uint8ClampedArray: "readonly",
@@ -113,6 +114,9 @@ module.exports = [
     rules: {
       "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
       "no-empty": ["warn", { allowEmptyCatch: true }],
+      // "smart" still allows the idiomatic `x == null` null/undefined check.
+      eqeqeq: ["warn", "smart"],
+      "no-loop-func": "warn", // closures capturing a loop var are a classic footgun
     },
   },
   {
@@ -129,6 +133,8 @@ module.exports = [
     },
     rules: {
       "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+      eqeqeq: ["warn", "smart"],
+      "no-loop-func": "warn",
     },
   },
   {

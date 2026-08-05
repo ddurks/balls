@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      # CI runs unit/lint/format only — no headless browser tests — so skip
+      # puppeteer's ~150 MB Chromium download to keep installs fast.
+      PUPPETEER_SKIP_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Lint
+        run: npm run lint
+      - name: Format check
+        run: npm run format:check
+      # Non-blocking: checkJs currently reports ~460 pre-existing errors (the
+      # game's cross-module globals aren't declared in globals.d.ts, and the
+      # tooling scripts lack @types/node). Run it for signal; making it green
+      # (and turning on strictNullChecks/noImplicitAny) is a separate typing pass.
+      - name: Typecheck (informational)
+        run: npm run typecheck
+        continue-on-error: true
