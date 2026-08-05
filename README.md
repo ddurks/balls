@@ -1,119 +1,142 @@
-# Golf Ball - Driving Range Demo
+<p align="center">
+  <img src="assets/balls-golf-banner.png" alt="Balls Golf" width="620" />
+</p>
 
-A physics-based golf game built with **Babylon.js** and **Havok Physics Engine** where you play as the ball!
+<p align="center">
+  <em>A physics golf game where <strong>you are the ball</strong> — with a multiplayer clubhouse to hang out in.</em>
+</p>
 
-## Features
+<p align="center">
+  <img src="assets/ball-faces.png" alt="Googly-eyed golf balls making faces" width="620" />
+</p>
 
-- **Ball Physics**: Realistic golf ball physics with Havok physics engine
-- **Swipe Controls**: Hit the ball with a swipe gesture (mouse or touch)
-- **Spin Mechanics**: Drag further to apply spin to the ball - creates visual rotation on the "spin" bone
-- **Dynamic Camera**: Third-person follow camera that keeps the ball centered in the bottom third of the screen
-- **Driving Range**: Practice hitting from an open driving range with visual feedback
-- **Cartoon Physics**: Exaggerated spin effects for fun, arcade-like gameplay
+Balls Golf is built with **[Babylon.js](https://www.babylonjs.com/)** and the **Havok** physics engine. You control a googly-eyed golf ball — swipe to launch yourself down the fairway, add spin, sink the pin — then wander into the clubhouse to customize your look and hang out with other balls.
 
-## Controls
+---
 
-- **Click/Swipe to Hit**: Short drag = soft hit, long drag = hard hit
-- **Drag to Add Spin**: The further you drag, the more spin is applied
-- **Space Bar**: Reset ball to starting position
-- **Visual Feedback**: Real-time speed, spin, height, and distance display
+## Where you can go
 
-## How to Run
+The clubhouse is the hub. Walk up to a door and step through it to travel between places.
 
-### Option 1: Using Node.js (Recommended)
+| Place                | Page                      | What it is                                                                                                                                                                             |
+| -------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 🏛️ **Clubhouse**     | `index.html`              | The root — a Club-Penguin-style country-club lounge (PS1 wood + dark-green shag). Walk around, chat, grab a beer or a smoke, and pick a door. Includes a **Members Lounge** back room. |
+| ⛳ **The Course**    | `game.html?mode=course`   | Three hand-authored holes played as match play, with drone fly-overs between holes, real cavity cups, and a randomized pin each round.                                                 |
+| 🏌️ **Driving Range** | `game.html?mode=practice` | The original open sandbox — hit as many as you like at random pins, adjust the wind, dial in your clubs.                                                                               |
+| 🎨 **Locker Room**   | `locker.html`             | A KidPix-style avatar editor: pick a hat, paint the ball skin, draw a face, or drop in a photo to stamp on your ball.                                                                  |
+
+## How to play
+
+**On the course / range**
+
+- **Swipe to hit** — click-drag (or touch-drag) on the ball. Short drag = soft, long drag = hard.
+- **Drag further for spin** — a spin bar appears; the extra distance becomes spin that curves and checks the shot.
+- **Club carousel** — tap the clubs in the bottom-right corner to cycle your bag, from **Putter** all the way up to **Driver** (13 clubs, real-world carry distances).
+- **Wind** — the top-right compass shows wind direction and strength; it nudges the ball in flight (adjustable on the range, fixed per hole on the course).
+- **Space** — reset your ball (practice mode).
+
+**In the clubhouse**
+
+- **WASD** or the on-screen **joystick** to walk around.
+- **Tap a dispenser** (cigarette machine / beer conveyor) to grab an item, then use the action buttons to sip or take a drag.
+- **Chat** from the box in the top-left — messages pop up as speech bubbles over your ball.
+
+## Running it locally
 
 ```bash
-npm install
-npm start
+npm install   # also vendors the Babylon + Havok runtime into babylon/
+npm start     # serves the clubhouse at http://localhost:3000
 ```
 
-Then open `http://localhost:3000` in your browser.
+Open **http://localhost:3000** — you'll land in the clubhouse. The doors link to `game.html?mode=course|practice` and `locker.html`, so everything is reachable from there. (Opening `game.html` on its own drops you straight into the driving range.)
 
-`npm install` now automatically vendors the Babylon and Havok browser files into `babylon/` via the `postinstall` script.
-
-## Updating Babylon and Havok
-
-This project vendors browser-ready runtime files into `babylon/` instead of loading them from a CDN.
-
-When you intentionally change Babylon or Havok versions, update the versions in `package.json` together and then run:
+No Node? Any static file server works, e.g.:
 
 ```bash
-npm install
+python -m http.server 8000   # then open http://localhost:8000
 ```
 
-`npm install` runs `npm run vendor:babylon` automatically.
+## Multiplayer
 
-If you need to refresh the vendored files without reinstalling dependencies, run:
+Presence and chat in the clubhouse are powered by an **optional** companion realtime server (`drawvidverse`, run separately). When it's connected, you see other balls walk, chat, and show off their hats, skins, drawn faces, held drinks, and smokes — all synced live. When it isn't, the clubhouse still runs fine as single-player (your own chat is echoed locally), and the golf modes never need it.
+
+## Project structure
+
+```
+index.html            Clubhouse — the hub (root page)
+game.html             Golf — ?mode=course | practice
+locker.html           Locker Room — avatar editor
+server.js             Tiny Express static server (caches assets + babylon aggressively)
+
+src/
+  clubhouse/           clubhouse.js — the multiplayer lounge
+  game/                Per-system golf modules: scene, physics, camera, input,
+                       aim, clubs, course, terrain, birds, clouds, wind, ui, config…
+  locker/              locker.js — the avatar editor
+  shared/              shared.js, balls.js, materials.js, style.js
+                       (loaded by every page before its mode script)
+
+assets/               3D models (.glb), textures, ball faces, art, and the logo
+course_design/        Blender authoring scripts (local, git-ignored — see below)
+scripts/              vendor-babylon.js + puppeteer club-distance tooling
+babylon/              Vendored Babylon.js + Havok runtime
+test/                 node --test unit tests
+```
+
+The three pages are independent Babylon apps that share a common set of small modules in `src/shared/` (math helpers, ball blinking/faces, materials, and the `BallsStyle` customization module). No bundler — pages load plain `<script>`s in order.
+
+## The authoring pipeline
+
+The committed `.glb` models are produced from a set of **Blender** scripts under `course_design/` (kept locally — the directory is git-ignored). Everything is modeled procedurally and exported geometry-only; the runtime assigns materials and physics by mesh name.
+
+- `holes_build.py` + `hole_gen.py` — generate the three golf holes (heightfield terrain, greens, bunkers, water, solid-sided ground) into `assets/3d/holes/`.
+- `clubhouse_build.py` — builds the clubhouse and Members Lounge rooms.
+- `gen_sand.py` — procedural bunker sand texture.
+
+The scripts run either through the Blender MCP add-on or headless:
 
 ```bash
+/Applications/Blender.app/Contents/MacOS/Blender --background --python course_design/holes_build.py
+```
+
+> After rebuilding any `.glb`, bump the matching asset version (`HOLE_ASSET_VERSION` in `src/game`, `ASSET_V` in the clubhouse) — `/assets` is served with a one-year immutable cache.
+
+## Development
+
+```bash
+npm test           # node --test unit tests (no install needed to run)
+npm run lint       # ESLint 9 (flat config)
+npm run format     # Prettier
+npm run typecheck  # tsc --noEmit against jsconfig.json (checkJs)
+npm run hooks      # install the repo pre-commit hook (.githooks)
+```
+
+Club carry distances are calibrated with a headless Puppeteer harness:
+
+```bash
+node scripts/club-distance-test.js   # measure carry per club in a real browser
+node scripts/club-calibrate.js       # solve launch speeds for target distances
+```
+
+## Updating Babylon & Havok
+
+The project **vendors** browser-ready runtime files into `babylon/` instead of loading from a CDN. When you change versions, update them together in `package.json` and re-vendor:
+
+```bash
+npm install            # runs vendor:babylon automatically
+# or, without reinstalling:
 npm run vendor:babylon
 ```
 
-That copies these runtime files from `node_modules` into `babylon/`:
+That copies `babylon.js`, `babylonjs.loaders.min.js`, `babylonjs.materials.min.js`, `HavokPhysics_umd.js`, and `HavokPhysics.wasm` out of `node_modules`. Keep the vendored files and the installed packages on the same version so they don't drift. (If a vendored file is missing, the pages fall back to the Babylon CDN.)
 
-- `babylon.js`
-- `babylonjs.loaders.min.js`
-- `babylonjs.materials.min.js`
-- `HavokPhysics_umd.js`
-- `HavokPhysics.wasm`
+## Under the hood
 
-Keep those versions aligned so the vendored browser files and installed packages do not drift.
+- **Engine:** Babylon.js 9.4 · **Physics:** Havok
+- **True 1:1 scale** — the ball is a real **42.7 mm** and the world is modeled in metres, so you genuinely feel golf-ball-sized. An anti-tunneling guard keeps the tiny ball from punching through the thin course terrain at driver speed.
+- **13 clubs** with calibrated launch speeds, plus spin, wind, and rolling resistance so putts actually settle on the green.
+- **Customization** rides across every mode — the hat, skin, and face you build in the locker room show up on your ball on the course and in the clubhouse.
 
-### Option 2: Using Python 3
+---
 
-```bash
-python -m http.server 8000
-```
-
-Then open `http://localhost:8000` in your browser.
-
-### Option 3: Direct File
-
-Simply open `index.html` directly in a modern browser (may have CORS issues with the model).
-
-## File Structure
-
-- `index.html` - Main HTML file with UI elements
-- `game.js` - Game logic, physics, input handling, and camera system
-- `assets/gball.glb` - Golf ball character 3D model
-- `package.json` - Node.js dependencies
-- `server.js` - Simple Express server for local development
-
-## Game Mechanics
-
-### Hitting
-
-1. Click and drag on the canvas
-2. The direction and distance determine the hit force and direction
-3. Release to hit the ball
-
-### Spinning
-
-1. Click and drag a longer distance (>10 pixels)
-2. A spin bar appears at the bottom showing spin intensity
-3. Release to apply spin to the ball
-4. When the ball lands, the spin affects its trajectory and distance in a cartoon style
-
-### Camera System
-
-- The camera follows the ball with a fixed offset
-- The ball remains in the bottom third of the screen, centered
-- The camera looks slightly ahead of the ball's movement direction
-
-## Technical Details
-
-- **Engine**: Babylon.js
-- **Physics**: Havok Physics Engine v2
-- **Golf Ball Mass**: 45 grams (realistic)
-- **Physics Material**: Low friction (0.3), moderate restitution (0.6)
-- **Render Loop**: Continuous update with physics simulation
-
-## Future Enhancements
-
-- Multiple holes/courses
-- Power meter for more precise hits
-- Different club types
-- Wind effects
-- Terrain variations (slopes, water hazards)
-- Score tracking
-- Multiplayer support
+<p align="center"><em>Built for fun. Now go be the ball.</em> ⛳</p>
