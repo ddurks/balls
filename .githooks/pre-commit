@@ -1,0 +1,41 @@
+#!/bin/sh
+# Pre-commit: format staged files with Prettier and auto-fix them with ESLint,
+# re-stage the results, then block the commit if ESLint still reports errors.
+#
+# Enable once per clone with:  npm run hooks   (sets core.hooksPath=.githooks)
+
+root=$(git rev-parse --show-toplevel) || exit 1
+cd "$root" || exit 1
+PATH="$root/node_modules/.bin:$PATH"
+
+# Staged files, excluding deletions.
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+fmt=$(printf '%s\n' "$staged" | grep -Ei '\.(js|json|html|css|md)$')
+lint=$(printf '%s\n' "$staged" | grep -Ei '\.js$')
+
+# 1. Prettier: auto-format (honours .prettierignore).
+if [ -n "$fmt" ]; then
+  printf '%s\n' "$fmt" | xargs prettier --write --ignore-unknown || exit 1
+fi
+
+# 2. ESLint: apply auto-fixes (honours ignores in eslint.config.js).
+lint_status=0
+if [ -n "$lint" ]; then
+  printf '%s\n' "$lint" | xargs eslint --fix --no-warn-ignored
+  lint_status=$?
+fi
+
+# 3. Re-stage whatever Prettier/ESLint rewrote.
+[ -n "$fmt" ] && printf '%s\n' "$fmt" | xargs git add
+
+# 4. Block the commit on ESLint errors it could not auto-fix.
+if [ "$lint_status" -ne 0 ]; then
+  echo "" >&2
+  echo "✖ ESLint reported errors that must be fixed before committing." >&2
+  echo "  Fix them (or run 'npm run lint' to see details), then re-commit." >&2
+  exit 1
+fi
+
+exit 0

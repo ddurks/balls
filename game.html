@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
     <title>Balls Golf</title>
     <link rel="icon" href="favicon.ico" />
     <style>
@@ -26,6 +29,105 @@
         width: 100%;
         height: 100%;
         display: block;
+        touch-action: none; /* swipes/orbit only — never page pan/zoom */
+      }
+
+      /* Boot/loading screen: logo on black until the mode is ready. Sits
+         UNDER the door-transition iris (z 99999) so arrivals stay pure. */
+      #bootScreen {
+        position: fixed;
+        inset: 0;
+        z-index: 9000;
+        background: #000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 22px;
+        transition: opacity 0.4s ease;
+        pointer-events: none;
+      }
+      #bootScreen .boot-logo {
+        width: min(70vw, 640px);
+        height: auto;
+      }
+      /* "loading" with favicon balls as the ellipsis dots, rolling in one by
+         one, then the row clears and repeats. */
+      .boot-loading {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: #e8f2e8;
+        font:
+          bold 22px Arial,
+          sans-serif;
+        letter-spacing: 1px;
+      }
+      .boot-dot {
+        width: 20px;
+        height: 20px;
+        opacity: 0;
+        animation: 1.8s linear infinite;
+      }
+      .boot-dot:nth-of-type(1) {
+        animation-name: bootDot1;
+      }
+      .boot-dot:nth-of-type(2) {
+        animation-name: bootDot2;
+      }
+      .boot-dot:nth-of-type(3) {
+        animation-name: bootDot3;
+      }
+      @keyframes bootDot1 {
+        0%,
+        10% {
+          opacity: 0;
+          transform: translateX(-18px) rotate(-200deg);
+        }
+        25%,
+        88% {
+          opacity: 1;
+          transform: none;
+        }
+        94%,
+        100% {
+          opacity: 0;
+          transform: none;
+        }
+      }
+      @keyframes bootDot2 {
+        0%,
+        30% {
+          opacity: 0;
+          transform: translateX(-18px) rotate(-200deg);
+        }
+        45%,
+        88% {
+          opacity: 1;
+          transform: none;
+        }
+        94%,
+        100% {
+          opacity: 0;
+          transform: none;
+        }
+      }
+      @keyframes bootDot3 {
+        0%,
+        50% {
+          opacity: 0;
+          transform: translateX(-18px) rotate(-200deg);
+        }
+        65%,
+        88% {
+          opacity: 1;
+          transform: none;
+        }
+        94%,
+        100% {
+          opacity: 0;
+          transform: none;
+        }
       }
 
       /* Swipe overlay canvas */
@@ -151,48 +253,125 @@
         text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
       }
 
-      /* ── Club selector wrapper (column: up btn + circle + down btn) ── */
+      /* ── Club selector: L-shaped corner layout — the selected club sits in the
+         corner, the previous club directly above it, and the next club to its
+         left (a right angle around the corner) to save space. ── */
       .club-wrapper {
         position: absolute;
-        bottom: var(--ui-margin);
-        right: var(--ui-margin);
+        bottom: 6px;
+        right: 6px;
+        width: calc(var(--ui-size) * 1.5 + var(--ui-gap));
+        height: calc(var(--ui-size) * 1.5 + var(--ui-gap));
+        z-index: 1000;
+        pointer-events: none;
+      }
+      #clubPrev,
+      #circleClub,
+      #clubNext {
+        display: none;
+        position: absolute;
+        pointer-events: auto;
+      }
+      #circleClub {
+        right: 0;
+        bottom: 0;
+        z-index: 1002;
+      }
+      #clubPrev {
+        top: 0;
+        right: calc(var(--ui-size) * 0.06);
+        z-index: 1001;
+      }
+      #clubNext {
+        left: 0;
+        bottom: calc(var(--ui-size) * 0.06);
+        z-index: 1001;
+      }
+      /* half-size preview circles for the previous / next club (a 3-club carousel) */
+      .club-mini {
+        /* EXACT 0.5× copy of .ui-circle (same bg, half the border) so scaling a
+           mini up to the selected size is pixel-identical — no swap "snap". */
+        width: calc(var(--ui-size) * 0.5);
+        height: calc(var(--ui-size) * 0.5);
+        background: rgba(144, 200, 150, 0.85);
+        border: calc(var(--ui-border-width) * 0.5) solid #476a23;
+        border-radius: 50%;
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: var(--ui-gap);
-        z-index: 1000;
-      }
-      #clubUp,
-      #circleClub,
-      #clubDown {
-        display: none;
-      }
-      .club-btn {
-        width: var(--ui-btn-size);
-        height: var(--ui-btn-size);
-        color: #fff;
-        border: none;
-        border-radius: 50%;
+        justify-content: center;
         cursor: pointer;
-        font-weight: bold;
-        font-size: var(--ui-club-btn-fs);
+        pointer-events: auto;
+        overflow: hidden;
+        position: relative;
         touch-action: manipulation;
+        will-change: transform;
         user-select: none;
         -webkit-user-select: none;
         -moz-user-select: none;
         -ms-user-select: none;
       }
-      .club-btn-up {
-        background: rgba(144, 200, 150, 0.7);
+      .club-mini:active {
+        background: rgba(100, 160, 110, 0.9);
       }
-      .club-btn-up:active {
-        background: rgba(100, 160, 110, 0.95);
+      /* Icon on top, abbreviation in the middle, yardage at the bottom — all
+         CENTRED horizontally so nothing clips at the round edge. Selected badges
+         are exactly 2× the mini's, so a mini scaled up to the selected size is
+         pixel-identical (no swap "snap"). */
+      .club-mini-icon {
+        position: absolute;
+        top: 9%;
+        left: 0;
+        right: 0;
+        margin: 0 auto;
+        width: 44%;
+        height: 40%;
+        object-fit: contain;
+        pointer-events: none;
       }
-      .club-btn-down {
-        background: rgba(200, 100, 100, 0.7);
+      .club-mini-abbr,
+      .club-sel-abbr {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 30%;
+        text-align: center;
+        color: #e1e44e;
+        font-family: monospace;
+        font-weight: bold;
+        line-height: 1;
+        pointer-events: none;
+        text-shadow:
+          0 0 3px rgba(0, 0, 0, 0.9),
+          1px 1px 2px rgba(0, 0, 0, 1);
       }
-      .club-btn-down:active {
-        background: rgba(160, 60, 60, 0.95);
+      .club-mini-abbr {
+        font-size: calc(var(--ui-size) * 0.13);
+      }
+      .club-sel-abbr {
+        font-size: calc(var(--ui-size) * 0.26);
+      }
+      .club-mini-yds,
+      .club-sel-yds {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 9%;
+        text-align: center;
+        color: #f4f8ff;
+        font-family: monospace;
+        font-weight: bold;
+        line-height: 1;
+        pointer-events: none;
+        text-shadow:
+          0 0 3px rgba(0, 0, 0, 0.9),
+          1px 1px 2px rgba(0, 0, 0, 1);
+      }
+      .club-mini-yds {
+        font-size: calc(var(--ui-size) * 0.055);
+      }
+      .club-sel-yds {
+        font-size: calc(var(--ui-size) * 0.11);
       }
 
       /* ── Stats circle content ── */
@@ -239,6 +418,15 @@
         font-size: var(--ui-yardage-fs);
         text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
       }
+      .stats-par {
+        color: #e1e44e;
+        font-weight: bold;
+        font-size: calc(var(--ui-size) * 0.115);
+        margin-top: -8px;
+        margin-bottom: 0;
+        letter-spacing: 0.5px;
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+      }
 
       /* ── Power circle content ── */
       .power-svg {
@@ -275,43 +463,6 @@
         font-weight: bold;
         font-family: monospace;
         font-size: var(--ui-power-fs);
-        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
-      }
-
-      /* ── Club circle content ── */
-      .club-content {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        width: 100%;
-        height: 100%;
-        gap: var(--ui-power-gap);
-        color: white;
-        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
-        font-family: monospace;
-        text-align: center;
-        user-select: none;
-        -webkit-user-select: none;
-        -moz-user-select: none;
-        -ms-user-select: none;
-      }
-      .club-icon {
-        width: var(--ui-club-icon-fs);
-        height: var(--ui-club-icon-fs);
-        object-fit: contain;
-      }
-      .club-name-display {
-        color: #e1e44e;
-        font-weight: bold;
-        font-size: var(--ui-club-name-fs);
-        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
-      }
-      .club-dist-display {
-        color: #e1e44e;
-        margin-top: var(--ui-mb-flag);
-        font-size: var(--ui-club-dist-fs);
-        font-weight: bold;
         text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
       }
 
@@ -360,6 +511,15 @@
   </head>
   <body>
     <canvas id="renderCanvas"></canvas>
+    <div id="bootScreen">
+      <img class="boot-logo" src="assets/balls_golf.png" alt="Balls Golf" />
+      <div class="boot-loading">
+        loading
+        <img class="boot-dot" src="favicon.ico" alt="" />
+        <img class="boot-dot" src="favicon.ico" alt="" />
+        <img class="boot-dot" src="favicon.ico" alt="" />
+      </div>
+    </div>
 
     <!-- Babylon.js and dependencies (local with CDN fallback) -->
     <script>
@@ -432,7 +592,13 @@
       }
       function loadGameScript() {
         // Shared helper modules load (in order) before game.js.
-        loadLocalScripts(["shared.js", "balls.js", "materials.js", "game.js"]);
+        loadLocalScripts([
+          "shared.js",
+          "balls.js",
+          "materials.js",
+          "style.js",
+          "game.js",
+        ]);
       }
 
       // Start the chain
@@ -445,6 +611,7 @@
           <div id="statsFlagImg" class="flag-img"></div>
           <div id="statsPinNumber" class="pin-number">1</div>
         </div>
+        <div id="statsPar" class="stats-par" style="display: none">PAR 4</div>
         <div class="yardage-display"><span id="circleYardage">0</span>'</div>
       </div>
     </div>
@@ -534,22 +701,34 @@
 
     <!-- Club Selector (bottom-right): club up/down buttons + circle -->
     <div id="clubSelectorWrapper" class="club-wrapper">
-      <button id="clubUp" class="club-btn club-btn-up">↑</button>
-      <div id="circleClub" class="ui-circle glass-circle">
-        <div id="clubSelectorContent" class="club-content">
-          <img
-            id="clubIcon"
-            class="club-icon"
-            src="assets/clubs/driver.png"
-            alt="club icon"
-          />
-          <div class="club-name-display"><span id="clubName">Driver</span></div>
-          <div class="club-dist-display">
-            ~<span id="clubDistance">306</span>'
-          </div>
-        </div>
+      <div id="clubPrev" class="club-mini glass-circle">
+        <img
+          class="club-mini-icon"
+          src="assets/clubs/iron.png"
+          alt="previous club"
+        />
+        <span class="club-mini-yds"></span>
+        <span class="club-mini-abbr"></span>
       </div>
-      <button id="clubDown" class="club-btn club-btn-down">↓</button>
+      <div id="circleClub" class="ui-circle glass-circle">
+        <img
+          id="clubIcon"
+          class="club-mini-icon"
+          src="assets/clubs/driver.png"
+          alt="selected club"
+        />
+        <span id="clubYds" class="club-sel-yds"></span>
+        <span id="clubAbbr" class="club-sel-abbr">D</span>
+      </div>
+      <div id="clubNext" class="club-mini glass-circle">
+        <img
+          class="club-mini-icon"
+          src="assets/clubs/iron.png"
+          alt="next club"
+        />
+        <span class="club-mini-yds"></span>
+        <span class="club-mini-abbr"></span>
+      </div>
     </div>
   </body>
 </html>

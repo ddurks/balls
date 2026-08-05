@@ -17,6 +17,7 @@ const browserGlobals = {
   console: "readonly",
   performance: "readonly",
   localStorage: "readonly",
+  sessionStorage: "readonly",
   requestAnimationFrame: "readonly",
   cancelAnimationFrame: "readonly",
   setTimeout: "readonly",
@@ -31,6 +32,11 @@ const browserGlobals = {
   Shared: "readonly", // window.Shared from shared.js (loaded first)
   Balls: "readonly", // window.Balls from balls.js (loaded first)
   Materials: "readonly", // window.Materials from materials.js (loaded first)
+  BallsStyle: "readonly", // window.BallsStyle from style.js (loaded first)
+  ImageData: "readonly",
+  Uint8ClampedArray: "readonly",
+  Uint8Array: "readonly",
+  FileReader: "readonly",
 };
 
 const nodeGlobals = {
@@ -48,7 +54,15 @@ module.exports = [
   { ignores: ["node_modules/**", "vendor/**", "babylon/**", "assets/**"] },
   js.configs.recommended,
   {
-    files: ["game.js", "clubhouse.js", "shared.js", "balls.js", "materials.js"],
+    files: [
+      "game.js",
+      "clubhouse.js",
+      "shared.js",
+      "balls.js",
+      "materials.js",
+      "style.js",
+      "locker.js",
+    ],
     languageOptions: {
       ecmaVersion: 2022, // game.js uses static class fields (ES2022)
       sourceType: "script",

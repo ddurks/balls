@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
     <title>Balls Clubhouse</title>
     <link rel="icon" href="favicon.ico" />
     <style>
@@ -14,7 +17,7 @@
         margin: 0;
         padding: 0;
         font-family: Arial, sans-serif;
-        background-color: #87cfeb;
+        background-color: #000000;
         position: relative;
         user-select: none;
         -webkit-user-select: none;
@@ -33,16 +36,125 @@
         overflow: hidden;
         z-index: 10;
       }
+      /* Boot/loading screen: logo on black until the room is built. Sits
+         UNDER the door-transition iris (z 99999) so arrivals stay pure. */
+      #bootScreen {
+        position: fixed;
+        inset: 0;
+        z-index: 9000;
+        background: #000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 22px;
+        transition: opacity 0.4s ease;
+        pointer-events: none;
+      }
+      #bootScreen .boot-logo {
+        width: min(70vw, 640px);
+        height: auto;
+      }
+      /* "loading" with favicon balls as the ellipsis dots, rolling in one by
+         one, then the row clears and repeats. */
+      .boot-loading {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: #e8f2e8;
+        font:
+          bold 22px Arial,
+          sans-serif;
+        letter-spacing: 1px;
+      }
+      .boot-dot {
+        width: 20px;
+        height: 20px;
+        opacity: 0;
+        animation: 1.8s linear infinite;
+      }
+      .boot-dot:nth-of-type(1) {
+        animation-name: bootDot1;
+      }
+      .boot-dot:nth-of-type(2) {
+        animation-name: bootDot2;
+      }
+      .boot-dot:nth-of-type(3) {
+        animation-name: bootDot3;
+      }
+      @keyframes bootDot1 {
+        0%,
+        10% {
+          opacity: 0;
+          transform: translateX(-18px) rotate(-200deg);
+        }
+        25%,
+        88% {
+          opacity: 1;
+          transform: none;
+        }
+        94%,
+        100% {
+          opacity: 0;
+          transform: none;
+        }
+      }
+      @keyframes bootDot2 {
+        0%,
+        30% {
+          opacity: 0;
+          transform: translateX(-18px) rotate(-200deg);
+        }
+        45%,
+        88% {
+          opacity: 1;
+          transform: none;
+        }
+        94%,
+        100% {
+          opacity: 0;
+          transform: none;
+        }
+      }
+      @keyframes bootDot3 {
+        0%,
+        50% {
+          opacity: 0;
+          transform: translateX(-18px) rotate(-200deg);
+        }
+        65%,
+        88% {
+          opacity: 1;
+          transform: none;
+        }
+        94%,
+        100% {
+          opacity: 0;
+          transform: none;
+        }
+      }
     </style>
   </head>
   <body>
     <canvas id="renderCanvas"></canvas>
     <div id="overlay"></div>
+    <div id="bootScreen">
+      <img class="boot-logo" src="assets/balls_golf.png" alt="Balls Golf" />
+      <div class="boot-loading">
+        loading
+        <img class="boot-dot" src="favicon.ico" alt="" />
+        <img class="boot-dot" src="favicon.ico" alt="" />
+        <img class="boot-dot" src="favicon.ico" alt="" />
+      </div>
+    </div>
 
     <!-- Babylon core + GLTF loaders (no Havok: the clubhouse is physics-free). -->
     <script>
       const scriptChain = [
-        { local: "babylon/babylon.js", cdn: "https://cdn.babylonjs.com/babylon.js" },
+        {
+          local: "babylon/babylon.js",
+          cdn: "https://cdn.babylonjs.com/babylon.js",
+        },
         {
           local: "babylon/babylonjs.loaders.min.js",
           cdn: "https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js",
@@ -63,7 +175,13 @@
       function loadNextInChain() {
         if (chainIndex >= scriptChain.length) {
           // Shared helper modules load (in order) before the mode script.
-          loadLocalScripts(["shared.js", "balls.js", "materials.js", "clubhouse.js"]);
+          loadLocalScripts([
+            "shared.js",
+            "balls.js",
+            "materials.js",
+            "style.js",
+            "clubhouse.js",
+          ]);
           return;
         }
         const { local, cdn } = scriptChain[chainIndex];

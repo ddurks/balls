@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Balls — Locker Room</title>
+    <link rel="icon" href="favicon.ico" />
+    <style>
+      html,
+      body {
+        overflow: hidden;
+        width: 100%;
+        height: 100dvh; /* dvh = the *visible* viewport on iOS (excludes the URL bar) */
+        margin: 0;
+        padding: 0;
+        font-family: "Trebuchet MS", Arial, sans-serif;
+        background-color: #26201c;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      /* the 3D locker room fills the visible screen (dvh, not the larger vh, so
+         the canvas aspect matches what the camera framing assumes on iOS) */
+      #renderCanvas {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100dvh;
+        display: block;
+        touch-action: none;
+        outline: none;
+        z-index: 0;
+      }
+
+      /* transient label naming what an in-scene arrow just selected */
+      #styleChip {
+        position: fixed;
+        top: 14px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 5px 18px;
+        border-radius: 999px;
+        font-weight: bold;
+        font-size: 15px;
+        letter-spacing: 2px;
+        white-space: nowrap;
+        color: #12572a;
+        background: rgba(255, 255, 255, 0.85);
+        box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4);
+        opacity: 0;
+        transition: opacity 0.25s ease;
+        pointer-events: none;
+        z-index: 6;
+      }
+
+      .aero-btn {
+        display: inline-block;
+        cursor: pointer;
+        user-select: none;
+        border: none;
+        font-family: inherit;
+        font-weight: bold;
+        font-size: 19px;
+        letter-spacing: 1px;
+        color: #fff;
+        padding: 12px 34px;
+        border-radius: 999px;
+        background: linear-gradient(180deg, #4fc46a, #2e8b48);
+        box-shadow:
+          0 6px 16px rgba(0, 0, 0, 0.45),
+          inset 0 2px 6px rgba(255, 255, 255, 0.6);
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+        transition:
+          transform 0.08s ease,
+          filter 0.08s ease;
+      }
+      .aero-btn:hover {
+        filter: brightness(1.07);
+      }
+      .aero-btn:active {
+        transform: translateY(2px) scale(0.98);
+        filter: brightness(0.95);
+      }
+      #doneBtn {
+        position: fixed;
+        left: 16px;
+        bottom: 16px;
+        z-index: 6;
+      }
+      /* pill: load an image onto the ball without drag-drop (mobile) */
+      #ballImgBtn {
+        position: fixed;
+        left: 16px;
+        top: 14px;
+        z-index: 6;
+      }
+      /* portrait: the card docks to the bottom, so put the buttons up top out of
+         its way (DONE top-right, BALL IMAGE top-left). */
+      @media (orientation: portrait) {
+        #doneBtn {
+          left: auto;
+          right: 14px;
+          top: 12px;
+          bottom: auto;
+          font-size: 16px;
+          padding: 10px 22px;
+        }
+      }
+
+      /* --- the KidPix face-paint overlay card (right half / bottom) ---------- */
+      .paint-card {
+        position: fixed;
+        right: 18px;
+        top: 50%;
+        transform: translateY(-50%);
+        background: linear-gradient(
+          180deg,
+          rgba(255, 255, 255, 0.97),
+          rgba(232, 245, 235, 0.95)
+        );
+        border: 2px solid rgba(255, 255, 255, 0.85);
+        border-radius: 28px;
+        padding: 12px 14px 14px;
+        box-shadow:
+          0 20px 60px rgba(0, 0, 0, 0.5),
+          inset 0 3px 12px rgba(255, 255, 255, 0.9);
+        text-align: center;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        z-index: 5;
+      }
+      /* portrait: a full-width bottom sheet taking ~half the screen (the preview
+         gets the top half). */
+      @media (orientation: portrait) {
+        .paint-card {
+          left: 0;
+          right: 0;
+          bottom: 0;
+          top: auto;
+          transform: none;
+          width: 100%;
+          max-width: 100%;
+          height: 50dvh; /* half the *visible* viewport (dvh, not vh) */
+          box-sizing: border-box;
+          border-radius: 26px 26px 0 0;
+          padding: 6px 10px 8px;
+          justify-content: flex-start;
+          gap: 2px;
+        }
+        .paint-title {
+          font-size: 16px;
+          margin: 2px 0 4px;
+        }
+        .tools {
+          max-width: 100%;
+          margin-top: 5px;
+          gap: 5px;
+        }
+        .tool-btn {
+          font-size: 11px;
+          padding: 6px 9px;
+        }
+        .dot {
+          width: 26px;
+          height: 26px;
+        }
+      }
+      .paint-title {
+        font-size: 18px;
+        font-weight: bold;
+        color: #1e7a34;
+        letter-spacing: 1px;
+        margin: 0 0 8px;
+        text-shadow:
+          0 1px 0 #fff,
+          0 2px 6px rgba(30, 122, 52, 0.25);
+      }
+      /* chunky KidPix easel: dashed crayon border around the stacked canvases */
+      .easel {
+        position: relative;
+        width: min(44vh, 38vw, 360px);
+        aspect-ratio: 1;
+        border: 5px dashed #476a23;
+        border-radius: 18px;
+        background: repeating-conic-gradient(#f7f7f2 0% 25%, #ececde 0% 50%) 0
+          0/24px 24px; /* checker = transparent */
+        overflow: hidden;
+        cursor: crosshair;
+        min-height: 120px;
+      }
+      @media (orientation: portrait) {
+        .easel {
+          width: min(24dvh, 60vw);
+        }
+      }
+      .easel canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+      #ghostCanvas {
+        opacity: 0.28;
+        pointer-events: none;
+      }
+      #faceCanvas {
+        touch-action: none;
+      }
+      #stampCanvas {
+        touch-action: none;
+        pointer-events: none; /* enabled while placing a dropped image */
+      }
+      .easel.dropping {
+        border-color: #2e8b48;
+        background: rgba(79, 196, 106, 0.25);
+      }
+      .tools {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        margin-top: 9px;
+        flex-wrap: wrap;
+        max-width: 420px;
+      }
+      .dot {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        border: 3px solid rgba(0, 0, 0, 0.25);
+        cursor: pointer;
+        box-shadow:
+          0 2px 5px rgba(0, 0, 0, 0.25),
+          inset 0 2px 4px rgba(255, 255, 255, 0.45);
+        transition: transform 0.08s ease;
+      }
+      .dot:active {
+        transform: scale(0.9);
+      }
+      .dot.sel {
+        border-color: #12572a;
+        transform: scale(1.18);
+        box-shadow:
+          0 0 0 3px rgba(79, 196, 106, 0.6),
+          0 2px 5px rgba(0, 0, 0, 0.25);
+      }
+      .brush-dot {
+        background: #f2f0e6;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .brush-dot::after {
+        content: "";
+        border-radius: 50%;
+        background: #333;
+      }
+      .brush-dot.b-small::after {
+        width: 7px;
+        height: 7px;
+      }
+      .brush-dot.b-big::after {
+        width: 15px;
+        height: 15px;
+      }
+      .tool-btn {
+        border: none;
+        cursor: pointer;
+        font-family: inherit;
+        font-weight: bold;
+        font-size: 12px;
+        color: #1e7a34;
+        padding: 7px 11px;
+        border-radius: 999px;
+        background: linear-gradient(180deg, #e9f3ec, #c9ddce);
+        box-shadow:
+          0 3px 8px rgba(20, 90, 40, 0.25),
+          inset 0 2px 4px rgba(255, 255, 255, 0.7);
+        text-shadow: 0 1px 0 rgba(255, 255, 255, 0.7);
+        transition:
+          transform 0.08s ease,
+          filter 0.08s ease;
+      }
+      .tool-btn:active {
+        transform: translateY(2px) scale(0.96);
+      }
+      .tool-btn.sel {
+        color: #fff;
+        background: linear-gradient(180deg, #4fc46a, #2e8b48);
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+      }
+      /* ✓ / ✗ bar shown while placing a dropped image */
+      #stampBar {
+        display: none;
+        gap: 10px;
+        margin-top: 9px;
+      }
+      #stampBar.on {
+        display: flex;
+      }
+      #stampBar .tool-btn {
+        font-size: 14px;
+        padding: 9px 20px;
+      }
+      #stampOk {
+        color: #fff;
+        background: linear-gradient(180deg, #4fc46a, #2e8b48);
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+      }
+      #stampNo {
+        color: #fff;
+        background: linear-gradient(180deg, #e0705f, #b3202c);
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="renderCanvas"></canvas>
+
+    <div id="styleChip"></div>
+    <button class="tool-btn" id="ballImgBtn">🖼 BALL IMAGE</button>
+    <button class="aero-btn" id="doneBtn">✔ DONE</button>
+
+    <div class="paint-card">
+      <div class="paint-title">🖍 FACE PAINT</div>
+      <div class="easel" id="easel">
+        <canvas id="ghostCanvas" width="512" height="512"></canvas>
+        <canvas id="faceCanvas" width="512" height="512"></canvas>
+        <canvas id="stampCanvas" width="512" height="512"></canvas>
+      </div>
+      <div class="tools" id="colorTools"></div>
+      <div class="tools">
+        <div
+          class="dot brush-dot b-small sel"
+          id="brushSmall"
+          title="small brush"
+        ></div>
+        <div class="dot brush-dot b-big" id="brushBig" title="big brush"></div>
+        <button class="tool-btn" id="bucketBtn">🪣 FILL</button>
+        <button class="tool-btn" id="eraserBtn">ERASER</button>
+        <button class="tool-btn" id="undoBtn">UNDO</button>
+        <button class="tool-btn" id="clearBtn">CLEAR</button>
+        <button class="tool-btn" id="faceImgBtn">🖼 PHOTO</button>
+      </div>
+      <div class="tools" id="stampBar">
+        <button class="tool-btn" id="stampOk">✔ STAMP</button>
+        <button class="tool-btn" id="stampNo">✗ CANCEL</button>
+      </div>
+    </div>
+
+    <input type="file" id="filePickBall" accept="image/*" hidden />
+    <input type="file" id="filePickFace" accept="image/*" hidden />
+
+    <!-- Babylon core + GLTF loaders (no Havok: the locker room is physics-free). -->
+    <script>
+      const scriptChain = [
+        {
+          local: "babylon/babylon.js",
+          cdn: "https://cdn.babylonjs.com/babylon.js",
+        },
+        {
+          local: "babylon/babylonjs.loaders.min.js",
+          cdn: "https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js",
+        },
+      ];
+      let chainIndex = 0;
+      // Load same-origin scripts in sequence, each after the previous onload.
+      function loadLocalScripts(srcs) {
+        let i = 0;
+        (function next() {
+          if (i >= srcs.length) return;
+          const s = document.createElement("script");
+          s.src = srcs[i++];
+          s.onload = next;
+          document.head.appendChild(s);
+        })();
+      }
+      function loadNextInChain() {
+        if (chainIndex >= scriptChain.length) {
+          // Shared helper modules load (in order) before the editor script.
+          loadLocalScripts([
+            "shared.js",
+            "balls.js",
+            "materials.js",
+            "style.js",
+            "locker.js",
+          ]);
+          return;
+        }
+        const { local, cdn } = scriptChain[chainIndex];
+        const script = document.createElement("script");
+        script.onload = () => {
+          chainIndex++;
+          loadNextInChain();
+        };
+        script.onerror = () => {
+          if (local) {
+            console.log(`Local ${local} not found, using CDN...`);
+            script.src = cdn;
+            script.onerror = null;
+            script.onload = () => {
+              chainIndex++;
+              loadNextInChain();
+            };
+            document.head.appendChild(script);
+          } else {
+            console.error("Failed to load script", cdn);
+          }
+        };
+        script.src = local || cdn;
+        document.head.appendChild(script);
+      }
+      loadNextInChain();
+    </script>
+  </body>
+</html>

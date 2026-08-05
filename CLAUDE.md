@@ -65,6 +65,18 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. Comments: Why, Not What
+
+**A comment earns its place by saying something the code can't.**
+
+- Explain _why_, not _what_: rationale, gotchas, the provenance of a magic number, platform/library quirks, ordering constraints, workarounds.
+- Delete narration that restates the adjacent code (`// loop over players`, `// convert to Cartesian`, `// set the position`). If the code already says it, the comment is noise.
+- Don't caption a self-explanatory name — `// clamp v into [a, b]` above `clamp(v, a, b)` adds nothing.
+- Keep file-top module/architecture headers and section-divider labels for navigation.
+- When pruning comments, change _only_ comments — never let a comment edit alter code.
+
+Ask yourself: "If I delete this comment, does a competent reader lose anything?" If no, delete it.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
