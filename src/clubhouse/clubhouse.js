@@ -29,7 +29,7 @@
     location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const WS_URL =
     params.get("ws") ||
-    (isLocal ? "ws://localhost:7779" : "wss://world-clubhouse.drawvid.com");
+    (isLocal ? "ws://localhost:7779" : "wss://balls-world.drawvid.com");
 
   const ASSET_V = "14"; // bump to bust the immutable /assets cache after a rebuild
   const AV_SCALE = 0.8; // gball model radius ~1 -> ~1.6 dia avatar

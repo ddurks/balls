@@ -1,16 +1,16 @@
 <p align="center">
-  <img src="assets/balls-golf-banner.png" alt="Balls Golf" width="620" />
+  <img src="assets/balls_golf.png" alt="Balls Golf" width="560" />
 </p>
 
 <p align="center">
-  <em>A physics golf game where <strong>you are the ball</strong> — with a multiplayer clubhouse to hang out in.</em>
+  <em><strong>Be the Ball.</strong></em>
 </p>
 
 <p align="center">
   <img src="assets/ball-faces.png" alt="Googly-eyed golf balls making faces" width="620" />
 </p>
 
-Balls Golf is built with **[Babylon.js](https://www.babylonjs.com/)** and the **Havok** physics engine. You control a googly-eyed golf ball — swipe to launch yourself down the fairway, add spin, sink the pin — then wander into the clubhouse to customize your look and hang out with other balls.
+Balls Golf is built with **[Babylon.js](https://www.babylonjs.com/)** and the **Havok** physics engine. Become a golf ball.Swipe to launch yourself down the fairway, add spin, sink the putt. Bond and hang out with with other balls at the clubhouse.
 
 ---
 
