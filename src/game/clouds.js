@@ -82,14 +82,13 @@
         return;
       }
 
-      this.clouds.forEach((cloud, idx) => {
-        const windVector = wind.getWindVector();
-
-        const effectiveVelocity = windVector;
-
-        const moveDistance = 1 / 60;
-        cloud.mesh.position.x += effectiveVelocity.x * moveDistance;
-        cloud.mesh.position.z += effectiveVelocity.z * moveDistance;
+      // Wind is identical for every cloud this frame — compute it once, not per
+      // cloud (this ran wind.getWindVector(), a fresh Vector3, 25x per frame).
+      const windVector = wind.getWindVector();
+      const moveDistance = 1 / 60;
+      this.clouds.forEach((cloud) => {
+        cloud.mesh.position.x += windVector.x * moveDistance;
+        cloud.mesh.position.z += windVector.z * moveDistance;
 
         const driftX = cloud.mesh.position.x - ballPos.x;
         const driftZ = cloud.mesh.position.z - ballPos.z;

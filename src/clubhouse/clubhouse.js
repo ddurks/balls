@@ -2036,6 +2036,8 @@
     );
     const occPredicate = (m) => clubMeshes.has(m);
     const occSet = new Set();
+    let _occCam = null; // last camera pos the occlusion pick ran at
+    let _occChar = null; // last character pos it ran at
     for (const m of clubMeshes) m.visibility = 1;
     // wainscot/molding grouped by wall (n/s/e/w) so it fades with its wall — rays
     // reliably hit the big flat walls but slip past the thin trim pieces
@@ -2197,21 +2199,36 @@
       // fade any building mesh between the camera and the avatar. Rays reliably
       // catch the big flat walls but slip past the thin wainscot, so when a wall
       // goes see-through, drag its molding/wainscot along with it.
-      occSet.clear();
-      const toHead = me.wrapper.position
-        .add(new BABYLON.Vector3(0, 0.9, 0))
-        .subtract(camera.position);
-      const distCam = toHead.length();
-      if (distCam > 0.001) {
-        occRay.origin.copyFrom(camera.position);
-        occRay.direction.copyFrom(toHead.scale(1 / distCam));
-        occRay.length = Math.max(0, distCam - 1.2);
-        const picks = scene.multiPickWithRay(occRay, occPredicate);
-        if (picks)
-          for (const p of picks) if (p.pickedMesh) occSet.add(p.pickedMesh);
-        for (const m of [...occSet]) {
-          const wall = /^cream_wall_([nsew])/.exec(m.name);
-          if (wall) for (const w of wainscotByWall[wall[1]]) occSet.add(w);
+      // The occlusion ray is camera->head; both are static most frames (the camera
+      // only orbits on drag). Re-run the scene-wide multipick only when one moved,
+      // else reuse the cached occSet — the fade lerp below still runs every frame.
+      const camMoved =
+        !_occCam ||
+        BABYLON.Vector3.DistanceSquared(camera.position, _occCam) > 1e-5;
+      const charMoved =
+        !_occChar ||
+        BABYLON.Vector3.DistanceSquared(me.wrapper.position, _occChar) > 1e-5;
+      if (camMoved || charMoved) {
+        (_occCam = _occCam || new BABYLON.Vector3()).copyFrom(camera.position);
+        (_occChar = _occChar || new BABYLON.Vector3()).copyFrom(
+          me.wrapper.position,
+        );
+        occSet.clear();
+        const toHead = me.wrapper.position
+          .add(new BABYLON.Vector3(0, 0.9, 0))
+          .subtract(camera.position);
+        const distCam = toHead.length();
+        if (distCam > 0.001) {
+          occRay.origin.copyFrom(camera.position);
+          occRay.direction.copyFrom(toHead.scale(1 / distCam));
+          occRay.length = Math.max(0, distCam - 1.2);
+          const picks = scene.multiPickWithRay(occRay, occPredicate);
+          if (picks)
+            for (const p of picks) if (p.pickedMesh) occSet.add(p.pickedMesh);
+          for (const m of [...occSet]) {
+            const wall = /^cream_wall_([nsew])/.exec(m.name);
+            if (wall) for (const w of wainscotByWall[wall[1]]) occSet.add(w);
+          }
         }
       }
 
