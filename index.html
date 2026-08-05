@@ -176,11 +176,11 @@
         if (chainIndex >= scriptChain.length) {
           // Shared helper modules load (in order) before the mode script.
           loadLocalScripts([
-            "shared.js",
-            "balls.js",
-            "materials.js",
-            "style.js",
-            "clubhouse.js",
+            "src/shared/shared.js",
+            "src/shared/balls.js",
+            "src/shared/materials.js",
+            "src/shared/style.js",
+            "src/clubhouse/clubhouse.js",
           ]);
           return;
         }

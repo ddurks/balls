@@ -35,17 +35,34 @@ globalThis.BABYLON = {
 
 // game.js expects the shared helpers as globals (loaded before it in the
 // browser via <script>s); provide them the same way for the Node tests.
-globalThis.Shared = require("../shared.js");
-globalThis.Balls = require("../balls.js");
+globalThis.Shared = require("../src/shared/shared.js");
+globalThis.Balls = require("../src/shared/balls.js");
 
-const {
-  Utils,
-  ClubData,
-  Wind,
-  CONFIG,
-  ClubSelector,
-  CourseManager,
-} = require("../game.js");
+// game.js is now split into per-system modules (see game.html load order);
+// require them in the same order so each module's globals are set before the
+// next one's load-time refs (config before physics), then pull out what we test.
+require("../src/game/config.js");
+require("../src/game/utils.js");
+require("../src/game/wind.js");
+require("../src/game/clouds.js");
+require("../src/game/birds.js");
+require("../src/game/clubs.js");
+require("../src/game/aim.js");
+require("../src/game/physics.js");
+require("../src/game/character.js");
+require("../src/game/camera.js");
+require("../src/game/terrain.js");
+require("../src/game/input.js");
+require("../src/game/ui.js");
+require("../src/game/coordinators.js");
+require("../src/game/scene.js");
+require("../src/game/course.js");
+require("../src/game/game.js");
+const { CONFIG } = require("../src/game/config.js");
+const { Utils } = require("../src/game/utils.js");
+const { Wind } = require("../src/game/wind.js");
+const { ClubData, ClubSelector } = require("../src/game/clubs.js");
+const { CourseManager } = require("../src/game/course.js");
 
 test("rotate2D rotates a unit vector by 90°", () => {
   const r = Utils.rotate2D(1, 0, Math.PI / 2);
@@ -184,7 +201,7 @@ test("findWaterDrop returns null without a height grid (falls back to last lie)"
 });
 
 // ---- avatar style (style.js) ----
-const BallsStyle = require("../style.js");
+const BallsStyle = require("../src/shared/style.js");
 
 test("cycle wraps in both directions", () => {
   assert.strictEqual(BallsStyle.cycle(0, -1, 6), 5);
@@ -244,7 +261,11 @@ test("saveStyle drops an oversized face dataURL", () => {
 // ---- camera floor governor (cameraFloorY) ----
 // Runs the real method against fake mode state — no scene needed.
 const floorAt = (self, x, z) =>
-  require("../game.js").GolfGame.prototype.cameraFloorY.call(self, x, z);
+  require("../src/game/game.js").GolfGame.prototype.cameraFloorY.call(
+    self,
+    x,
+    z,
+  );
 
 test("cameraFloorY on the course clamps to terrain height", () => {
   const self = {

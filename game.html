@@ -593,11 +593,29 @@
       function loadGameScript() {
         // Shared helper modules load (in order) before game.js.
         loadLocalScripts([
-          "shared.js",
-          "balls.js",
-          "materials.js",
-          "style.js",
-          "game.js",
+          "src/shared/shared.js",
+          "src/shared/balls.js",
+          "src/shared/materials.js",
+          "src/shared/style.js",
+          // game.js split into per-system modules; order matters only for
+          // load-time refs (config before physics), and game.js (bootstrap) last.
+          "src/game/config.js",
+          "src/game/utils.js",
+          "src/game/wind.js",
+          "src/game/clouds.js",
+          "src/game/birds.js",
+          "src/game/clubs.js",
+          "src/game/aim.js",
+          "src/game/physics.js",
+          "src/game/character.js",
+          "src/game/camera.js",
+          "src/game/terrain.js",
+          "src/game/input.js",
+          "src/game/ui.js",
+          "src/game/coordinators.js",
+          "src/game/scene.js",
+          "src/game/course.js",
+          "src/game/game.js",
         ]);
       }
 

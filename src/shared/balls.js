@@ -19,12 +19,15 @@
   };
 
   const nextGap = () =>
-    BLINK.MIN_INTERVAL + Math.random() * (BLINK.MAX_INTERVAL - BLINK.MIN_INTERVAL);
+    BLINK.MIN_INTERVAL +
+    Math.random() * (BLINK.MAX_INTERVAL - BLINK.MIN_INTERVAL);
 
   // A face texture from assets/faces/<file> with the shared alpha + trilinear
   // recipe both modes use.
   function faceTexture(scene, file, version) {
-    const url = version ? `assets/faces/${file}?v=${version}` : `assets/faces/${file}`;
+    const url = version
+      ? `assets/faces/${file}?v=${version}`
+      : `assets/faces/${file}`;
     const t = new BABYLON.Texture(
       url,
       scene,
@@ -41,7 +44,11 @@
     if (!mgr) return -1;
     for (let i = 0; i < mgr.numTargets; i++) {
       const nm = (mgr.getTarget(i)?.name || "").toLowerCase();
-      if (nm.includes("closed") || nm.includes("blink") || nm.includes("eyelid"))
+      if (
+        nm.includes("closed") ||
+        nm.includes("blink") ||
+        nm.includes("eyelid")
+      )
         return i;
     }
     return -1;
@@ -85,6 +92,13 @@
     return 0;
   }
 
-  global.Balls = { BLINK, faceTexture, findBlinkMorphIndex, newBlinkState, updateBlink };
-  if (typeof module !== "undefined" && module.exports) module.exports = global.Balls;
+  global.Balls = {
+    BLINK,
+    faceTexture,
+    findBlinkMorphIndex,
+    newBlinkState,
+    updateBlink,
+  };
+  if (typeof module !== "undefined" && module.exports)
+    module.exports = global.Balls;
 })(typeof globalThis !== "undefined" ? globalThis : this);

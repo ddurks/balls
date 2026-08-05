@@ -41,5 +41,6 @@
   }
 
   global.Materials = { flat, color, unlitTex };
-  if (typeof module !== "undefined" && module.exports) module.exports = global.Materials;
+  if (typeof module !== "undefined" && module.exports)
+    module.exports = global.Materials;
 })(typeof globalThis !== "undefined" ? globalThis : this);

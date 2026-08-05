@@ -50,21 +50,63 @@ const nodeGlobals = {
   Buffer: "readonly",
 };
 
+// game.js was split into per-system modules (src/game/*) that reference each
+// other via globals — each module does Object.assign(globalThis, {...}). Declare
+// those cross-module symbols so no-undef doesn't flag the seams between files.
+const gameGlobals = {
+  GameState: "readonly",
+  CameraViewMode: "readonly",
+  PALETTE: "readonly",
+  UNITS: "readonly",
+  CONFIG: "readonly",
+  EventManager: "readonly",
+  Utils: "readonly",
+  Wind: "readonly",
+  CloudSystem: "readonly",
+  Boid3D: "readonly",
+  BirdFlockSystem: "readonly",
+  ClubData: "readonly",
+  ClubSelector: "readonly",
+  ClubSystem: "readonly",
+  TrajectoryArrow: "readonly",
+  AimView: "readonly",
+  SwipeArrowOverlay: "readonly",
+  PhysicsConfig: "readonly",
+  PhysicsManager: "readonly",
+  GolfBallGuy: "readonly",
+  BallTrail: "readonly",
+  FollowCamera: "readonly",
+  DroneCamera: "readonly",
+  GrassSystem: "readonly",
+  CourseDecor: "readonly",
+  CourseSurfaces: "readonly",
+  InputHandler: "readonly",
+  CircleUIManager: "readonly",
+  UIManager: "readonly",
+  PinManager: "readonly",
+  CourseHUD: "readonly",
+  CourseUI: "readonly",
+  BallsMenu: "readonly",
+  Scoreboard: "readonly",
+  SwingCoordinator: "readonly",
+  GameStateCoordinator: "readonly",
+  SceneSetup: "readonly",
+  HOLE_ASSET_VERSION: "readonly",
+  COURSE_HOLES: "readonly",
+  SURFACE_PHYSICS: "readonly",
+  CourseManager: "readonly",
+  GolfGame: "readonly",
+  startGame: "readonly",
+};
+
 module.exports = [
   { ignores: ["node_modules/**", "vendor/**", "babylon/**", "assets/**"] },
   js.configs.recommended,
   {
-    files: [
-      "game.js",
-      "clubhouse.js",
-      "shared.js",
-      "balls.js",
-      "materials.js",
-      "style.js",
-      "locker.js",
-    ],
+    // all app scripts are classic browser <script>s (globals, no module system)
+    files: ["src/**/*.js"],
     languageOptions: {
-      ecmaVersion: 2022, // game.js uses static class fields (ES2022)
+      ecmaVersion: 2022, // static class fields (ES2022)
       sourceType: "script",
       globals: browserGlobals,
     },
@@ -72,6 +114,11 @@ module.exports = [
       "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
       "no-empty": ["warn", { allowEmptyCatch: true }],
     },
+  },
+  {
+    // the split game modules also see each other's classes/consts as globals
+    files: ["src/game/**/*.js"],
+    languageOptions: { globals: gameGlobals },
   },
   {
     files: ["test/**/*.js", "server.js", "scripts/**/*.js", "*.config.js"],
