@@ -184,7 +184,10 @@
       if (!n) n = new BABYLON.Vector3(0, 1, 0);
       const vn = v.x * n.x + v.y * n.y + v.z * n.z;
       if (vn < 0) {
-        const e = CONFIG.BALL.RESTITUTION;
+        // Bounce with the STRUCK surface's restitution (sand deadens, rock kicks);
+        // falls back to the ball default off unstamped surfaces (practice disc).
+        const e =
+          hit.pickedMesh?._surfaceRestitution ?? CONFIG.BALL.RESTITUTION;
         v.x -= (1 + e) * vn * n.x;
         v.y -= (1 + e) * vn * n.y;
         v.z -= (1 + e) * vn * n.z;

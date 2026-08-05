@@ -440,6 +440,9 @@
       this.surfaceMeshes.push(mesh);
       if (type !== "water") {
         const phys = SURFACE_PHYSICS[type] || SURFACE_PHYSICS.rough;
+        // Stamp the surface restitution so the anti-tunnel bounce (character.js
+        // preventTunneling) reflects off sand vs rock correctly, not a global.
+        mesh._surfaceRestitution = phys.restitution;
         const agg = new BABYLON.PhysicsAggregate(
           mesh,
           BABYLON.PhysicsShapeType.MESH,
@@ -730,7 +733,7 @@
       // now). clearArchivedTrails releases this hole's trails before the teardown.
       setTimeout(() => {
         this.game.clearArchivedTrails();
-        this.advance();
+        this.advance().catch((e) => console.error("Hole advance failed:", e));
       }, 2200);
     }
 
@@ -755,7 +758,17 @@
         this.busy = true;
         await Shared.roomFX.irisClose();
         this.disposeHole();
-        this.loadHole(this.holeIndex + 1);
+        // Await + recover: an unawaited loadHole that rejects (bad .glb, a stalled
+        // whenReadyAsync/drone) would strand the player behind the black cover with
+        // busy=true and an unhandled rejection. Drop the cover + unlock instead.
+        try {
+          await this.loadHole(this.holeIndex + 1);
+        } catch (e) {
+          console.error("Failed to load the next hole:", e);
+          Shared.roomFX.clearCovers();
+          Shared.hideBoot();
+          this.busy = false;
+        }
       } else {
         this.hud.hide();
         Scoreboard.show(this.players, COURSE_HOLES);

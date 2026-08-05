@@ -133,6 +133,7 @@
     }
 
     _attachPressEffect(el) {
+      if (!el) return; // a missing HUD element must not take down the whole HUD
       el.addEventListener("pointerdown", () => el.classList.add("pressed"));
       el.addEventListener("pointerup", () => el.classList.remove("pressed"));
       el.addEventListener("pointerleave", () => el.classList.remove("pressed"));
@@ -160,8 +161,8 @@
       pinNumber,
       par = null,
     ) {
-      document.getElementById("circleYardage").textContent =
-        distance.toFixed(0);
+      const yardageEl = document.getElementById("circleYardage");
+      if (yardageEl) yardageEl.textContent = distance.toFixed(0);
 
       // Course mode: par sits between the flag and the distance; hidden in practice.
       if (this._statsPar) {
