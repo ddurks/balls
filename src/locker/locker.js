@@ -178,51 +178,21 @@
     lockerBank(6, R - 0.02, -1, "x"); // front wall (behind camera)
     lockerBank(6, -R + 0.02, 1, "z"); // left wall
     lockerBank(6, R - 0.02, -1, "z"); // right wall
-    const glow = new BABYLON.StandardMaterial("lkGlow", scene);
-    glow.emissiveColor = new BABYLON.Color3(1.0, 0.76, 0.47);
-    glow.diffuseColor = new BABYLON.Color3(0, 0, 0);
-    glow.specularColor = new BABYLON.Color3(0, 0, 0);
-    glow.disableLighting = true;
-    const Y = 2.65;
-    const specs = [
-      [-3, -R + 0.15, 0, 1],
-      [3, -R + 0.15, 0, 1],
-      [-3, R - 0.15, 0, -1],
-      [3, R - 0.15, 0, -1],
-      [-R + 0.15, -3, 1, 0],
-      [-R + 0.15, 3, 1, 0],
-      [R - 0.15, -3, -1, 0],
-      [R - 0.15, 3, -1, 0],
-    ];
-    specs.forEach(([x, z, nx, nz], i) => {
-      box(
-        "lkScBr" + i,
-        0.14,
-        0.34,
-        0.16,
-        x + nx * 0.06,
-        Y - 0.06,
-        z + nz * 0.06,
-        dark,
-      );
-      const bulb = BABYLON.MeshBuilder.CreateSphere(
-        "lkScB" + i,
-        { diameter: 0.24, segments: 10 },
-        scene,
-      );
-      bulb.material = glow;
-      bulb.position.set(x + nx * 0.2, Y + 0.06, z + nz * 0.2);
-      bulb.isPickable = false;
-      const L = new BABYLON.PointLight(
-        "lkScL" + i,
-        new BABYLON.Vector3(x + nx * 0.3, Y + 0.06, z + nz * 0.3),
-        scene,
-      );
-      L.diffuse = new BABYLON.Color3(1.0, 0.79, 0.52);
-      L.specular = new BABYLON.Color3(0, 0, 0);
-      L.intensity = 0.62;
-      L.range = 8;
-    });
+    // Warm wall sconces (shared fixture — see src/shared/lighting.js).
+    Lighting.buildSconces(
+      scene,
+      [
+        [-3, -R + 0.15, 0, 1],
+        [3, -R + 0.15, 0, 1],
+        [-3, R - 0.15, 0, -1],
+        [3, R - 0.15, 0, -1],
+        [-R + 0.15, -3, 1, 0],
+        [-R + 0.15, 3, 1, 0],
+        [R - 0.15, -3, -1, 0],
+        [R - 0.15, 3, -1, 0],
+      ],
+      { y: 2.65, bulbDia: 0.24, range: 8, prefix: "lkSc", bracketMat: dark },
+    );
     // 8 sconces + key + hemi blow past Babylon's 4-lights-per-mesh default
     for (const m of scene.materials) m.maxSimultaneousLights = 12;
   }
@@ -329,11 +299,9 @@
     wrapper.position.y = 0.84; // gball model half-height — ball rests on the mat
 
     let faceMesh = null;
-    let eyelids = null;
     for (const m of result.meshes) {
       if (m.name && /face/i.test(m.name) && m.material && !faceMesh)
         faceMesh = m;
-      if (m.name && /eyelid/i.test(m.name) && m.morphTargetManager) eyelids = m;
     }
     let faceMat = null;
     let faceOrigTex = null;
@@ -352,12 +320,12 @@
     let blink = null;
     let blinkIdx = -1;
     let blinkMgr = null;
-    if (eyelids) {
-      blinkMgr = eyelids.morphTargetManager;
-      blinkIdx = Balls.findBlinkMorphIndex(blinkMgr);
-      if (blinkIdx < 0 && blinkMgr.numTargets > 0)
-        blinkIdx = blinkMgr.numTargets - 1;
-      if (blinkIdx >= 0) blink = Balls.newBlinkState();
+    // Single preview avatar — no per-instance morph clone needed.
+    const blinkInit = Balls.initBlink(result.meshes, { cloneManager: false });
+    if (blinkInit) {
+      blinkMgr = blinkInit.mgr;
+      blinkIdx = blinkInit.idx;
+      blink = blinkInit.state;
     }
 
     // ---- style state: every change saves + re-applies to the preview -------

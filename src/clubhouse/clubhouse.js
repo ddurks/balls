@@ -888,31 +888,19 @@
       return av;
     }
 
-    // Periodic eyelid blink (the gball's "Closed" morph), independent per avatar.
+    // Periodic eyelid blink (the gball's "Closed" morph), independent per avatar
+    // (cloneManager desyncs each avatar's blink). Shared setup lives in balls.js.
     function setupBlink(av, inst) {
       const meshes = [];
       for (const rn of inst.rootNodes) {
         meshes.push(rn);
         for (const c of rn.getChildMeshes(false)) meshes.push(c);
       }
-      const eyelids = meshes.find(
-        (m) => m.name && /eyelid/i.test(m.name) && m.morphTargetManager,
-      );
-      if (!eyelids || !eyelids.morphTargetManager) return;
-      let mgr = eyelids.morphTargetManager;
-      // give this instance its OWN manager so blinks never sync up
-      if (typeof mgr.clone === "function") {
-        try {
-          mgr = mgr.clone();
-          eyelids.morphTargetManager = mgr;
-        } catch {}
-      }
-      let idx = Balls.findBlinkMorphIndex(mgr);
-      if (idx < 0 && mgr.numTargets > 0) idx = mgr.numTargets - 1; // "Closed" is the last key
-      if (idx < 0) return;
-      av.blinkMgr = mgr;
-      av.blinkIdx = idx;
-      av.blink = Balls.newBlinkState();
+      const b = Balls.initBlink(meshes, { cloneManager: true });
+      if (!b) return;
+      av.blinkMgr = b.mgr;
+      av.blinkIdx = b.idx;
+      av.blink = b.state;
     }
 
     function updateBlink(av, dt) {
@@ -1454,14 +1442,9 @@
     // wall sconces near the corners (2 per wall) — warm point lights + a glowing
     // fixture; they carry the room now that the overhead key/fill are dimmed.
     function buildSconces() {
-      const glow = new BABYLON.StandardMaterial("sconceGlow", scene);
-      glow.emissiveColor = new BABYLON.Color3(1.0, 0.76, 0.47); // warm, a touch whiter/brighter
-      glow.diffuseColor = new BABYLON.Color3(0, 0, 0);
-      glow.specularColor = new BABYLON.Color3(0, 0, 0);
-      glow.disableLighting = true;
-      const Y = 2.7;
       // [x, z, inwardX, inwardZ] — the fixture + warm light are identical in every
-      // room (same principle); only the wall positions differ with room size.
+      // room (shared builder, src/shared/lighting.js); only the wall positions
+      // differ with room size.
       let specs;
       if (ROOM === "main") {
         // hand-placed for the main clubhouse: south sits at ±5 to clear the cig
@@ -1493,32 +1476,9 @@
           [-9.6, 5, 1, 0], // west wall
         ];
       }
-      specs.forEach(([x, z, nx, nz], i) => {
-        const br = BABYLON.MeshBuilder.CreateBox(
-          "sconce_br" + i,
-          { width: 0.14, height: 0.34, depth: 0.16 },
-          scene,
-        );
-        br.material = darkMat;
-        br.position.set(x + nx * 0.08, Y - 0.06, z + nz * 0.08);
-        br.isPickable = false;
-        const bulb = BABYLON.MeshBuilder.CreateSphere(
-          "sconce_b" + i,
-          { diameter: 0.26, segments: 10 },
-          scene,
-        );
-        bulb.material = glow;
-        bulb.position.set(x + nx * 0.22, Y + 0.06, z + nz * 0.22);
-        bulb.isPickable = false;
-        const L = new BABYLON.PointLight(
-          "sconceL" + i,
-          new BABYLON.Vector3(x + nx * 0.32, Y + 0.06, z + nz * 0.32),
-          scene,
-        );
-        L.diffuse = new BABYLON.Color3(1.0, 0.79, 0.52); // warm but less yellow / more white
-        L.specular = new BABYLON.Color3(0, 0, 0);
-        L.intensity = 0.62;
-        L.range = 9;
+      Lighting.buildSconces(scene, specs, {
+        prefix: "sconce",
+        bracketMat: darkMat,
       });
     }
 

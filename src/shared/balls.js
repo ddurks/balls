@@ -57,6 +57,29 @@
   // A fresh blink state (mutated in place by updateBlink).
   const newBlinkState = () => ({ state: "open", timer: 0, next: nextGap() });
 
+  // Wire up per-avatar blinking from a set of meshes: find the eyelids mesh (with
+  // a morph manager), optionally clone that manager so multiple avatars blink
+  // independently (`cloneManager` — the clubhouse wants desync, the single locker
+  // preview doesn't), resolve the "Closed" morph index (last key as fallback), and
+  // return { mgr, idx, state } ready to drive updateBlink — or null if unavailable.
+  function initBlink(meshes, opts = {}) {
+    const eyelids = (meshes || []).find(
+      (m) => m && m.name && /eyelid/i.test(m.name) && m.morphTargetManager,
+    );
+    if (!eyelids || !eyelids.morphTargetManager) return null;
+    let mgr = eyelids.morphTargetManager;
+    if (opts.cloneManager && typeof mgr.clone === "function") {
+      try {
+        mgr = mgr.clone();
+        eyelids.morphTargetManager = mgr;
+      } catch {}
+    }
+    let idx = findBlinkMorphIndex(mgr);
+    if (idx < 0 && mgr.numTargets > 0) idx = mgr.numTargets - 1;
+    if (idx < 0) return null;
+    return { mgr, idx, state: newBlinkState() };
+  }
+
   // Advance the blink state machine by dt (seconds); returns the eyelid "Closed"
   // morph influence in [0,1]. open →(gap)→ closing → closed → opening → open.
   function updateBlink(s, dt) {
@@ -97,6 +120,7 @@
     faceTexture,
     findBlinkMorphIndex,
     newBlinkState,
+    initBlink,
     updateBlink,
   };
   if (typeof module !== "undefined" && module.exports)

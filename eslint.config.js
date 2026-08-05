@@ -33,6 +33,7 @@ const browserGlobals = {
   Balls: "readonly", // window.Balls from balls.js (loaded first)
   Materials: "readonly", // window.Materials from materials.js (loaded first)
   Textures: "readonly", // window.Textures from textures.js (loaded first)
+  Lighting: "readonly", // window.Lighting from lighting.js (loaded first)
   BallsStyle: "readonly", // window.BallsStyle from style.js (loaded first)
   ImageData: "readonly",
   Uint8ClampedArray: "readonly",
