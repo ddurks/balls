@@ -25,10 +25,8 @@ jobs:
         run: npm run lint
       - name: Format check
         run: npm run format:check
-      # Non-blocking: checkJs currently reports ~460 pre-existing errors (the
-      # game's cross-module globals aren't declared in globals.d.ts, and the
-      # tooling scripts lack @types/node). Run it for signal; making it green
-      # (and turning on strictNullChecks/noImplicitAny) is a separate typing pass.
-      - name: Typecheck (informational)
+      # checkJs over the game code (src/). Green after declaring the cross-module
+      # globals in globals.d.ts. Turning on strictNullChecks/noImplicitAny (~1000+
+      # more errors) is a separate, larger typing pass.
+      - name: Typecheck
         run: npm run typecheck
-        continue-on-error: true

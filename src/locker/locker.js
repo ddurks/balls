@@ -14,6 +14,7 @@
   const ASSET_V = "14"; // keep in step with clubhouse.js (immutable /assets cache)
   const FACE_SIZE = 512; // matches the gball face texture + assets/faces PNGs
 
+  /** @param {string} id @returns {any} */
   const $ = (id) => document.getElementById(id);
 
   // Warm oak wainscot/floor + dark-green shag come from the shared generator
@@ -469,7 +470,7 @@
       fr.onload = () => {
         const img = new Image();
         img.onload = () => cb(img);
-        img.src = fr.result;
+        img.src = /** @type {string} */ (fr.result);
       };
       fr.readAsDataURL(file);
     }
@@ -512,8 +513,9 @@
     });
     $("ballImgBtn").onclick = () => $("filePickBall").click();
     $("filePickBall").onchange = (e) => {
-      readImageFile(e.target.files && e.target.files[0], setBallImage);
-      e.target.value = "";
+      const inp = /** @type {HTMLInputElement} */ (e.target);
+      readImageFile(inp.files && inp.files[0], setBallImage);
+      inp.value = "";
     };
 
     // ---- KidPix face paint --------------------------------------------------
@@ -850,8 +852,9 @@
     });
     $("faceImgBtn").onclick = () => $("filePickFace").click();
     $("filePickFace").onchange = (e) => {
-      readImageFile(e.target.files && e.target.files[0], startStamp);
-      e.target.value = "";
+      const inp = /** @type {HTMLInputElement} */ (e.target);
+      readImageFile(inp.files && inp.files[0], startStamp);
+      inp.value = "";
     };
 
     // ghost guide: the default smile, faint, under the drawing layer (never

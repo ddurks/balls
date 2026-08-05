@@ -461,7 +461,7 @@
     return t;
   }
 
-  global.BallsStyle = {
+  const BallsStyle = {
     HATS,
     SKINS,
     FACE_MAX_BYTES,
@@ -476,6 +476,7 @@
     applySkin,
     faceTextureFromDataURL,
   };
+  global.BallsStyle = BallsStyle;
   if (typeof module !== "undefined" && module.exports)
-    module.exports = global.BallsStyle;
-})(typeof globalThis !== "undefined" ? globalThis : this);
+    module.exports = BallsStyle;
+})(/** @type {any} */ (typeof globalThis !== "undefined" ? globalThis : this));

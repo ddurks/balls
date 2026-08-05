@@ -10,12 +10,7 @@
     "strict": false,
     "skipLibCheck": true
   },
-  "include": [
-    "src/**/*.js",
-    "server.js",
-    "scripts/**/*.js",
-    "test/**/*.js",
-    "globals.d.ts"
-  ],
-  "exclude": ["node_modules", "vendor", "assets", "course_design"]
+  "include": ["src/**/*.js", "globals.d.ts"],
+  "//": "Typecheck targets the game code. The Node tooling (server.js, scripts/*, test/*) is CommonJS needing @types/node; it's linted/tested, not typechecked here.",
+  "exclude": ["node_modules", "vendor", "babylon", "assets", "course_design"]
 }

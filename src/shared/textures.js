@@ -93,7 +93,8 @@
     return dt;
   }
 
-  global.Textures = { wood, shag };
+  const Textures = { wood, shag };
+  global.Textures = Textures;
   if (typeof module !== "undefined" && module.exports)
-    module.exports = global.Textures;
-})(typeof globalThis !== "undefined" ? globalThis : this);
+    module.exports = Textures;
+})(/** @type {any} */ (typeof globalThis !== "undefined" ? globalThis : this));

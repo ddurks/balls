@@ -228,4 +228,4 @@
 
   global.Shared = Shared;
   if (typeof module !== "undefined" && module.exports) module.exports = Shared;
-})(typeof globalThis !== "undefined" ? globalThis : this);
+})(/** @type {any} */ (typeof globalThis !== "undefined" ? globalThis : this));

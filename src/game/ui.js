@@ -194,7 +194,7 @@
       if (this.powerPercent) this.powerPercent.textContent = percent.toFixed(0);
       if (this.powerArc && this._powerCircumference) {
         const offset = this._powerCircumference * (1 - percent / 100);
-        this.powerArc.style.strokeDashoffset = offset;
+        this.powerArc.style.strokeDashoffset = String(offset);
         this.powerArc.style.stroke = PALETTE.YELLOW;
       }
     }
@@ -302,11 +302,11 @@
       const exiter = which === "prev" ? N : P; // the club leaving the window
       const clubTo = which === "prev" ? ang(cN) : ang(cP); // where the selected swings to
       const T = 340,
-        opts = {
+        opts = /** @type {KeyframeAnimationOptions} */ ({
           duration: T,
           easing: "cubic-bezier(0.34, 0, 0.26, 1)",
           fill: "forwards",
-        };
+        });
       const a1 = clicked.animate(arc(clickedFrom, ang(cC), mini, full), opts);
       const a2 = C.animate(arc(cC, clubTo, full, mini), opts);
       exiter.style.opacity = "0"; // POP out — no fade
@@ -1022,7 +1022,7 @@
      * Find the target pin based on ball position and aim direction.
      * Returns the pin most aligned with the aim direction (within 90° cone).
      *
-     * @param {BABYLON.Vector3} ballPos - Current ball position
+     * @param {any} ballPos - Current ball position (BABYLON.Vector3)
      * @param {number} aimDirection - Aim direction angle (radians)
      * @returns {{pin: Object|null, index: number, distance: number}}
      *          pin: the pin object, index: position in pins array, distance: yardage to pin
@@ -1256,7 +1256,7 @@
       // The clubhouse (index.html) is the game's root — head back to the lobby.
       // The "course" stamp spawns us just inside the lobby's COURSE door, as if
       // walking back in off the links (see Shared.roomFX + clubhouse arrival).
-      o.querySelector("#sbClubhouse").onclick = () =>
+      /** @type {any} */ (o.querySelector("#sbClubhouse")).onclick = () =>
         Shared.roomFX.leave("index.html", { from: "course" });
       const trs = o.querySelectorAll("tbody.players tr");
       trs.forEach((tr) => tr.classList.add("player-row"));

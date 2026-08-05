@@ -115,7 +115,7 @@
     return 0;
   }
 
-  global.Balls = {
+  const Balls = {
     BLINK,
     faceTexture,
     findBlinkMorphIndex,
@@ -123,6 +123,6 @@
     initBlink,
     updateBlink,
   };
-  if (typeof module !== "undefined" && module.exports)
-    module.exports = global.Balls;
-})(typeof globalThis !== "undefined" ? globalThis : this);
+  global.Balls = Balls;
+  if (typeof module !== "undefined" && module.exports) module.exports = Balls;
+})(/** @type {any} */ (typeof globalThis !== "undefined" ? globalThis : this));

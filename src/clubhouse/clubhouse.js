@@ -678,7 +678,12 @@
         ctx.arc(cx + s * 0.4, cy - s * 0.4, s * 0.7, 0, 7);
         ctx.fill();
       }
-      for (const [base, amp, phase, color] of cfg.hills) {
+      for (const [
+        base,
+        amp,
+        phase,
+        color,
+      ] of /** @type {Array<[number, number, number, string]>} */ (cfg.hills)) {
         ctx.fillStyle = color;
         ctx.beginPath();
         ctx.moveTo(0, Hh);

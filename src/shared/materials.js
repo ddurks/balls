@@ -40,7 +40,8 @@
     return m;
   }
 
-  global.Materials = { flat, color, unlitTex };
+  const Materials = { flat, color, unlitTex };
+  global.Materials = Materials;
   if (typeof module !== "undefined" && module.exports)
-    module.exports = global.Materials;
-})(typeof globalThis !== "undefined" ? globalThis : this);
+    module.exports = Materials;
+})(/** @type {any} */ (typeof globalThis !== "undefined" ? globalThis : this));

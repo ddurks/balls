@@ -52,7 +52,8 @@
     });
   }
 
-  global.Lighting = { buildSconces };
+  const Lighting = { buildSconces };
+  global.Lighting = Lighting;
   if (typeof module !== "undefined" && module.exports)
-    module.exports = global.Lighting;
-})(typeof globalThis !== "undefined" ? globalThis : this);
+    module.exports = Lighting;
+})(/** @type {any} */ (typeof globalThis !== "undefined" ? globalThis : this));
