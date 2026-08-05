@@ -361,11 +361,6 @@
       scene,
       new BABYLON.Color3(0.86, 0.75, 0.48),
     );
-    const trimMat = colorMat(
-      "trim",
-      scene,
-      new BABYLON.Color3(0.98, 0.96, 0.89),
-    ); // (unused now, wainscot is wood)
     const doorWoodMat = colorMat(
       "doorWood",
       scene,
@@ -963,7 +958,7 @@
         try {
           mgr = mgr.clone();
           eyelids.morphTargetManager = mgr;
-        } catch (e) {}
+        } catch {}
       }
       let idx = Balls.findBlinkMorphIndex(mgr);
       if (idx < 0 && mgr.numTargets > 0) idx = mgr.numTargets - 1; // "Closed" is the last key
@@ -2385,7 +2380,7 @@
     let ws;
     try {
       ws = new WebSocket(this.url);
-    } catch (e) {
+    } catch {
       this.offline = true;
       return;
     }
@@ -2709,7 +2704,7 @@
     return v;
   }
 
-  function updateTags(scene, engine, camera, me, remotes, myId) {
+  function updateTags(scene, engine, camera, me, remotes, _myId) {
     const dpr = engine.getHardwareScalingLevel ? 1 : 1;
     const now = Date.now();
     function place(map, id, wrapper, extraY) {
