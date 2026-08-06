@@ -575,8 +575,66 @@
       spawn = fromDoor.pos.add(inward.scale(ARRIVE_DIST));
       arriveYaw = Math.atan2(inward.x, inward.z); // face away from the door
     }
-    // warm hearth light that flickers with the fire (main clubhouse only)
+    // Sprite hearth fire: hand-drawn frames (assets/fire) swapped on flat planes
+    // instead of the 3D cones — one big central + two smaller flanking to fill the
+    // recess without stretching. Each plane's bottom sits on the log tops (= the
+    // cones' base). Planes are double-sided + emissive so the fire glows.
+    const fireSprites = [];
     if (flameMeshes.length) {
+      let mn = new BABYLON.Vector3(1e9, 1e9, 1e9);
+      let mx = new BABYLON.Vector3(-1e9, -1e9, -1e9);
+      for (const f of flameMeshes) {
+        f.computeWorldMatrix(true);
+        const b = f.getBoundingInfo().boundingBox;
+        mn = BABYLON.Vector3.Minimize(mn, b.minimumWorld);
+        mx = BABYLON.Vector3.Maximize(mx, b.maximumWorld);
+        f.setEnabled(false); // the cones are replaced by the sprites
+      }
+      const cx = (mn.x + mx.x) / 2;
+      const cz = (mn.z + mx.z) / 2;
+      const baseY = mn.y; // log tops — bottom of every sprite rests here
+      const W = mx.x - mn.x; // recess width
+
+      const frames = [1, 2, 3, 4].map((n) => {
+        const t = new BABYLON.Texture(
+          `assets/fire/fire-${n}.png?v=` + ASSET_V,
+          scene,
+        );
+        t.hasAlpha = true;
+        return t;
+      });
+      const makeFire = (offX, size) => {
+        const p = BABYLON.MeshBuilder.CreatePlane(
+          "hearthFire",
+          { size },
+          scene,
+        );
+        p.position.set(cx + offX, baseY + size / 2, cz);
+        p.isPickable = false;
+        p.receiveShadows = false;
+        const m = new BABYLON.StandardMaterial("fireSpriteMat", scene);
+        m.diffuseTexture = frames[0];
+        m.emissiveTexture = frames[0];
+        m.emissiveColor = new BABYLON.Color3(1, 1, 1);
+        m.diffuseColor = new BABYLON.Color3(0, 0, 0);
+        m.specularColor = new BABYLON.Color3(0, 0, 0);
+        m.disableLighting = true;
+        m.backFaceCulling = false; // faces the room from either side
+        m.useAlphaFromDiffuseTexture = true;
+        m.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND;
+        p.material = m;
+        fireSprites.push({
+          mat: m,
+          frames,
+          idx: Math.floor(Math.random() * frames.length),
+          t: 0,
+          next: 0, // seconds to hold the current frame (set on first tick)
+        });
+      };
+      makeFire(0, W * 0.64); // big central flame
+      makeFire(-W * 0.34, W * 0.44); // smaller left flank
+      makeFire(W * 0.34, W * 0.44); // smaller right flank
+
       const fp = flameMeshes[0].getAbsolutePosition();
       fireLight = new BABYLON.PointLight(
         "fireLight",
@@ -1172,7 +1230,7 @@
       // horizontal, ember out — so (unlike the old detached Y-axis geometry) it
       // needs no -90° tilt, which was standing it up vertically.
       root.rotation.set(0, 0, 0);
-      root.position.set(0.0, 0.22, 0.12);
+      root.position.set(0.0, -0.2, 0.12); // sits into the mouth when smoking
       const ember = BABYLON.MeshBuilder.CreateSphere(
         "cigEmber",
         { diameter: 0.4, segments: 8 },
@@ -1618,8 +1676,8 @@
           }
         }
       } else if (it && av.holdType === "cig") {
-        // a lit cig smolders; a drag flares the ember on the inhale, then exhales
-        it.burn = Math.min(1, it.burn + dt * 0.02); // slow ambient smolder
+        // The cig only burns down on a DRAG (button press) — no ambient smolder,
+        // so it doesn't deplete while just held.
         if (it.actT < 0) {
           it.ps.emitRate = it.ambientEmit;
           it.ember.scaling.setAll(1);
@@ -2123,17 +2181,19 @@
     scene.onBeforeRenderObservable.add(() => {
       const dt = Math.min(0.05, engine.getDeltaTime() / 1000);
 
-      // flicker the low-poly log fire
-      if (flameMeshes.length) {
+      // Animate the sprite hearth fire: advance each flame's frame on its own
+      // random 4-8 fps timer (independent, so the three never march in lockstep).
+      if (fireSprites.length) {
         fireTime += dt;
-        for (let i = 0; i < flameMeshes.length; i++) {
-          const f =
-            0.82 +
-            0.22 * Math.sin(fireTime * 7 + i * 2.3) +
-            0.09 * Math.sin(fireTime * 19 + i);
-          flameMeshes[i].scaling.y = f;
-          flameMeshes[i].scaling.x = flameMeshes[i].scaling.z =
-            1 + (1 - f) * 0.35;
+        for (const s of fireSprites) {
+          s.t += dt;
+          if (s.t >= s.next) {
+            s.t = 0;
+            s.next = 1 / (4 + Math.random() * 4); // 4..8 fps hold
+            s.idx = (s.idx + 1) % s.frames.length;
+            s.mat.diffuseTexture = s.frames[s.idx];
+            s.mat.emissiveTexture = s.frames[s.idx];
+          }
         }
         if (fireLight)
           fireLight.intensity =
