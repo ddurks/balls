@@ -89,7 +89,7 @@
     },
     GRASS: {
       VIEW_RADIUS: 16, // grass radius (m) around the CAMERA
-      BLADES_PER_CELL: 200, // blades per CELL_SIZE² chunk (~12/m²)
+      BLADES_PER_CELL: 400, // blades per CELL_SIZE² chunk (~25/m²)
       CELL_SIZE: 4, // chunk size (m); grass only rebuilds when the camera crosses one
       BLADE_SIZE: 0.08, // crossed-quad blade ≈ 8 cm (matches the 42.7 mm ball scale)
       BUILD_BUDGET: 4, // max chunks (re)built + uploaded per frame — streams the ring's leading edge in without a spike
@@ -234,15 +234,24 @@
       SPEED: 30, // units per second
     },
     BOIDS: {
-      COUNT: 25,
-      CYLINDER_RADIUS: 200,
-      CYLINDER_MIN_HEIGHT: 8,
-      CYLINDER_MAX_HEIGHT: 160,
-      VISUAL_RANGE: 25,
-      MIN_AVOID_DISTANCE: 15,
-      MAX_SPEED: 1.2, // per-60fps-frame; integration is now delta-timed
-      MAX_FORCE: 0.06, // steering-force clamp → smooth turns (no jerk)
-      CENTERING_FACTOR: 0.0006,
+      // Motion is tuned to REAL scale, matching the 1:1 world (0.6 m bird):
+      // velocities/forces are per-60fps-frame units, so MAX_SPEED 0.2 ≈ 12 m/s
+      // cruise and MAX_FORCE 0.004 ≈ 14 m/s² → ~10 m banked turns. (The old
+      // 1.2/0.06 dated from the pre-rescale giant world: 72 m/s with snap turns
+      // — the birds whipped around like insects.)
+      COUNT: 40,
+      CYLINDER_RADIUS: 120,
+      // Flight band 20–45 m: low enough to read as birds, not specks (the old
+      // ceiling was 160 m), high enough to clear the 3×-scale treetops (~19 m).
+      CYLINDER_MIN_HEIGHT: 20,
+      CYLINDER_MAX_HEIGHT: 45,
+      VISUAL_RANGE: 18,
+      // ~5 body lengths for a 0.6 m bird; must stay BELOW the landing-cluster
+      // scatter in maybeStartLanding or separation blocks group touchdowns.
+      MIN_AVOID_DISTANCE: 3,
+      MAX_SPEED: 0.2, // per-60fps-frame; integration is now delta-timed
+      MAX_FORCE: 0.004, // steering-force clamp → smooth turns (no jerk)
+      CENTERING_FACTOR: 0.0002,
       AVOID_FACTOR: 0.05,
       MATCHING_FACTOR: 0.05,
       SEPARATION_WEIGHT: 1.2,
@@ -250,22 +259,23 @@
       // dwarfed the world once everything went real-scale (42.7 mm ball); 0.25 brings
       // it to a believable ~0.6 m bird. Tune up for more presence, down for smaller.
       MODEL_SCALE: 0.25,
-      WANDER_STRENGTH: 0.015,
+      WANDER_STRENGTH: 0.002,
       CLIMB_ANIMATION_BOOST: 1.5,
       DESCENT_ANIMATION_DAMPEN: 0.6,
       ROTATE_SMOOTH: 5, // orientation lerp rate (higher = snappier)
-      // Landing / perching
-      LAND_CHANCE: 0.045, // base per-second chance a flying bird starts landing
+      // Landing / perching — land a bit more often and linger longer, so close-up
+      // ground encounters are common now that the flock lives lower.
+      LAND_CHANCE: 0.06, // base per-second chance a flying bird starts landing
       LAND_JOIN_BONUS: 0.12, // small extra chance near an already-landed group
-      GROUP_RANGE: 40, // horizontal range for "join the group" landings
-      GROUP_CAP: 4, // stop adding join-bonus once a group reaches this many
-      ARRIVAL_RADIUS: 16, // start decelerating within this of the landing spot
-      TOUCHDOWN_DIST: 1.5, // perch once this close to the spot
+      GROUP_RANGE: 20, // horizontal range for "join the group" landings
+      GROUP_CAP: 6, // stop adding join-bonus once a group reaches this many
+      ARRIVAL_RADIUS: 10, // start decelerating within this of the landing spot
+      TOUCHDOWN_DIST: 1.0, // perch once this close to the spot
       PERCH_SECONDS_MIN: 4,
-      PERCH_SECONDS_MAX: 14,
-      TAKEOFF_KICK: 0.55, // initial upward velocity on takeoff
-      TAKEOFF_HEIGHT: 16, // climb this far above the surface before free flight
-      CLIMB_FORCE: 0.05,
+      PERCH_SECONDS_MAX: 20,
+      TAKEOFF_KICK: 0.09, // initial upward velocity on takeoff (~5 m/s hop)
+      TAKEOFF_HEIGHT: 10, // climb this far above the surface before free flight
+      CLIMB_FORCE: 0.003,
       STARTLE_RADIUS: 1, // ball this close (m) makes perched/landing birds bolt — small, to match the 42.7 mm ball so birds can perch right near it
       // Floating on water (bottom of the bird rides at the surface, bobbing)
       WATER_FLOAT: 0.06, // mean height of the bird's underside above the water

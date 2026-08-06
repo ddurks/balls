@@ -64,6 +64,9 @@
 
       this.targetRotation = 0;
       this.facingAimDirection = false;
+      // Visual root the character meshes hang from (set up in loadCharacter).
+      // Facing is applied here, not on this.mesh — see updateRotation.
+      this.characterRoot = null;
 
       // Blinking system — the state machine lives in balls.js; this.blink and
       // this.blinkMorphIdx are set up in initializeEyelids once the model loads.
@@ -392,7 +395,8 @@
             Math.PI,
           ); // undo the bone's 180°-Y bind so the hat faces forward
         } else {
-          this.hatMount.parent = this.mesh;
+          // characterRoot (not the physics mesh) so the hat turns with aim facing
+          this.hatMount.parent = this.characterRoot || this.mesh;
           this.hatMount.scaling.setAll(0.0254); // gball model units -> metres
         }
         hat.parent = this.hatMount;
@@ -568,19 +572,41 @@
     }
 
     updateRotation(lerpSpeed = 0.1) {
-      const currentRot = this.mesh.rotation.y;
-      const lerpedRot = BABYLON.Scalar.Lerp(
-        currentRot,
+      // The physics body owns this.mesh's rotationQuaternion (re-synced from the
+      // body every step, and the Euler .rotation is ignored once a quaternion is
+      // set), so writing this.mesh.rotation.y does nothing. Instead, counter-rotate
+      // the visual characterRoot so the character's WORLD orientation becomes a
+      // pure upright yaw of targetRotation, whatever tumble the body ended on.
+      const root = this.characterRoot;
+      const bodyQ = this.mesh.rotationQuaternion;
+      if (!root || !bodyQ) return;
+      const desiredWorld = BABYLON.Quaternion.RotationAxis(
+        BABYLON.Axis.Y,
         this.targetRotation,
-        lerpSpeed,
       );
-      this.mesh.rotation.y = lerpedRot;
+      const targetLocal =
+        BABYLON.Quaternion.Inverse(bodyQ).multiply(desiredWorld);
+      if (!root.rotationQuaternion)
+        root.rotationQuaternion = BABYLON.Quaternion.Identity();
+      BABYLON.Quaternion.SlerpToRef(
+        root.rotationQuaternion,
+        targetLocal,
+        lerpSpeed,
+        root.rotationQuaternion,
+      );
     }
 
     // === GENERAL METHODS ===
     reset() {
       this.mesh.position = this.startPosition.clone();
       this.mesh.rotation = BABYLON.Vector3.Zero();
+      // .rotation alone is inert once physics has set a rotationQuaternion; reset
+      // that too (the pre-step dance below pushes it into the body), and clear any
+      // aim-facing offset on the visual root.
+      if (this.mesh.rotationQuaternion)
+        this.mesh.rotationQuaternion.set(0, 0, 0, 1);
+      if (this.characterRoot?.rotationQuaternion)
+        this.characterRoot.rotationQuaternion.set(0, 0, 0, 1);
       this.body.setLinearVelocity(BABYLON.Vector3.Zero());
       this.body.setAngularVelocity(BABYLON.Vector3.Zero());
       // Teleport the physics body to the new spot: let it read the mesh transform

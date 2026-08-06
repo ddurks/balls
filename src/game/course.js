@@ -5,7 +5,7 @@
   // Per-hole definition. Tee, pin/cup and tree placements come from marker meshes
   // baked into each .glb; only par/name/notes live here.
   // Bump when hole .glb geometry is rebuilt (assets are served immutable-cached).
-  const HOLE_ASSET_VERSION = "solid-prisms2";
+  const HOLE_ASSET_VERSION = "greenfix1";
   const COURSE_HOLES = [
     { id: 1, glb: "assets/3d/holes/hole1.glb", par: 4, name: "Wet and Wild" },
     { id: 2, glb: "assets/3d/holes/hole2.glb", par: 3, name: "Rock and Roll" },

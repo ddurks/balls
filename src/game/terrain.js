@@ -41,13 +41,14 @@
       for (let i = 0; i < 3; i++) {
         this.grassMeshes.push(this.makeBladeTemplate(i));
       }
-      // Fixed ring geometry. cap = BLADES_PER_CELL so a slot can hold a whole chunk's
-      // blades in ANY single variant (a chunk splits its blades randomly across the 3
-      // variants, so per-variant counts vary) — no overflow, no drops. Unused entries
-      // stay all-zero, which transforms to a degenerate point the GPU discards for free
-      // (no fragments). If ever vertex-bound, cap could be tightened toward
-      // BLADES_PER_CELL/3 by dropping the rare per-variant overflow.
-      this.cap = CONFIG.GRASS.BLADES_PER_CELL;
+      // Fixed ring geometry. Blades are dealt round-robin across the variants in
+      // buildChunk, so a chunk puts at most ceil(BLADES_PER_CELL / nVariants) blades
+      // in any one variant — cap exactly that, no worst-case padding. Unused entries
+      // stay all-zero, which transforms to a degenerate point the GPU discards for
+      // free (no fragments).
+      this.cap = Math.ceil(
+        CONFIG.GRASS.BLADES_PER_CELL / this.grassMeshes.length,
+      );
       this.R = Math.ceil(CONFIG.GRASS.VIEW_RADIUS / CONFIG.GRASS.CELL_SIZE);
       this.W = 2 * this.R + 1;
       this.G = this.W * this.W;
@@ -198,7 +199,10 @@
         );
         pos.set(x, y, z);
         BABYLON.Matrix.ComposeToRef(scale, quat, pos, mat);
-        const arr = out[Math.floor(rng() * nVar)];
+        // Round-robin, not rng: guarantees no variant exceeds ceil(density/nVar),
+        // which is what lets initialize() size each slot without padding. Positions
+        // are random, so no visible variant pattern results.
+        const arr = out[i % nVar];
         for (let k = 0; k < 16; k++) arr.push(mat.m[k]);
       }
       return out.map((a) => Float32Array.from(a));

@@ -484,6 +484,13 @@
       this.liveArrow = null;
       this.idealArrow = null;
 
+      // Swipe feedback uses the real arrow.glb art (baked to assets/swipe-arrow.png,
+      // a flat white silhouette — no cel outline) instead of hand-drawn lines. The
+      // white sprite is tinted per color and cached.
+      this.arrowSprite = new Image();
+      this.arrowSprite.src = "assets/swipe-arrow.png";
+      this.tintCache = new Map();
+
       this.setupCanvas();
       this.resize();
       window.addEventListener("resize", () => this.resize());
@@ -540,40 +547,42 @@
       });
     }
 
+    // The white arrow sprite tinted to `color`, cached (few distinct colors).
+    getTinted(color) {
+      const cached = this.tintCache.get(color);
+      if (cached) return cached;
+      const img = this.arrowSprite;
+      const cv = document.createElement("canvas");
+      cv.width = img.naturalWidth;
+      cv.height = img.naturalHeight;
+      const cx = cv.getContext("2d");
+      cx.drawImage(img, 0, 0);
+      cx.globalCompositeOperation = "source-in"; // keep the arrow's alpha as a mask
+      cx.fillStyle = color;
+      cx.fillRect(0, 0, cv.width, cv.height);
+      this.tintCache.set(color, cv);
+      return cv;
+    }
+
     drawArrow(start, end, color, width, alpha = 1) {
       const ctx = this.ctx;
       const dx = end.x - start.x;
       const dy = end.y - start.y;
       const len = Math.sqrt(dx * dx + dy * dy);
       if (len < 2) return;
+      if (!this.arrowSprite.complete || !this.arrowSprite.naturalWidth) return;
 
-      const ux = dx / len;
-      const uy = dy / len;
-      const headLen = Shared.clamp(len * 0.22, 10, 18);
-      const headW = headLen * 0.6;
-      const baseX = end.x - ux * headLen;
-      const baseY = end.y - uy * headLen;
-      const px = -uy;
-      const py = ux;
+      const sprite = this.getTinted(color);
+      // Keep the arrow.glb proportions; the whole sprite scales with the swipe
+      // length (tail at start, tip at end). `width` nudges thickness so the
+      // spin/hit/ideal arrows still read a touch different, matching before.
+      const thickness = len * (sprite.height / sprite.width) * (width / 5);
 
       ctx.save();
       ctx.globalAlpha = alpha;
-      ctx.strokeStyle = color;
-      ctx.fillStyle = color;
-      ctx.lineWidth = width;
-      ctx.lineCap = "round";
-
-      ctx.beginPath();
-      ctx.moveTo(start.x, start.y);
-      ctx.lineTo(baseX, baseY);
-      ctx.stroke();
-
-      ctx.beginPath();
-      ctx.moveTo(end.x, end.y);
-      ctx.lineTo(baseX + px * headW, baseY + py * headW);
-      ctx.lineTo(baseX - px * headW, baseY - py * headW);
-      ctx.closePath();
-      ctx.fill();
+      ctx.translate(start.x, start.y);
+      ctx.rotate(Math.atan2(dy, dx));
+      ctx.drawImage(sprite, 0, -thickness / 2, len, thickness);
       ctx.restore();
     }
 

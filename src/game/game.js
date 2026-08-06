@@ -203,16 +203,25 @@
         return;
       }
 
-      // Parent all character meshes directly to the physics body
-      // so they rotate and position with it automatically
+      // Parent all character meshes under the physics body via an intermediate
+      // "characterRoot" node. The physics engine owns bodyMesh's rotationQuaternion
+      // (it re-syncs it from the body every step, and once a quaternion is set the
+      // Euler .rotation is ignored), so aim-mode facing must rotate this child node
+      // — writes to bodyMesh's rotation never reach the screen.
       const bodyMesh = this.golfBall.mesh;
+      const characterRoot = new BABYLON.TransformNode(
+        "characterRoot",
+        this.scene,
+      );
+      characterRoot.parent = bodyMesh;
       result.meshes.forEach((mesh) => {
         if (mesh) {
-          mesh.parent = bodyMesh;
+          mesh.parent = characterRoot;
           mesh.position = BABYLON.Vector3.Zero();
           mesh.scaling = new BABYLON.Vector3(0.0254, 0.0254, 0.0254);
         }
       });
+      this.golfBall.characterRoot = characterRoot;
 
       this.golfBall.skeleton = result.skeletons?.[0] || null;
       this.golfBall.scene = this.scene;

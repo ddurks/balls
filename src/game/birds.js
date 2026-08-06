@@ -11,7 +11,7 @@
       const s = CONFIG.BOIDS.MAX_SPEED;
       this.velocity = new BABYLON.Vector3(
         (Math.random() - 0.5) * s,
-        (Math.random() - 0.5) * 0.3,
+        (Math.random() - 0.5) * s * 0.25,
         (Math.random() - 0.5) * s,
       );
       this.acceleration = new BABYLON.Vector3();
@@ -111,9 +111,12 @@
         return;
       }
       if (this.flapAnimation) {
+        // Climb/descend threshold scales with cruise speed (15% of MAX_SPEED),
+        // so the boost/dampen still triggers after speed retunes.
+        const vt = CONFIG.BOIDS.MAX_SPEED * 0.15;
         let m = 1.0;
-        if (this.velocity.y > 0.2) m = CONFIG.BOIDS.CLIMB_ANIMATION_BOOST;
-        else if (this.velocity.y < -0.2)
+        if (this.velocity.y > vt) m = CONFIG.BOIDS.CLIMB_ANIMATION_BOOST;
+        else if (this.velocity.y < -vt)
           m = CONFIG.BOIDS.DESCENT_ANIMATION_DAMPEN;
         this.flapAnimation.speedRatio = m * this.animSpeedVariation;
       }
@@ -426,7 +429,9 @@
       const dx = boid.position.x - this.groundCenterX;
       const dz = boid.position.z - this.groundCenterZ;
       const dist = Math.sqrt(dx * dx + dz * dz);
-      const turn = 0.25;
+      // Velocity nudge per frame, proportional to cruise speed (~20%) so the
+      // boundary turn stays gentle rather than reversing the bird outright.
+      const turn = c.MAX_SPEED * 0.2;
       if (dist > c.CYLINDER_RADIUS) {
         boid.velocity.x -= (dx / dist) * turn;
         boid.velocity.z -= (dz / dist) * turn;
@@ -461,8 +466,10 @@
       let tx = boid.position.x;
       let tz = boid.position.z;
       if (anchor) {
-        tx = anchor.landTarget.x + (Math.random() - 0.5) * 12;
-        tz = anchor.landTarget.z + (Math.random() - 0.5) * 12;
+        // ±3 m scatter — a tight cluster at 0.6 m bird scale, but wider than
+        // MIN_AVOID_DISTANCE so separation doesn't block the touchdown.
+        tx = anchor.landTarget.x + (Math.random() - 0.5) * 6;
+        tz = anchor.landTarget.z + (Math.random() - 0.5) * 6;
       }
       const surf = this.sampleSurface(tx, tz);
       if (!surf) return; // nothing to land on (over the void) — keep flying

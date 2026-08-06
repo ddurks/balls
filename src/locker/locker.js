@@ -17,19 +17,24 @@
   /** @param {string} id @returns {any} */
   const $ = (id) => document.getElementById(id);
 
-  // Warm oak wainscot/floor + dark-green shag come from the shared generator
-  // (src/shared/textures.js), so the locker room reads the same PS1-flat way as
-  // the clubhouse. The locker wood is a seamless field (no plank lines).
+  // Warm oak wainscot/floor + dark-green carpet: the same hand-painted, seamless
+  // textures the clubhouse uses (assets/texture/clubhouse-*.png), so the locker
+  // room matches. Diffuse only here — the preview boxes carry no tangents.
+  function fileTex(scene, file) {
+    const t = new BABYLON.Texture(
+      "assets/texture/" + file + "?v=" + ASSET_V,
+      scene,
+    );
+    t.wrapU = t.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
+    return t;
+  }
+
   function woodTex(scene) {
-    return Textures.wood(scene, {
-      name: "lkWood",
-      grainStrokes: 160,
-      planks: 1,
-    });
+    return fileTex(scene, "clubhouse-wood.png");
   }
 
   function shagTex(scene) {
-    return Textures.shag(scene, { name: "lkShag" });
+    return fileTex(scene, "clubhouse-carpet.png");
   }
 
   function buildRoom(scene, shadow) {

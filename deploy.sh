@@ -30,7 +30,7 @@ aws s3 cp favicon.ico "s3://${BUCKET}/favicon.ico" --cache-control "public,max-a
 
 # Discover the distribution by its alias so no id needs hardcoding.
 DIST_ID=$(aws cloudfront list-distributions \
-  --query "DistributionList.Items[?contains(Aliases.Items, 'balls.drawvid.com')].Id | [0]" \
+  --query "DistributionList.Items[?Aliases.Items && contains(Aliases.Items, 'balls.drawvid.com')].Id | [0]" \
   --output text)
 if [ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ]; then
   echo "==> Invalidating CloudFront ${DIST_ID}"

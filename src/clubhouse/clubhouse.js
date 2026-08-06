@@ -31,7 +31,7 @@
     params.get("ws") ||
     (isLocal ? "ws://localhost:7779" : "wss://balls-world.drawvid.com");
 
-  const ASSET_V = "14"; // bump to bust the immutable /assets cache after a rebuild
+  const ASSET_V = "15"; // bump to bust the immutable /assets cache after a rebuild
   const AV_SCALE = 0.8; // gball model radius ~1 -> ~1.6 dia avatar
   const MOVE_SPEED = 6.0;
   const SEND_HZ = 10;
@@ -61,8 +61,6 @@
     },
   }[ROOM];
   const MY_AREA = ROOM_CFG.area;
-  document.title =
-    ROOM === "vip" ? "Balls — Members Lounge" : "Balls Clubhouse";
 
   const MY_NAME =
     (localStorage.getItem("ballsName") || "").trim() ||
@@ -77,55 +75,23 @@
   }
   whenReady();
 
-  // ---- PS1 procedural textures ----------------------------------------------
-  // Small, nearest-sampled, painterly = "impressionist PS1".
-  // Wood (3 planks) + shag come from the shared generator (src/shared/textures.js);
-  // the locker room builds the same building with its own name/knobs.
+  // ---- hand-drawn seamless textures ------------------------------------------
+  // Wood / carpet / stone are hand-painted (assets/texture/clubhouse-*.png), made
+  // perfectly tileable + paired with normal maps offline. Loaded mipmapped +
+  // wrapping so they read as clean as the course grass/water (not the tiny
+  // nearest-sampled PS1 fields they replace). Cache-busted with ASSET_V.
+  function fileTex(scene, file) {
+    const t = new BABYLON.Texture(`assets/texture/${file}?v=` + ASSET_V, scene);
+    t.wrapU = t.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
+    return t;
+  }
+
   function woodTexture(scene) {
-    return Textures.wood(scene, {
-      name: "woodTex",
-      grainStrokes: 190,
-      planks: 3,
-    });
+    return fileTex(scene, "clubhouse-wood.png");
   }
 
   function shagTexture(scene) {
-    return Textures.shag(scene, { name: "shagTex" });
-  }
-
-  // Build a tangent-space normal map from a height function (finite differences),
-  // NEAREST-sampled to match the PS1 textures. Used for the shag + wood bump.
-  function normalMap(scene, name, S, heightFn, strength) {
-    const dt = new BABYLON.DynamicTexture(name, S, scene, false);
-    const ctx = dt.getContext();
-    const img = ctx.createImageData(S, S);
-    const h = new Float32Array(S * S);
-    for (let y = 0; y < S; y++)
-      for (let x = 0; x < S; x++) h[y * S + x] = heightFn(x, y, S);
-    for (let y = 0; y < S; y++)
-      for (let x = 0; x < S; x++) {
-        const hl = h[y * S + ((x - 1 + S) % S)],
-          hr = h[y * S + ((x + 1) % S)];
-        const hu = h[((y - 1 + S) % S) * S + x],
-          hd = h[((y + 1) % S) * S + x];
-        let nx = (hl - hr) * strength,
-          ny = (hd - hu) * strength,
-          nz = 1;
-        const inv = 1 / Math.hypot(nx, ny, nz);
-        nx *= inv;
-        ny *= inv;
-        nz *= inv;
-        const i = (y * S + x) * 4;
-        img.data[i] = ((nx * 0.5 + 0.5) * 255) | 0;
-        img.data[i + 1] = ((ny * 0.5 + 0.5) * 255) | 0;
-        img.data[i + 2] = ((nz * 0.5 + 0.5) * 255) | 0;
-        img.data[i + 3] = 255;
-      }
-    ctx.putImageData(img, 0, 0);
-    dt.update();
-    dt.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
-    dt.wrapU = dt.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
-    return dt;
+    return fileTex(scene, "clubhouse-carpet.png");
   }
 
   // Compute per-vertex tangents from positions/uvs/normals so StandardMaterial
@@ -185,39 +151,7 @@
   }
 
   function stoneTexture(scene) {
-    const S = 128;
-    const dt = new BABYLON.DynamicTexture("stoneTex", S, scene, false);
-    const ctx = dt.getContext();
-    ctx.fillStyle = "rgb(122,119,112)";
-    ctx.fillRect(0, 0, S, S);
-    for (let i = 0; i < 520; i++) {
-      const x = Math.random() * S,
-        y = Math.random() * S,
-        r = 3 + Math.random() * 7;
-      const v = 88 + Math.random() * 74;
-      ctx.fillStyle = `rgba(${v | 0},${(v - 4) | 0},${(v - 11) | 0},0.5)`;
-      ctx.beginPath();
-      ctx.ellipse(x, y, r, r * 0.72, Math.random() * 3, 0, 7);
-      ctx.fill();
-    }
-    ctx.strokeStyle = "rgba(68,66,62,0.5)";
-    ctx.lineWidth = 1.5;
-    for (let i = 0; i < 42; i++) {
-      let x = Math.random() * S,
-        y = Math.random() * S;
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      for (let k = 0; k < 4; k++) {
-        x += (Math.random() - 0.5) * 22;
-        y += (Math.random() - 0.5) * 22;
-        ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    }
-    dt.update();
-    dt.updateSamplingMode(BABYLON.Texture.NEAREST_SAMPLINGMODE);
-    dt.wrapU = dt.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
-    return dt;
+    return fileTex(scene, "clubhouse-stone.png");
   }
 
   // ---- main ------------------------------------------------------------------
@@ -284,29 +218,15 @@
     const stoneTex = stoneTexture(scene);
     const woodMat = flatMat("wood", scene, woodTex);
     woodMat.emissiveColor = new BABYLON.Color3(0.13, 0.11, 0.07);
-    // wood-grain bump: horizontal grain ridges (varies down the grain, +a little jitter)
-    woodMat.bumpTexture = normalMap(
-      scene,
-      "woodBump",
-      128,
-      (x, y) =>
-        0.5 +
-        (Math.sin(y * 0.26) * 0.5 + Math.sin(y * 0.07 + 1) * 0.5) * 0.4 +
-        (Math.random() - 0.5) * 0.08,
-      2.6,
-    );
+    woodMat.bumpTexture = fileTex(scene, "clubhouse-wood-normal.png");
     woodMat.bumpTexture.level = 0.8;
     const shagMat = flatMat("shag", scene, shagTex);
-    shagMat.bumpTexture = normalMap(
-      scene,
-      "shagBump",
-      96,
-      () => Math.random(),
-      0.9,
-    );
+    shagMat.bumpTexture = fileTex(scene, "clubhouse-carpet-normal.png");
     shagMat.bumpTexture.level = 0.7;
     const stoneMat = flatMat("stone", scene, stoneTex);
     stoneMat.emissiveColor = new BABYLON.Color3(0.15, 0.15, 0.15);
+    stoneMat.bumpTexture = fileTex(scene, "clubhouse-stone-normal.png");
+    stoneMat.bumpTexture.level = 0.6;
     const creamMat = colorMat(
       "cream",
       scene,
@@ -342,11 +262,13 @@
       scene,
       new BABYLON.Color3(0.05, 0.05, 0.06),
     );
-    const vipFloorMat = colorMat(
+    const vipFloorMat = flatMat(
       "floorVip",
       scene,
-      new BABYLON.Color3(0.17, 0.07, 0.07),
+      fileTex(scene, "clubhouse-carpet-vip.png"),
     );
+    vipFloorMat.bumpTexture = fileTex(scene, "clubhouse-carpet-normal.png");
+    vipFloorMat.bumpTexture.level = 0.7;
     const fireRedMat = colorMat(
       "fireRed",
       scene,
@@ -557,9 +479,15 @@
         }
       }
     }
-    // give the wood + shag meshes tangents so their bump maps light correctly
+    // give the textured (bump-mapped) meshes tangents so their normal maps light
+    // correctly — wood, carpet/shag, stone, and the VIP red-carpet floor
     for (const mesh of room.meshes) {
-      if (mesh.material === woodMat || mesh.material === shagMat)
+      if (
+        mesh.material === woodMat ||
+        mesh.material === shagMat ||
+        mesh.material === stoneMat ||
+        mesh.material === vipFloorMat
+      )
         computeTangents(mesh);
     }
 
@@ -577,8 +505,8 @@
     }
     // Sprite hearth fire: hand-drawn frames (assets/fire) swapped on flat planes
     // instead of the 3D cones — one big central + two smaller flanking to fill the
-    // recess without stretching. Each plane's bottom sits on the log tops (= the
-    // cones' base). Planes are double-sided + emissive so the fire glows.
+    // recess without stretching. Each plane's bottom sits on the log tops (just
+    // above the cones' base). Planes are double-sided + emissive so the fire glows.
     const fireSprites = [];
     if (flameMeshes.length) {
       let mn = new BABYLON.Vector3(1e9, 1e9, 1e9);
@@ -592,7 +520,7 @@
       }
       const cx = (mn.x + mx.x) / 2;
       const cz = (mn.z + mx.z) / 2;
-      const baseY = mn.y; // log tops — bottom of every sprite rests here
+      const baseY = mn.y + (mx.x - mn.x) * 0.05; // lifted above the cone bases so sprite bottoms sit on the log tops
       const W = mx.x - mn.x; // recess width
 
       const frames = [1, 2, 3, 4].map((n) => {
@@ -603,13 +531,13 @@
         t.hasAlpha = true;
         return t;
       });
-      const makeFire = (offX, size) => {
+      const makeFire = (offX, offZ, size) => {
         const p = BABYLON.MeshBuilder.CreatePlane(
           "hearthFire",
           { size },
           scene,
         );
-        p.position.set(cx + offX, baseY + size / 2, cz);
+        p.position.set(cx + offX, baseY + size / 2, cz + offZ);
         p.isPickable = false;
         p.receiveShadows = false;
         const m = new BABYLON.StandardMaterial("fireSpriteMat", scene);
@@ -631,9 +559,11 @@
           next: 0, // seconds to hold the current frame (set on first tick)
         });
       };
-      makeFire(0, W * 0.64); // big central flame
-      makeFire(-W * 0.34, W * 0.44); // smaller left flank
-      makeFire(W * 0.34, W * 0.44); // smaller right flank
+      // Fireplace is on the +Z wall, so -Z is toward the room: the central
+      // flame is nudged in front, the flanks tucked behind it.
+      makeFire(0, -W * 0.12, W * 0.58); // big central flame, clear of the top log
+      makeFire(-W * 0.34, W * 0.05, W * 0.4); // smaller left flank
+      makeFire(W * 0.34, W * 0.05, W * 0.4); // smaller right flank
 
       const fp = flameMeshes[0].getAbsolutePosition();
       fireLight = new BABYLON.PointLight(
@@ -1089,6 +1019,24 @@
       }
     }
 
+    // Movers list for the smoke waft: refreshed each frame by the render loop
+    // (local + remote avatars), read per-particle in smokeUpdate. An avatar
+    // registers only while it actually moved this frame, so idle rooms add
+    // nothing to the particle loop.
+    const smokeMovers = [];
+    const WAFT_R = 2.0; // metres of influence around a walking avatar
+    function waftTrack(av, dt) {
+      if (!dt) return;
+      const p = av.wrapper.position;
+      const vx = (p.x - (av._wx ?? p.x)) / dt;
+      const vz = (p.z - (av._wz ?? p.z)) / dt;
+      av._wx = p.x;
+      av._wz = p.z;
+      const sp = Math.hypot(vx, vz);
+      // ignore standstill jitter and teleport-sized jumps (join/door snaps)
+      if (sp > 0.3 && sp < 8) smokeMovers.push({ x: p.x, z: p.z, vx, vz });
+    }
+
     // world-space smoke: rise buoyantly, then pool + spread under the ceiling
     function smokeUpdate(particles) {
       const dt = this._scaledUpdateSpeed;
@@ -1102,7 +1050,7 @@
         }
         const fade = Math.max(0, 1 - p.age / p.lifeTime);
         p.color.a = Math.pow(fade, 0.6) * 0.5;
-        p.size = 0.36 + (1 - fade) * 3.3; // ~3x bigger so the smoke is clearly visible; grows as it ages
+        p.size = 0.36 + (1 - fade) * 6.9; // grows as it ages, up to ~7 m of thin haze
         if (p.position.y >= CEIL_Y) {
           // hit the invisible ceiling -> spread
           p.direction.x = (Math.random() - 0.5) * 0.5;
@@ -1112,6 +1060,21 @@
           p.direction.x *= 1 - dt * 0.4;
           p.direction.z *= 1 - dt * 0.4;
           p.direction.y += dt * 0.25;
+        }
+        // Waft: a walker within WAFT_R entrains the smoke along their motion and
+        // shoves it gently out of their wake. 3D falloff from chest height, so
+        // pooled ceiling smoke is naturally out of reach; the horizontal damping
+        // above settles the puff again once they pass.
+        for (let m = 0; m < smokeMovers.length; m++) {
+          const mv = smokeMovers[m];
+          const dx = p.position.x - mv.x;
+          const dy = p.position.y - 1.0;
+          const dz = p.position.z - mv.z;
+          const d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 >= WAFT_R * WAFT_R) continue;
+          const w = (1 - Math.sqrt(d2) / WAFT_R) * dt;
+          p.direction.x += (mv.vx * 1.5 + dx * 1.2) * w;
+          p.direction.z += (mv.vz * 1.5 + dz * 1.2) * w;
         }
         p.position.x += p.direction.x * dt;
         p.position.y += p.direction.y * dt;
@@ -1256,11 +1219,11 @@
       ps.spriteCellChangeSpeed = 1.4;
       ps.emitter = ember; // world-space (isLocal false): trail stays in the room
       ps.minEmitBox = ps.maxEmitBox = BABYLON.Vector3.Zero();
-      ps.color1 = new BABYLON.Color4(0.64, 0.64, 0.64, 1);
-      ps.color2 = new BABYLON.Color4(0.58, 0.58, 0.58, 1);
+      ps.color1 = new BABYLON.Color4(0.76, 0.76, 0.76, 1);
+      ps.color2 = new BABYLON.Color4(0.7, 0.7, 0.7, 1);
       ps.minLifeTime = 4;
       ps.maxLifeTime = 11; // long-lived -> accumulates
-      ps.emitRate = 6; // ambient smolder — a drag puffs extra (see updateHold)
+      ps.emitRate = 3; // ambient smolder — a drag puffs extra (see updateHold)
       ps.minSize = 0.36;
       ps.maxSize = 0.36;
       ps.direction1 = new BABYLON.Vector3(-0.05, 0.55, -0.05);
@@ -1279,7 +1242,7 @@
         burn: 0, // 0 = fresh, 1 = smoked to the butt
         actT: -1, // >=0 while a drag is in progress
         nextAct: 1.5 + Math.random() * 2.5, // remotes auto-drag on this timer
-        ambientEmit: 6,
+        ambientEmit: 3,
       };
     }
 
@@ -1516,17 +1479,20 @@
     }
 
     function buildShelfGlasses() {
-      // line cybeer glasses along the back shelf above the bar (+x/east wall),
-      // logos facing out into the room (-x)
+      // line cybeer glasses evenly along the back shelf above the bar (+x/east
+      // wall), logos facing out into the room (-x)
       // gx pulled back toward the wall so the mugs rest fully on the (now-lowered)
       // bottom shelf instead of drooping off its front edge.
       const shelfTopY = 2.73,
         gx = 11.35,
         S = 0.3,
         gy = shelfTopY + 0.24;
-      for (const z of [-4.9, -3.0, -1.0, 1.0, 3.0, 4.9])
+      // z is the mug's visual centre; the holder is placed 0.11 back (-z) of it
+      // because the instanced mug's root/handle offset shifts the mesh +z.
+      // Spacing 1.6 keeps the end mugs well inside the 10-long shelf.
+      for (const z of [-4.0, -2.4, -0.8, 0.8, 2.4, 4.0])
         makeStaticCybeer(
-          new BABYLON.Vector3(gx, gy, z),
+          new BABYLON.Vector3(gx, gy, z - 0.11),
           -Math.PI / 2,
           S,
           "shelf_glass",
@@ -1691,7 +1657,7 @@
             u = Math.min(1, it.actT / T);
           face = "o";
           it.ember.scaling.setAll(u < 0.5 ? 1.6 : 1); // ember flares on the inhale
-          it.ps.emitRate = u > 0.5 ? 52 : it.ambientEmit; // exhale puff
+          it.ps.emitRate = u > 0.5 ? 26 : it.ambientEmit; // exhale puff
           if (u >= 1) {
             it.actT = -1;
             it.nextAct = 3 + Math.random() * 3;
@@ -2180,6 +2146,7 @@
     let lastSent = { x: 1e9, z: 1e9, ry: 0, moving: false };
     scene.onBeforeRenderObservable.add(() => {
       const dt = Math.min(0.05, engine.getDeltaTime() / 1000);
+      smokeMovers.length = 0; // rebuilt below as avatars update
 
       // Animate the sprite hearth fire: advance each flame's frame on its own
       // random 4-8 fps timer (independent, so the three never march in lockstep).
@@ -2270,6 +2237,7 @@
       animateAvatar(me, dt);
       updateBlink(me, dt);
       updateHold(me, dt, true);
+      waftTrack(me, dt);
 
       // flicker every lit cigarette ember (one shared material)
       if (anyCig > 0) {
@@ -2317,6 +2285,7 @@
         animateAvatar(r.av, dt);
         updateBlink(r.av, dt);
         updateHold(r.av, dt, false);
+        waftTrack(r.av, dt);
       }
 
       // network send (throttled, on change)
