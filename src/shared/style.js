@@ -293,7 +293,8 @@
       ctx.arc(TEX / 2, 84, 62, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = "#15151a";
-      ctx.font = "bold 88px Arial";
+      ctx.font =
+        "bold 88px 'DrawvidHand', 'Comic Sans MS', cursive, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.save(); // the unwrap is rotated ~90° on the ball — pre-rotate the 8

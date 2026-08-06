@@ -1116,7 +1116,7 @@
       CourseUI._styled = true;
       const css = `
     .course-flash{position:absolute;top:38%;left:50%;transform:translate(-50%,-50%);
-      z-index:1600;font-family:'Trebuchet MS',Arial,sans-serif;font-weight:bold;font-size:46px;
+      z-index:1600;font-family:'DrawvidHand','Comic Sans MS',cursive,sans-serif;font-weight:bold;font-size:46px;
       color:#eafff0;text-shadow:0 2px 10px rgba(0,0,0,.6),0 0 24px rgba(80,220,120,.6);
       pointer-events:none;text-align:center;}
     .course-flash.cf-show{animation:cfpop .5s cubic-bezier(.2,1.4,.4,1);}
@@ -1125,7 +1125,7 @@
       100%{transform:translate(-50%,-50%) scale(1);opacity:1}}
     .balls-overlay{position:absolute;inset:0;z-index:2000;display:flex;align-items:center;
       justify-content:center;background:radial-gradient(circle at 50% 30%,rgba(135,207,235,.6),rgba(90,150,200,.75));
-      font-family:'Trebuchet MS',Arial,sans-serif;-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px);}
+      font-family:'DrawvidHand','Comic Sans MS',cursive,sans-serif;-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px);}
     .balls-overlay.splash-in{animation:sbSplash .6s cubic-bezier(.16,1.1,.3,1) both;}
     @keyframes sbSplash{from{-webkit-clip-path:circle(0% at 50% 50%);clip-path:circle(0% at 50% 50%);}
       to{-webkit-clip-path:circle(150% at 50% 50%);clip-path:circle(150% at 50% 50%);}}

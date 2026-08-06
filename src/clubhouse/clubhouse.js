@@ -222,6 +222,10 @@
 
   // ---- main ------------------------------------------------------------------
   async function start() {
+    // Preload the handwriting font so canvas-baked text (door signs, CIGS panel,
+    // skins) renders in it — canvas ignores @font-face until the face is loaded.
+    if (document.fonts?.load)
+      await document.fonts.load('bold 40px "DrawvidHand"').catch(() => {});
     const canvas = document.getElementById("renderCanvas");
     const engine = new BABYLON.Engine(canvas, true, {
       preserveDrawingBuffer: true,
@@ -404,10 +408,14 @@
       ctx.strokeRect(13, 13, W - 26, Hh - 26);
       ctx.fillStyle = "#ffffff";
       let fs = 52; // shrink the font so longer labels (e.g. MEMBERS LOUNGE) fit the plaque
-      ctx.font = "bold " + fs + "px 'Arial Black', Impact, sans-serif";
+      ctx.font =
+        "bold " + fs + "px 'DrawvidHand', 'Comic Sans MS', cursive, sans-serif";
       while (ctx.measureText(text).width > W - 30 && fs > 14) {
         fs -= 2;
-        ctx.font = "bold " + fs + "px 'Arial Black', Impact, sans-serif";
+        ctx.font =
+          "bold " +
+          fs +
+          "px 'DrawvidHand', 'Comic Sans MS', cursive, sans-serif";
       }
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
@@ -1137,16 +1145,33 @@
       });
       const root = inst.rootNodes[0];
       root.parent = av.hand;
-      // detach the skeleton so the cig renders at FULL length (its rest pose collapses it to a stub);
-      // the raw geometry runs along root-local Y (filter +Y, burning tip -Y)
+      // KEEP the skeleton: the cig's built-in "smoke" AnimationGroup (frames
+      // 0..300) shortens it from full length (0) to a butt (300) as it burns. We
+      // scrub it by `burn` in updateHold rather than playing it in real time.
+      let cigMesh = null;
       for (const m of root.getChildMeshes(false)) {
         m.isPickable = false;
-        m.skeleton = null;
+        if (m.skeleton) cigMesh = m;
       }
+      const burnGrp =
+        inst.animationGroups.find((g) => g.name === "smoke") ||
+        inst.animationGroups[0];
+      if (burnGrp) {
+        burnGrp.start(true, 1, burnGrp.from, burnGrp.to);
+        burnGrp.pause();
+        burnGrp.goToFrame(0); // frame 0 = full length
+      }
+      const emberBone =
+        inst.skeletons && inst.skeletons[0]
+          ? inst.skeletons[0].bones.find((b) => b.name === "ember")
+          : null;
       const S = 0.5; // ~3x bigger than the old procedural cig
       root.scaling.setAll(S);
       root.rotationQuaternion = null; // drop the glTF import flip
-      root.rotation.set(-Math.PI / 2, 0, 0); // lay the cig horizontal: filter at the mouth, tip out
+      // The SKINNED geometry runs along local Z (ember +Z / filter -Z) — already
+      // horizontal, ember out — so (unlike the old detached Y-axis geometry) it
+      // needs no -90° tilt, which was standing it up vertically.
+      root.rotation.set(0, 0, 0);
       root.position.set(0.0, 0.22, 0.12);
       const ember = BABYLON.MeshBuilder.CreateSphere(
         "cigEmber",
@@ -1155,8 +1180,13 @@
       );
       ember.material = emberMat;
       ember.isPickable = false;
-      ember.parent = root;
-      ember.position.set(0, -1.03, -0.945); // burning tip
+      // Ride the "ember" bone so the glow + smoke follow the burning tip as it
+      // recedes. Bone-parented, so equipHold disposes it explicitly (not via root).
+      if (emberBone && cigMesh) ember.attachToBone(emberBone, cigMesh);
+      else {
+        ember.parent = root;
+        ember.position.set(0, -1.03, -0.945); // burning tip (fallback)
+      }
       const ps = new BABYLON.ParticleSystem("smoke", 220, scene);
       ps.particleTexture = smokeTex;
       ps.isAnimationSheetEnabled = true;
@@ -1187,6 +1217,8 @@
         root,
         ember,
         ps,
+        burnGrp,
+        burn: 0, // 0 = fresh, 1 = smoked to the butt
         actT: -1, // >=0 while a drag is in progress
         nextAct: 1.5 + Math.random() * 2.5, // remotes auto-drag on this timer
         ambientEmit: 6,
@@ -1202,6 +1234,7 @@
           const s = av.item.ps;
           setTimeout(() => s.dispose(), 12000);
         }
+        if (av.item.ember) av.item.ember.dispose(); // bone-parented, not under root
         if (av.item.root) av.item.root.dispose(false, true);
         av.item = null;
       }
@@ -1232,7 +1265,7 @@
       c.fillStyle = "#c22";
       c.fillRect(8, 8, W - 16, 32);
       c.fillStyle = "#ffe8c0";
-      c.font = "bold 24px 'Arial Black',Impact,sans-serif";
+      c.font = "bold 24px 'DrawvidHand','Comic Sans MS',cursive,sans-serif";
       c.textAlign = "center";
       c.textBaseline = "middle";
       c.fillText("CIGS", W / 2, 25);
@@ -1528,7 +1561,10 @@
           color: "#e8ffd8",
           fontWeight: "bold",
           fontSize: "14px",
-          fontFamily: "Arial, sans-serif",
+          fontFamily: "DrawvidHand, Comic Sans MS, cursive, sans-serif",
+          maxWidth: "82vw",
+          boxSizing: "border-box",
+          textAlign: "center",
           pointerEvents: "none",
           zIndex: "60",
         });
@@ -1567,11 +1603,23 @@
           if (u >= 1) {
             it.sipT = -1;
             it.nextSip = 2.5 + Math.random() * 2.5;
-            if (it.level <= 0.05) setBeerLevel(it, 1); // empty -> fresh pint
+            if (it.level <= 0.05) {
+              if (isLocal) {
+                // finished the pint — hands empty; the 🍺 button hides (via
+                // reflectHoldBtns) so you know to go grab another.
+                equipHold(me, "none");
+                net.sendHold(0);
+                reflectHoldBtns();
+                face = null;
+              } else {
+                setBeerLevel(it, 1); // remote visual loop -> fresh pint
+              }
+            }
           }
         }
       } else if (it && av.holdType === "cig") {
         // a lit cig smolders; a drag flares the ember on the inhale, then exhales
+        it.burn = Math.min(1, it.burn + dt * 0.02); // slow ambient smolder
         if (it.actT < 0) {
           it.ps.emitRate = it.ambientEmit;
           it.ember.scaling.setAll(1);
@@ -1590,6 +1638,21 @@
             it.actT = -1;
             it.nextAct = 3 + Math.random() * 3;
             it.ps.emitRate = it.ambientEmit;
+            it.burn = Math.min(1, it.burn + 0.14); // each drag burns a chunk
+          }
+        }
+        // Scrub the built-in "smoke" animation so the cig shortens as it burns.
+        if (it.burnGrp) it.burnGrp.goToFrame(it.burn * it.burnGrp.to);
+        if (it.burn >= 1) {
+          if (isLocal) {
+            // smoked to the butt — hands empty; the 🚬 button hides so you
+            // know to go grab another.
+            equipHold(me, "none");
+            net.sendHold(0);
+            reflectHoldBtns();
+            face = null;
+          } else {
+            it.burn = 0; // remote visual loop -> fresh cig
           }
         }
       }
@@ -1999,6 +2062,12 @@
       color: "#e8ffd8",
       fontWeight: "bold",
       fontSize: "15px",
+      // Cap the width + wrap so the chip always fits narrow mobile screens
+      // (the handwriting font runs wider than the old one).
+      maxWidth: "82vw",
+      boxSizing: "border-box",
+      textAlign: "center",
+      lineHeight: "1.2",
       display: "none",
       pointerEvents: "none",
       zIndex: "40",
@@ -2152,16 +2221,27 @@
       camera.target.copyFrom(me.wrapper.position);
       camera.target.y += 1.0;
 
-      let near = null;
+      // Bottom hint chip: what to do at whatever you're standing near — a door,
+      // or (if you're not already holding it) a beer/cigarette dispenser.
+      let hint = null;
       for (const d of doors) {
         const dx = d.pos.x - me.wrapper.position.x;
         const dz = d.pos.z - me.wrapper.position.z;
-        if (dx * dx + dz * dz < DOOR_RADIUS * DOOR_RADIUS) near = d.kind;
+        if (dx * dx + dz * dz < DOOR_RADIUS * DOOR_RADIUS)
+          hint = "▸ " + d.label + " (tap the door)";
       }
-      if (near) {
+      if (!hint) {
+        for (const d of dispensers) {
+          const dx = d.grabPos.x - me.wrapper.position.x;
+          const dz = d.grabPos.z - me.wrapper.position.z;
+          if (dx * dx + dz * dz < d.radius * d.radius && me.holdType !== d.kind)
+            hint =
+              d.kind === "beer" ? "▸ tap to grab a 🍺" : "▸ tap to grab a 🚬";
+        }
+      }
+      if (hint) {
         prompt.style.display = "block";
-        const d = doors.find((dd) => dd.kind === near);
-        prompt.textContent = "▸ " + (d ? d.label : "") + " (click the door)";
+        prompt.textContent = hint;
       } else {
         prompt.style.display = "none";
       }
@@ -2456,7 +2536,7 @@
       maxWidth: "70vw",
       zIndex: "50",
       pointerEvents: "none",
-      fontFamily: "Arial, sans-serif",
+      fontFamily: "DrawvidHand, Comic Sans MS, cursive, sans-serif",
     });
     // The input lives in a FORM so the iOS software keyboard's return key
     // reliably submits (a bare keydown listener misses it on some Safari
@@ -2465,7 +2545,7 @@
     form.style.pointerEvents = "none";
     const input = document.createElement("input");
     input.type = "text";
-    input.placeholder = "Press Enter to chat…";
+    input.placeholder = "chat...";
     input.maxLength = 200;
     input.enterKeyHint = "send"; // label the iOS return key
     input.autocomplete = "off";
@@ -2477,6 +2557,9 @@
       borderRadius: "16px",
       border: "3px solid #476a23",
       background: "rgba(255,255,255,0.9)",
+      // Form controls don't inherit font-family — set it so the input + its
+      // placeholder use the handwriting font too.
+      fontFamily: "DrawvidHand, Comic Sans MS, cursive, sans-serif",
       // ≥16px: below that, iOS Safari force-zooms the page when the input is
       // focused — the zoom then sticks and fights the orbit controls.
       fontSize: "16px",
@@ -2485,26 +2568,52 @@
     // feed sits BELOW the entry, newest on top, older scrolling downward; the
     // history stays readable down to ~50% of the page, then fades out at its
     // bottom edge; scrollable to read older lines
+    // Collapse/expand toggle — the log can be hidden to unclutter the view.
+    const toggle = document.createElement("div");
+    Object.assign(toggle.style, {
+      marginTop: "6px",
+      alignSelf: "flex-start",
+      padding: "1px 8px",
+      fontSize: "20px",
+      color: "#fff",
+      textShadow: "1px 1px 0 rgba(0,0,0,0.9), 0 0 4px rgba(0,0,0,0.9)",
+      background: "rgba(0,0,0,0.35)",
+      borderRadius: "8px",
+      cursor: "pointer",
+      pointerEvents: "auto",
+      userSelect: "none",
+    });
+
+    // OG-Minecraft style log: plain white "username: message", newest on top,
+    // grows to half the viewport then scrolls. No bubbles, no mask fade.
     feedEl = document.createElement("div");
-    const fade =
-      "linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,1) 68%, rgba(0,0,0,0) 100%)";
     Object.assign(feedEl.style, {
-      marginTop: "8px",
+      marginTop: "6px",
       maxHeight: "50vh",
       overflowY: "auto",
       display: "flex",
       flexDirection: "column",
-      gap: "4px",
-      fontSize: "13px",
-      color: "#08240f",
-      textShadow: "0 1px 2px rgba(255,255,255,0.5)",
+      gap: "2px",
+      fontSize: "30px",
+      lineHeight: "1.2",
+      color: "#fff",
       pointerEvents: "auto",
       scrollbarWidth: "none", // thin/hidden scrollbar (still scrollable)
-      WebkitMaskImage: fade,
-      maskImage: fade,
     });
+
+    let collapsed = false;
+    const renderToggle = () =>
+      (toggle.textContent = (collapsed ? "▸" : "▾") + " chat");
+    renderToggle();
+    toggle.onclick = () => {
+      collapsed = !collapsed;
+      feedEl.style.display = collapsed ? "none" : "flex";
+      renderToggle();
+    };
+
     form.appendChild(input);
     wrap.appendChild(form);
+    wrap.appendChild(toggle);
     wrap.appendChild(feedEl);
     document.body.appendChild(wrap);
     return { input, form };
@@ -2513,17 +2622,15 @@
   function pushFeed(text) {
     if (!feedEl) return;
     const line = document.createElement("div");
-    line.textContent = text;
+    line.textContent = text; // already "username: message"
     Object.assign(line.style, {
-      background: "rgba(200,230,200,0.72)",
-      borderRadius: "10px",
-      padding: "3px 9px",
       alignSelf: "flex-start",
       maxWidth: "100%",
       flex: "0 0 auto",
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
+      color: "#fff",
+      textShadow: "1px 1px 0 rgba(0,0,0,0.9), 0 0 3px rgba(0,0,0,0.9)",
+      whiteSpace: "normal",
+      wordBreak: "break-word",
     });
     feedEl.insertBefore(line, feedEl.firstChild); // newest on top
     while (feedEl.children.length > 40) feedEl.removeChild(feedEl.lastChild);
@@ -2535,14 +2642,14 @@
     d.textContent = name;
     Object.assign(d.style, {
       position: "absolute",
-      transform: "translate(-50%,-100%)",
-      padding: "1px 6px",
-      borderRadius: "8px",
-      background: "rgba(20,40,20,0.7)",
-      color: "#eaffea",
-      fontSize: "12px",
+      // Anchored at its TOP-centre so the name sits BELOW the projected point
+      // (which updateTags puts at the player's feet on the ground).
+      transform: "translate(-50%, 0)",
+      color: "#fff",
+      fontSize: "30px",
       fontWeight: "bold",
-      fontFamily: "Arial, sans-serif",
+      fontFamily: "DrawvidHand, Comic Sans MS, cursive, sans-serif",
+      textShadow: "1px 1px 0 rgba(0,0,0,0.9), 0 0 4px rgba(0,0,0,0.9)",
       whiteSpace: "nowrap",
       pointerEvents: "none",
     });
@@ -2558,7 +2665,7 @@
   // ---- speech bubbles: assets/speech_bubble.png, text shaped into the round
   // part of the balloon. DOM-projected over the head, so it's always
   // camera-facing (billboarded) for free.
-  const BUBBLE_PX = 118; // on-screen size of the square bubble sprite
+  const BUBBLE_PX = 188; // on-screen size of the square bubble sprite (enlarged for 2x text)
   // The balloon's circle as fractions of the sprite square; the tail hangs
   // below-right of it and its tip anchors on the speaker's head.
   const BUB = { cx: 0.465, cy: 0.415, r: 0.385 };
@@ -2596,7 +2703,7 @@
       backgroundImage: "url('assets/speech_bubble.png')",
       backgroundSize: "100% 100%",
       pointerEvents: "none",
-      fontFamily: "Arial, sans-serif",
+      fontFamily: "DrawvidHand, Comic Sans MS, cursive, sans-serif",
     });
     const txt = document.createElement("div");
     Object.assign(txt.style, {
@@ -2611,8 +2718,8 @@
       scrollbarWidth: "none",
       pointerEvents: "auto", // long text is scrollable inside the circle
       textAlign: "center",
-      fontSize: "12px",
-      lineHeight: "1.25",
+      fontSize: "24px",
+      lineHeight: "1.2",
       color: "#123",
     });
     if (text.length < BUB_FLEX_MAX) {
@@ -2691,7 +2798,10 @@
       node.style.left = p.x / dpr + "px";
       node.style.top = p.y / dpr + "px";
     }
-    for (const [id, r] of remotes) place(tags, id, r.av.wrapper, 1.8);
+    // Project at the player's feet (~floor) so the name sits UNDER them on the
+    // ground; the tag is top-anchored so it hangs just below this point.
+    // -0.67 ≈ AV_SCALE(0.8) * 0.84 (ball-centre height above the floor).
+    for (const [id, r] of remotes) place(tags, id, r.av.wrapper, -0.67);
     for (const [id, b] of bubbles) {
       if (now > b.until) {
         removeBubble(id);

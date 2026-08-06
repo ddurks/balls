@@ -207,6 +207,10 @@
   whenReady();
 
   async function start() {
+    // Preload the handwriting font so canvas-baked text (skins, face) renders
+    // in it — canvas ignores @font-face until the face is loaded.
+    if (document.fonts?.load)
+      await document.fonts.load('bold 40px "DrawvidHand"').catch(() => {});
     const canvas = $("renderCanvas");
     const engine = new BABYLON.Engine(canvas, true);
     const scene = new BABYLON.Scene(engine);
@@ -397,10 +401,13 @@
     // point along world ±X with its flat face toward the camera.
     // NOTE the camera's world-right is −X (alpha locked at π/2), so world +X is
     // SCREEN-LEFT: the "prev" (◀) arrow lives at +X and the "next" (▶) at −X.
+    // Cel-shaded arrows: a flat, unlit white fill (no lighting gradient) + a bold
+    // black outline (renderOutline, added in paint()) for the cartoon toon look.
     const arrowWhite = new BABYLON.StandardMaterial("arrowWhite", scene);
     arrowWhite.diffuseColor = new BABYLON.Color3(1, 1, 1);
-    arrowWhite.emissiveColor = new BABYLON.Color3(0.72, 0.75, 0.8);
+    arrowWhite.emissiveColor = new BABYLON.Color3(0.97, 0.98, 1);
     arrowWhite.specularColor = new BABYLON.Color3(0, 0, 0);
+    arrowWhite.disableLighting = true;
     const Q_PLUSX = new BABYLON.Quaternion(0.5, 0.5, 0.5, 0.5); // points world +X (= screen-left)
     const Q_MINUSX = BABYLON.Quaternion.RotationAxis(
       BABYLON.Axis.Z,
@@ -413,12 +420,19 @@
       });
       const tmpl = ar.meshes[0];
       tmpl.setEnabled(false);
+      const outline = (m) => {
+        m.renderOutline = true; // bold black cel-shade edge
+        m.outlineColor = new BABYLON.Color3(0, 0, 0);
+        m.outlineWidth = 0.12;
+      };
       const paint = (m) => {
         m.material = arrowWhite;
         m.isPickable = true;
+        outline(m);
         m.getChildMeshes().forEach((c) => {
           c.material = arrowWhite;
           c.isPickable = true;
+          outline(c);
         });
       };
       const make = (name, pointsScreenLeft) => {
@@ -443,7 +457,7 @@
       if (!arrows.arrow_hat_prev) return;
       // portrait is narrow, so the arrows hug the character (ball radius ≈ 0.88)
       const portrait = window.innerWidth < window.innerHeight * 1.15;
-      const AX = portrait ? 1.15 : 1.5;
+      const AX = portrait ? 1.0 : 1.25; // hug the character closer
       // +X is screen-left (camera right is −X), so prev sits at +X, next at −X
       arrows.arrow_hat_prev.position.set(AX, HAT_ARROW_Y, 0);
       arrows.arrow_hat_next.position.set(-AX, HAT_ARROW_Y, 0);
@@ -451,12 +465,31 @@
       arrows.arrow_skin_next.position.set(-AX, BALL_ARROW_Y, 0);
     }
     placeArrows();
+    // Quick scale "pop" when an arrow is tapped, so the click reads as feedback.
+    function popArrow(a) {
+      const base = a._baseScale || (a._baseScale = a.scaling.clone());
+      const anim = new BABYLON.Animation(
+        "arrowPop",
+        "scaling",
+        60,
+        BABYLON.Animation.ANIMATIONTYPE_VECTOR3,
+        BABYLON.Animation.ANIMATIONLOOPMODE_CONSTANT,
+      );
+      anim.setKeys([
+        { frame: 0, value: base.clone() },
+        { frame: 4, value: base.scale(1.35) },
+        { frame: 13, value: base.clone() },
+      ]);
+      a.animations = [anim];
+      scene.beginAnimation(a, 0, 13, false);
+    }
     scene.onPointerObservable.add((pi) => {
       if (pi.type !== BABYLON.PointerEventTypes.POINTERPICK) return;
       let m = pi.pickInfo && pi.pickInfo.pickedMesh;
       while (m && !/^arrow_(hat|skin)_(prev|next)$/.test(m.name || ""))
         m = m.parent;
       if (!m) return;
+      popArrow(m);
       if (m.name === "arrow_hat_prev") cycleHat(-1);
       else if (m.name === "arrow_hat_next") cycleHat(1);
       else if (m.name === "arrow_skin_prev") cycleSkin(-1);

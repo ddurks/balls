@@ -78,6 +78,10 @@
     }
 
     async initialize() {
+      // Preload the handwriting font so canvas-baked text (ball skins, etc.)
+      // renders in it — canvas ignores @font-face until the face is loaded.
+      if (document.fonts?.load)
+        await document.fonts.load('bold 40px "DrawvidHand"').catch(() => {});
       this.scene = new BABYLON.Scene(this.engine);
       this.scene.clearColor = new BABYLON.Color3(0.53, 0.81, 0.92); // Sky blue
 
@@ -423,7 +427,7 @@
       font-weight: bold;
       color: #E1E44E;
       text-align: center;
-      font-family: Arial, sans-serif;
+      font-family: "DrawvidHand", "Comic Sans MS", cursive, sans-serif;
       text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
     `;
       message.textContent = `Hole in ${shotCount} on ${holeNumber}`;
