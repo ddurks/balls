@@ -48,9 +48,10 @@ restPos, holedOut, strokes }`.
    server-driven).
 4. **Results** — shared scoreboard → back to clubhouse.
 
-**Turn order:** v1 = **sequential** (each plays their whole ball, exactly like
-today's `advance`) — smallest diff. v2 = **honors / "you're away"** shot-by-shot
-order (classic golf, most "together" feel).
+**Turn order:** **honors / "you're away"** shot-by-shot order from v1 (decided
+2026-08-06): after everyone tees off, whoever is farthest from the pin plays
+next; all balls rest on the hole simultaneously. Honors on the next tee goes to
+the best score on the previous hole.
 
 ## Game-scoped chat
 
@@ -72,24 +73,28 @@ the clubhouse, but lifetime = the match) that also posts shot events
 
 ## Phasing
 
-- **M0** — server scaffold: `golf` plugin + match rooms + join code (no gameplay).
-- **M1** — 2-player, sequential, end-to-end: shared pin, outcome broadcast + snap,
-  remote ghost ball, match chat. Smallest working slice.
-- **M2** — up to 4, honors ("you're away") order, spectator trajectory, live
-  scoreboard.
+- **M0** — server scaffold: `golf` plugin + match rooms + invite codes/tokens
+  (no gameplay). Dev entry: `game.html?join=CODE`.
+- **M1** — 2-player end-to-end with **honors order**: shared pin, outcome
+  broadcast, spectator trajectory + snap, remote ghost ball, match chat.
+- **M2** — up to 4 players, live scoreboard, and the clubhouse invite UX: the
+  80s wall phone (create match + text/share the link) and tap-a-player invites.
 - **M3** — polish: reconnect, timeouts, "you're away" prompts, celebrations,
   honors tee order.
 
-## Open decisions (answer before M0)
+## Decisions (made 2026-08-06)
 
-1. **Matchmaking** — private **join-code** rooms (recommended for friends) vs. a
-   public lobby list vs. both?
-2. **v1 turn model** — sequential whole-ball (fastest to ship) vs. jump straight to
-   **shot-by-shot honors** order (more social)?
-3. **Spectating** — plausible **trajectory + snap** (recommended) vs. simple
-   teleport the ball to its rest spot?
-4. **Entry point** — launch a round from the **clubhouse** (a door / NPC) or a
-   **menu on `game.html`**?
+1. **Matchmaking** — **invite-only** rooms, two invite paths: (a) **share via
+   text** — a join link you can send by text/share sheet; (b) **tap a player in
+   the clubhouse** to invite them directly in-world. No public lobby.
+2. **v1 turn model** — **shot-by-shot honors** ("you're away") from the start;
+   everyone's balls sit on the hole simultaneously.
+3. **Spectating** — **trajectory + snap** via the deterministic aim-preview
+   solver.
+4. **Entry point** — the **clubhouse**: an **80s wall telephone with a curly
+   cord** in the open corner; pick up the handset to "send the text" (create a
+   match + share the join link). The link deep-links into `game.html?join=CODE`,
+   which is also the receiving end for text invites.
 
 ## Key files
 
