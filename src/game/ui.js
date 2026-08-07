@@ -731,20 +731,39 @@
           { mass: 0, friction: 1.0, restitution: 0.05 },
           scene,
         );
-        // Visible mouth: a flat black disc a hair above the green. The cavity is
+        // Visible mouth: a black disc laid flush with the green. The cavity is
         // buried inside the (uncut) green mesh, so without this the hole doesn't
-        // show against the surface at all.
+        // show against the surface at all. On undulating greens a flat horizontal
+        // disc floats above the tilted turf → a bright gap between it and the
+        // cylinder; orienting the disc to the green's normal (both disc + wall are
+        // black, so any overlap reads as hole) keeps it flush and closes the gap.
+        const n =
+          opts.surfaceNormal && opts.surfaceNormal.length() > 1e-4
+            ? opts.surfaceNormal.clone().normalize()
+            : new BABYLON.Vector3(0, 1, 0);
         hole = BABYLON.MeshBuilder.CreateDisc(
           "holeMouth",
-          { radius: r, tessellation: 24 },
+          { radius: r * 1.15, tessellation: 24 }, // slight overlap onto the rim
           scene,
         );
         hole.position = new BABYLON.Vector3(
-          position.x,
-          surfaceY + 0.005,
-          position.z,
+          position.x + n.x * 0.005,
+          surfaceY + n.y * 0.005,
+          position.z + n.z * 0.005,
         );
-        hole.rotation.x = -Math.PI / 2; // face up
+        // Rotate the disc's +Z face onto the green normal so it lies flat on slopes.
+        const zAxis = new BABYLON.Vector3(0, 0, 1);
+        const axis = BABYLON.Vector3.Cross(zAxis, n);
+        const dot = Math.max(-1, Math.min(1, BABYLON.Vector3.Dot(zAxis, n)));
+        hole.rotationQuaternion =
+          axis.lengthSquared() < 1e-8
+            ? dot > 0
+              ? BABYLON.Quaternion.Identity()
+              : BABYLON.Quaternion.RotationAxis(
+                  new BABYLON.Vector3(1, 0, 0),
+                  Math.PI,
+                )
+            : BABYLON.Quaternion.RotationAxis(axis.normalize(), Math.acos(dot));
         hole.isPickable = false;
         hole.material = holeMat;
       } else {

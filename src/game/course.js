@@ -19,7 +19,7 @@
     green: { friction: 0.9, restitution: 0.1 }, // least → true, fast roll
     fairway: { friction: 1.8, restitution: 0.3 }, // middle
     rough: { friction: 4.5, restitution: 0.2 }, // most → ball stops
-    sand: { friction: 10.0, restitution: 0.05 }, // plush bunker sand: plugs
+    sand: { friction: 10.0, restitution: 0.05, grab: 20 }, // plush bunker: plugs + brakes hard (grab = stop rate)
     desert: { friction: 2.8, restitution: 0.35 }, // firm rocky hardpan
     rock: { friction: 0.5, restitution: 0.6 }, // rock face: lucky bounces
   };
@@ -54,6 +54,9 @@
       }
       this.decor = new CourseDecor(this.scene);
       await this.decor.load();
+      // Flowing slope-direction arrows on each green (see slopearrows.js).
+      this.slopeArrows = new SlopeArrows(this.scene);
+      await this.slopeArrows.load();
       this.surfaces = new CourseSurfaces(this.scene);
       this.surfaces.build();
       this.hud = new CourseHUD();
@@ -369,7 +372,16 @@
 
       // Cup / flag / sink detection. Point auto-aim at THIS hole's cup (otherwise
       // it keeps aiming at the previous hole's now-disposed pin).
-      this.pinManager.addPin(this.cup.clone(), this.scene, { cavity: true });
+      // Green surface normal at the cup so the cavity mouth lies flush on slopes
+      // (a flat horizontal mouth floats over a tilted green → the visible gap).
+      const cupNormal =
+        (cupHit && cupHit.hit && cupHit.getNormal(true, true)) ||
+        new BABYLON.Vector3(0, 1, 0);
+      this.pinManager.addPin(this.cup.clone(), this.scene, {
+        cavity: true,
+        surfaceNormal: cupNormal,
+      });
+      this.slopeArrows?.build(this.cup, (x, z) => this.groundY(x, z));
       this.game.currentHolePin =
         this.pinManager.pins[this.pinManager.pins.length - 1];
 
@@ -443,6 +455,7 @@
         // Stamp the surface restitution so the anti-tunnel bounce (character.js
         // preventTunneling) reflects off sand vs rock correctly, not a global.
         mesh._surfaceRestitution = phys.restitution;
+        mesh._surfaceGrab = phys.grab || 0; // sand grabs the ball to a fast stop
         const agg = new BABYLON.PhysicsAggregate(
           mesh,
           BABYLON.PhysicsShapeType.MESH,
@@ -573,6 +586,15 @@
       // Keep airborne/landing tests relative to the terrain under the ball
       const bp = ball.getPosition();
       if (this.hg) ball.heightRef = this.groundY(bp.x, bp.z);
+
+      // Slope arrows: only visible while the putter (club id 0) is the active club.
+      if (this.slopeArrows) {
+        const putterOut = this.game.aimView?.currentClub === 0;
+        this.slopeArrows.setVisible(putterOut);
+        if (putterOut) {
+          this.slopeArrows.update(this.game.engine.getDeltaTime() / 1000);
+        }
+      }
 
       // Out of bounds: ball rolled/flew off the hole terrain (an island) and is
       // falling into the void — take a penalty drop instead of falling forever.
@@ -778,6 +800,7 @@
     disposeHole() {
       this.disposeTeePeg();
       this.treeZones = [];
+      this.slopeArrows?.clear();
       this.game.currentHolePin = null; // avoid auto-aiming at the old cup
       for (const agg of this.holeAggregates) {
         try {

@@ -52,6 +52,11 @@
       FRICTION: 0.4,
       RESTITUTION: 0.5, // soft-turf COR — bounces without being a superball (0.3 was dead, 0.6 = hard court)
       LINEAR_DAMPING: 0.3, // air-drag model for flight carry (club distances are calibrated to this — do not retune for roll)
+      // Air drag (above) also over-brakes a ball ROLLING on the ground, so it stops
+      // instead of releasing into roll. Apply this much lower damping once grounded
+      // (ROLL_BRAKE_DECEL + slope still settle it); flight keeps LINEAR_DAMPING so
+      // carry stays calibrated. Lower = more roll-out (and longer putts).
+      ROLL_LINEAR_DAMPING: 0.08,
       // Spin barely decays in air on a real ball. High angular damping instead acts,
       // through rolling-without-slip friction coupling, as a hidden STRONG rolling
       // brake that kills roll — worst for putts (pure roll). Keep it near zero and let
@@ -63,7 +68,19 @@
     PHYSICS: {
       HIT_FORWARD_FORCE: 100, // reduced for finesse gameplay
       HIT_UPWARD_FORCE: 60,
-      SPIN_MULTIPLIER: 400,
+      // Strength of the player's mid-flight spin-swipe, ADDED on top of the strike's
+      // loft backspin (see applySpin). Scaled so a firm swipe imparts bite-capable
+      // spin comparable to a wedge's loft — swipe down = more backspin (more bite),
+      // up = topspin (kills the check, runs out), sideways = curve. Total spin from
+      // all sources is clamped to STRIKE_SPIN_MAX.
+      SPIN_MULTIPLIER: 6000,
+      // Backspin the LOFT imparts at the strike (rad/s ≈ loft° × power × this) — the
+      // real source of "bite". High-loft wedges spin hard AND land steeply (low
+      // horizontal speed at landing), so friction can check/draw them back; low-loft
+      // clubs spin little and land shallow, so they run out. The sphere collider
+      // tolerates high spin fine. Capped by _MAX. Higher = more bite.
+      STRIKE_SPIN_FACTOR: 13,
+      STRIKE_SPIN_MAX: 850,
       SPIN_ANIMATION_SPEED: 0.3,
       MIN_SWIPE_DISTANCE: 3,
       AIRBORNE_HEIGHT: 2,
@@ -73,6 +90,16 @@
       // roll and made slow trickle-ins impossible. 0.15 lets the ball roll out; the
       // rolling-resistance brake (ROLL_BRAKE_DECEL) does the actual settling at 0.06 m/s.
       LANDED_SPEED_THRESHOLD: 0.15,
+      // A manually-spun ball can momentarily have near-zero LINEAR speed while its
+      // spin is still converting to roll; don't declare it stopped (which zeroes the
+      // velocity and kills the roll-out) until its ANGULAR speed is also low. A ball
+      // rolling without slipping at the linear threshold spins at ~7 rad/s, so 15
+      // clears normal settling but blocks a fast manual spin.
+      LANDED_ANGULAR_THRESHOLD: 15,
+      // Spin aura: the player-applied spin amount (0..~1.2) that maxes the aura to
+      // flaming red, and the glow sphere's diameter relative to the ball collider.
+      SPIN_AURA_MAX: 1.1,
+      SPIN_AURA_SCALE: 2.0,
     },
     CAMERA: {
       FOV_AIM: 1.5,

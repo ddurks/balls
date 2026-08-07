@@ -67,6 +67,7 @@ const gameGlobals = {
   CloudSystem: "readonly",
   Boid3D: "readonly",
   BirdFlockSystem: "readonly",
+  SlopeArrows: "readonly",
   ClubData: "readonly",
   ClubSelector: "readonly",
   ClubSystem: "readonly",

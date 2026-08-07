@@ -10,7 +10,7 @@
     //   maxDistance on the range with no wind. Regenerate after changing maxDistance
     //   (or ball physics) with: node scripts/club-calibrate.js
     static CLUBS = [
-      { id: 0, name: "Putter", angle: 0, maxDistance: 11, v0: 11.5 },
+      { id: 0, name: "Putter", angle: 0, maxDistance: 22, v0: 17 },
       { id: 1, name: "Lob Wedge", angle: 60, maxDistance: 55, v0: 40 },
       { id: 2, name: "Pitching Wedge", angle: 45, maxDistance: 66, v0: 37.7 },
       { id: 3, name: "9 Iron", angle: 42, maxDistance: 88, v0: 45.4 },

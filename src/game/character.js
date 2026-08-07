@@ -121,6 +121,74 @@
       return angVel;
     }
 
+    // Cartoonish glow shell around the ball. Additive so intensity 0 = invisible
+    // (no spin → no aura). Colour ramps blue → orange → flaming red with spin.
+    createSpinAura() {
+      const d = CONFIG.BALL.COLLIDER_DIAMETER * CONFIG.PHYSICS.SPIN_AURA_SCALE;
+      const aura = BABYLON.MeshBuilder.CreateSphere(
+        "spinAura",
+        { diameter: d, segments: 12 },
+        this.scene,
+      );
+      aura.parent = this.mesh;
+      aura.position = BABYLON.Vector3.Zero();
+      aura.isPickable = false;
+      const mat = new BABYLON.StandardMaterial("spinAuraMat", this.scene);
+      mat.disableLighting = true;
+      mat.diffuseColor = new BABYLON.Color3(0, 0, 0);
+      mat.specularColor = new BABYLON.Color3(0, 0, 0);
+      mat.emissiveColor = new BABYLON.Color3(0.2, 0.5, 1);
+      // Alpha<1 flags the material transparent so it blends (an opaque emissive
+      // shell would just be a black ball over the gball). alpha=0 ⇒ invisible.
+      mat.alpha = 0;
+      mat.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND;
+      mat.backFaceCulling = true;
+      aura.material = mat;
+      aura.setEnabled(false); // hidden until the ball actually spins
+      this.spinAura = aura;
+      this.spinAuraMat = mat;
+      this._auraPhase = 0;
+    }
+
+    // Drive the aura from the ball's angular speed each frame (called from
+    // updateLandingState so it needs no separate per-frame hook in game.js).
+    updateSpinAura() {
+      if (!this.mesh || this.mesh.isDisposed()) return;
+      if (!this.spinAura) this.createSpinAura();
+      // Only glow when the PLAYER is spinning the ball — a spin-swipe sets
+      // pendingSpinAmount (zeroed on landing). Natural roll / putting also spins
+      // the ball but must not light the aura.
+      if (this.pendingSpinAmount <= 0) {
+        if (this.spinAura.isEnabled()) this.spinAura.setEnabled(false);
+        return;
+      }
+      this.spinAura.setEnabled(true);
+      const t = Math.min(
+        this.pendingSpinAmount / CONFIG.PHYSICS.SPIN_AURA_MAX,
+        1,
+      );
+      // blue → orange (t<0.5) → red (t≥0.5)
+      let r, g, b;
+      if (t < 0.5) {
+        const k = t / 0.5;
+        r = 0.2 + 0.8 * k;
+        g = 0.5 + 0.05 * k;
+        b = 1 - 0.9 * k;
+      } else {
+        const k = (t - 0.5) / 0.5;
+        r = 1;
+        g = 0.55 - 0.45 * k;
+        b = 0.1 - 0.05 * k;
+      }
+      // Flaming flicker at high spin; frame-counter phase (no time dependency).
+      this._auraPhase = (this._auraPhase + 1) % 100000;
+      let intensity = t;
+      if (t > 0.6) intensity *= 0.85 + 0.15 * Math.sin(this._auraPhase * 0.4);
+      this.spinAuraMat.emissiveColor.set(r, g, b);
+      this.spinAuraMat.alpha = Math.min(intensity, 1) * 0.55; // translucent glow
+      this.spinAura.scaling.setAll(1 + 0.14 * t);
+    }
+
     /**
      * Rolling resistance. A physics sphere rolls down any slope forever (sliding
      * friction can't stop a rolling ball — only rolling resistance can). So when
@@ -137,9 +205,38 @@
       const av = this._rrAng || (this._rrAng = new BABYLON.Vector3());
       this.body.getLinearVelocityToRef(v);
       const hs = Math.hypot(v.x, v.z);
-      if (hs < 1e-3 || hs > GolfBallGuy.ROLL_BRAKE_SPEED) return;
+      if (hs < 1e-3) return;
+
+      // Sand grabs the ball hard (plush bunker): once it's on sand, brake at ANY
+      // speed and kill the spin so it plugs almost immediately instead of skidding
+      // or rolling through. grab = per-second decay rate (SURFACE_PHYSICS.sand.grab).
+      const grab = this.getHeight() < 0.6 ? this._sandGrabUnderBall() : 0;
+      if (grab > 0) {
+        const s = 1 - Math.min(grab * dt, 1);
+        if (hs * s < 0.06) {
+          v.set(0, Math.min(0, v.y), 0);
+          this.body.setLinearVelocity(v);
+          av.set(0, 0, 0);
+          this.body.setAngularVelocity(av);
+        } else {
+          v.set(v.x * s, v.y, v.z * s);
+          this.body.setLinearVelocity(v);
+          this.body.getAngularVelocityToRef(av);
+          av.scaleInPlace(s);
+          this.body.setAngularVelocity(av);
+        }
+        return;
+      }
+
+      if (hs > GolfBallGuy.ROLL_BRAKE_SPEED) return;
       const newHs = hs - GolfBallGuy.ROLL_BRAKE_DECEL * dt;
       if (newHs < 0.06) {
+        // A manually-spun ball can pass through ~0 linear speed while its spin is
+        // still converting to roll — killing it there murders the roll-out. Only
+        // snap to rest once the spin is also low (a normal rolling ball at this
+        // speed spins at <3 rad/s, so this never blocks ordinary settling).
+        this.body.getAngularVelocityToRef(av);
+        if (av.length() >= CONFIG.PHYSICS.LANDED_ANGULAR_THRESHOLD) return;
         // Fully stopped: kill motion so static friction can hold it on the slope.
         v.set(0, Math.min(0, v.y), 0);
         this.body.setLinearVelocity(v);
@@ -153,6 +250,29 @@
         av.scaleInPlace(s);
         this.body.setAngularVelocity(av);
       }
+    }
+
+    // Downward ray → the surface grab under the ball (sand > 0; 0 elsewhere), so a
+    // bunker can brake the roll. Throttled + cached so it isn't a fresh ray every
+    // frame of every roll (the pick cost is what spikes frame times — see below).
+    _sandGrabUnderBall() {
+      this._surfTick = (this._surfTick || 0) + 1;
+      if (this._surfGrab !== undefined && this._surfTick % 4 !== 0) {
+        return this._surfGrab;
+      }
+      const p = this.mesh.getAbsolutePosition();
+      const ray =
+        this._sbRay ||
+        (this._sbRay = new BABYLON.Ray(
+          new BABYLON.Vector3(),
+          new BABYLON.Vector3(0, -1, 0),
+          4,
+        ));
+      ray.origin.set(p.x, p.y + 1, p.z);
+      const hit = this.scene.pickWithRay(ray, GolfBallGuy._surfPred);
+      this._surfGrab =
+        (hit && hit.hit && hit.pickedMesh && hit.pickedMesh._surfaceGrab) || 0;
+      return this._surfGrab;
     }
 
     // Swept anti-tunnel guard (see TUNNEL_GUARD_MIN_SPEED). If the ball ended a step
@@ -252,19 +372,43 @@
       // From rest, an impulse J = m·Δv delivers Δv = launchVel exactly, so the launch
       // speed is the calibrated value regardless of frame length (frame-rate safe).
       this.body.applyImpulse(launchVel.scale(CONFIG.BALL.MASS), impactPoint);
-      this.body.setAngularVelocity(BABYLON.Vector3.Zero());
+
+      // Loft generates backspin at the strike (real physics). High-loft wedges spin
+      // hard and land steeply, so on landing friction bites and can check/draw the
+      // ball back; low-loft clubs spin little and land shallow, so they run out.
+      // Backspin axis = horizontal-travel × up. Not tied to pendingSpinAmount, so it
+      // doesn't light the manual-spin aura.
+      const horiz = new BABYLON.Vector3(launchVel.x, 0, launchVel.z);
+      if (clubLaunchAngle > 0 && horiz.lengthSquared() > 1e-6) {
+        const axis = BABYLON.Vector3.Cross(
+          horiz.normalize(),
+          new BABYLON.Vector3(0, 1, 0),
+        ).normalize();
+        const backspin = Math.min(
+          clubLaunchAngle * powerRatio * CONFIG.PHYSICS.STRIKE_SPIN_FACTOR,
+          CONFIG.PHYSICS.STRIKE_SPIN_MAX,
+        );
+        this.body.setAngularVelocity(axis.scale(backspin));
+      } else {
+        this.body.setAngularVelocity(BABYLON.Vector3.Zero());
+      }
     }
 
     applySpin(spinAxis, spinAmount) {
-      const accumulatedSpin = Math.min(
+      // Add this swipe's spin ON TOP of the ball's current spin (e.g. the strike's
+      // loft backspin) so a swipe augments / kills / curves it rather than replacing
+      // it. Clamp the total (STRIKE_SPIN_MAX) so repeated swipes can't run away.
+      const delta = spinAxis.scale(spinAmount * PhysicsConfig.SPIN_MULTIPLIER);
+      const next = this.getAngularVelocity().add(delta);
+      const mag = next.length();
+      if (mag > CONFIG.PHYSICS.STRIKE_SPIN_MAX) {
+        next.scaleInPlace(CONFIG.PHYSICS.STRIKE_SPIN_MAX / mag);
+      }
+      this.body.setAngularVelocity(next);
+      this.pendingSpinAmount = Math.min(
         this.pendingSpinAmount + spinAmount,
         1.2,
       );
-      const angularVelocity = spinAxis.scale(
-        accumulatedSpin * PhysicsConfig.SPIN_MULTIPLIER,
-      );
-      this.body.setAngularVelocity(angularVelocity);
-      this.pendingSpinAmount = accumulatedSpin;
       this.pendingSpinAxis = spinAxis;
     }
 
@@ -279,6 +423,22 @@
       const height = this.getHeight();
       const speed = this.getSpeed();
 
+      this.updateSpinAura(); // spin glow (runs every frame; fades out at rest)
+
+      // Flight air-drag (LINEAR_DAMPING, calibrated for carry) also over-brakes a
+      // grounded roll, killing roll-out. Drop to a low rolling damping while on the
+      // ground so the ball releases into real roll (ROLL_BRAKE + slope still settle
+      // it); restore full air-drag when airborne. Toggle on state change only.
+      const airborne = height > PhysicsConfig.AIRBORNE_HEIGHT;
+      if (airborne !== this._airborneNow) {
+        this._airborneNow = airborne;
+        this.body.setLinearDamping(
+          airborne
+            ? PhysicsConfig.BALL_LINEAR_DAMPING
+            : CONFIG.BALL.ROLL_LINEAR_DAMPING,
+        );
+      }
+
       if (height < PhysicsConfig.GROUND_CONTACT_HEIGHT && !this.touchedGround) {
         this.touchedGround = true;
         this.pendingSpinAmount = 0;
@@ -288,6 +448,8 @@
 
       if (
         speed < PhysicsConfig.LANDED_SPEED_THRESHOLD &&
+        this.getAngularVelocity().length() <
+          CONFIG.PHYSICS.LANDED_ANGULAR_THRESHOLD &&
         height < PhysicsConfig.GROUND_CONTACT_HEIGHT &&
         this.touchedGround
       ) {
