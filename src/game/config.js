@@ -81,6 +81,10 @@
       // tolerates high spin fine. Capped by _MAX. Higher = more bite.
       STRIKE_SPIN_FACTOR: 13,
       STRIKE_SPIN_MAX: 850,
+      // Magnus: aerodynamic force F = MAGNUS_COEFF × (ω × v) applied while airborne.
+      // Backspin lifts (carry/float), topspin drops, sidespin curves (slice/hook).
+      // This adds lift → carry, so club v0s get recalibrated once this is dialed.
+      MAGNUS_COEFF: 0.000025,
       SPIN_ANIMATION_SPEED: 0.3,
       MIN_SWIPE_DISTANCE: 3,
       AIRBORNE_HEIGHT: 2,

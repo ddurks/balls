@@ -449,11 +449,21 @@
         const spinAmount = Math.min(distance / 50, 1.2);
         const magnitude = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
 
-        // Compute spin axis in screen space (camera-independent)
+        // Spin axis from the swipe. Vertical swipe → back/topspin (horizontal axis ⟂
+        // travel → lift/drop); horizontal swipe → sidespin (vertical axis → curve via
+        // Magnus). Controls map to the CURVE the ball takes, not the literal spin
+        // sense: a swipe curves the ball toward the swipe direction. The sidespin
+        // sign is derived from the live velocity + camera-right so that holds whatever
+        // the coordinate handedness. (The camera-Y rotation below leaves y invariant.)
+        const vel = this.golfBall.getVelocity();
+        const camX = this.game?.camera?.camera?.getDirection?.(BABYLON.Axis.X);
+        // Screen-right component of the Magnus curve produced by +Y spin (∝ ŷ × v):
+        const magRight = camX ? vel.z * camX.x - vel.x * camX.z : -1;
+        const sideSign = magRight >= 0 ? 1 : -1; // +Y spin curves screen-right iff >0
         let spinAxis = new BABYLON.Vector3(
           (deltaY / magnitude) * 0.1,
+          ((deltaX * sideSign) / magnitude) * 0.1,
           0,
-          (deltaX / magnitude) * 0.1,
         );
 
         // During play mode, rotate axis by inverse camera angle so it tracks with camera

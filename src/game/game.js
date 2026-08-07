@@ -920,6 +920,7 @@
         if (this.golfBall.isAirborne() && !this.golfBall.isLanded()) {
           const windForce = this.wind.getForceVector();
           this.golfBall.body.applyForce(windForce, this.golfBall.getPosition());
+          this.golfBall.applyMagnus(); // spin curves/lifts the flight (Magnus)
         }
         // Keep the small, fast ball from tunneling through the thin terrain mesh.
         this.golfBall.preventTunneling();

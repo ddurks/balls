@@ -121,6 +121,22 @@
       return angVel;
     }
 
+    // Aerodynamic lift/curve from spin (Magnus): F = coeff·(ω × v), applied while
+    // airborne. Backspin lifts (float/carry), topspin drops, sidespin curves the
+    // shot (slice/hook). This is what makes spin shape the path of travel.
+    applyMagnus() {
+      const w = this.getAngularVelocity();
+      const v = this.getVelocity();
+      const c = CONFIG.PHYSICS.MAGNUS_COEFF;
+      const f = this._magnus || (this._magnus = new BABYLON.Vector3());
+      f.set(
+        (w.y * v.z - w.z * v.y) * c,
+        (w.z * v.x - w.x * v.z) * c,
+        (w.x * v.y - w.y * v.x) * c,
+      );
+      this.body.applyForce(f, this.getPosition());
+    }
+
     // Cartoonish glow shell around the ball. Additive so intensity 0 = invisible
     // (no spin → no aura). Colour ramps blue → orange → flaming red with spin.
     createSpinAura() {

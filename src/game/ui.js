@@ -429,6 +429,7 @@
       this.ballStartPosition = ballStartPosition;
       this.game = game;
       this.circleUIManager = circleUIManager;
+      this._buildDeviationMeter();
     }
 
     update() {
@@ -468,6 +469,103 @@
           par,
         );
       }
+
+      this._updateDeviationMeter();
+    }
+
+    // Horizontal-deviation HUD: a top-centre gauge whose needle shows how far left
+    // or right of the aim line the ball is (in yards). The follow-camera keeps the
+    // ball centred on screen, so this is what makes hook/fade legible.
+    _buildDeviationMeter() {
+      const wrap = document.createElement("div");
+      wrap.id = "devMeter";
+      wrap.style.cssText =
+        "position:fixed;left:50%;top:14px;transform:translateX(-50%);" +
+        "width:min(44vw,460px);pointer-events:none;z-index:1400;display:none;" +
+        "font-family:'DrawvidHand','Comic Sans MS',cursive,sans-serif;";
+      const track = document.createElement("div");
+      track.style.cssText =
+        "position:relative;height:12px;border-radius:6px;" +
+        "background:rgba(0,0,0,0.35);border:2px solid #476a23;";
+      const center = document.createElement("div");
+      center.style.cssText =
+        "position:absolute;left:50%;top:-4px;width:2px;height:20px;" +
+        "background:#e8f2e8;transform:translateX(-1px);opacity:0.85;";
+      const needle = document.createElement("div");
+      needle.style.cssText =
+        "position:absolute;top:50%;left:50%;width:16px;height:16px;" +
+        "border-radius:50%;background:#8cff66;border:2px solid #1a2a10;" +
+        "transform:translate(-50%,-50%);";
+      track.appendChild(center);
+      track.appendChild(needle);
+      const label = document.createElement("div");
+      label.style.cssText =
+        "text-align:center;color:#e8f2e8;font-weight:bold;font-size:16px;" +
+        "margin-top:5px;text-shadow:0 1px 3px rgba(0,0,0,0.85);";
+      wrap.appendChild(track);
+      wrap.appendChild(label);
+      document.body.appendChild(wrap);
+      this._devMeter = wrap;
+      this._devNeedle = needle;
+      this._devLabel = label;
+    }
+
+    _updateDeviationMeter() {
+      const m = this._devMeter;
+      if (!m) return;
+      const shotStart = this.game?.camera?.shotStartPosition;
+      const inFlight =
+        this.game?.gameState === GameState.PLAY &&
+        shotStart &&
+        !this.golfBall.isLanded();
+      if (!inFlight) {
+        if (m.style.display !== "none") m.style.display = "none";
+        this._shotLineDir = null; // reset the launch-line capture for the next shot
+        return;
+      }
+      const bp = this.golfBall.getPosition();
+      // Reference is the ball's ACTUAL launch line, captured from its initial
+      // velocity — NOT the aim line. applyHit adds a lateral push from the swipe, so
+      // a straight shot can launch off the aim line; measuring off the launch line
+      // makes a push/pull read ~0 and only real in-flight CURVE (spin/wind) show.
+      if (!this._shotLineDir) {
+        const vel = this.golfBall.getVelocity();
+        const hs = Math.hypot(vel.x, vel.z);
+        if (hs > 3) {
+          this._shotLineDir = { x: vel.x / hs, z: vel.z / hs };
+          this._shotLineOrigin = { x: bp.x, z: bp.z };
+        }
+      }
+      if (!this._shotLineDir) {
+        m.style.display = "block";
+        this._devNeedle.style.left = "50%";
+        this._devLabel.textContent = "straight";
+        return;
+      }
+      let rx = -this._shotLineDir.z;
+      let rz = this._shotLineDir.x;
+      // Orient "right" to the player's actual screen-right via the camera, so the
+      // L/R label matches what they see regardless of coordinate handedness.
+      const cam = this.game?.camera?.camera;
+      if (cam && cam.getDirection) {
+        const cr = cam.getDirection(BABYLON.Axis.X);
+        if (rx * cr.x + rz * cr.z < 0) {
+          rx = -rx;
+          rz = -rz;
+        }
+      }
+      const o = this._shotLineOrigin;
+      const lateral = (bp.x - o.x) * rx + (bp.z - o.z) * rz;
+      const yards = lateral * UNITS.M_TO_YARDS;
+      const FULL = 25; // metres of deviation = full-scale needle deflection
+      const t = Math.max(-1, Math.min(1, lateral / FULL));
+      m.style.display = "block";
+      this._devNeedle.style.left = 50 + t * 48 + "%";
+      const mag = Math.min(Math.abs(t), 1);
+      this._devNeedle.style.background = `rgb(${Math.round(140 + 115 * mag)},${Math.round(255 * (1 - mag * 0.8))},${Math.round(102 * (1 - mag))})`;
+      const yAbs = Math.abs(Math.round(yards));
+      this._devLabel.textContent =
+        yAbs < 1 ? "straight" : `${yAbs} yd ${yards > 0 ? "R" : "L"}`;
     }
 
     getDistanceToNearestPin() {
