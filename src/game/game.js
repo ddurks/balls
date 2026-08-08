@@ -223,6 +223,26 @@
       });
       this.golfBall.characterRoot = characterRoot;
 
+      // Flat matte ball. Also damp the scene IBL on the ball: the environment
+      // texture (scene.js) floods this near-white PBR ball with flat ambient and
+      // washes out the painted dimple shading — with no normal map, that shading
+      // is the only dimple definition. Low environmentIntensity lets the
+      // directional sun shade the dimples so they read. Set on the original
+      // material so locker skin-swaps (which clone _origBallMat) inherit it.
+      const ballMesh = result.meshes.find(
+        (m) => m && m.name && /gball/i.test(m.name) && m.material,
+      );
+      if (ballMesh) {
+        const mat = ballMesh.material;
+        if ("roughness" in mat) {
+          mat.metallic = 0;
+          mat.roughness = 1;
+        } else if ("specularColor" in mat) {
+          mat.specularColor = new BABYLON.Color3(0, 0, 0);
+        }
+        if ("environmentIntensity" in mat) mat.environmentIntensity = 0.35;
+      }
+
       this.golfBall.skeleton = result.skeletons?.[0] || null;
       this.golfBall.scene = this.scene;
 

@@ -204,6 +204,7 @@
       this.onPointerDown = (e) => {
         if (!this.isActive) return;
         this.isDragging = true;
+        this._aimDragging = false; // becomes true only past the tap dead-zone
         this.touchStartX = e.clientX;
         this.touchStartY = e.clientY;
         this.lastMouseX = e.clientX;
@@ -218,6 +219,23 @@
         // is false; the old enableAutoSelect() here only cleared the player's choice,
         // so switching clubs and then nudging the aim fired the shot with the
         // suggested club instead of the one you picked.
+
+        // Tap dead-zone: a tap on the ball to enter swipe mode must NOT nudge the
+        // aim. Hold off rotating until the pointer moves past the click threshold,
+        // but keep tracking it so there's no jump the moment it becomes a real drag.
+        if (!this._aimDragging) {
+          const movedX = e.clientX - this.touchStartX;
+          const movedY = e.clientY - this.touchStartY;
+          if (
+            Math.hypot(movedX, movedY) <=
+            CONFIG.AIM_VIEW.CLICK_DETECTION_THRESHOLD
+          ) {
+            this.lastMouseX = e.clientX;
+            this.lastMouseY = e.clientY;
+            return;
+          }
+          this._aimDragging = true;
+        }
 
         const deltaX = e.clientX - this.lastMouseX;
         const deltaY = e.clientY - this.lastMouseY;

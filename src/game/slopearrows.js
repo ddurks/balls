@@ -7,9 +7,8 @@
 // Loaded as a plain <script> before game.js (see game.html); needs Shared + BABYLON.
 (function (global) {
   const DOWN = new BABYLON.Vector3(0, -1, 0);
-  const STEP = 1.0; // grid spacing on the green (m) — ~2× the arrow count of 1.4
-  const RADIUS = 14; // sample this far around the cup, then clip to the green
-  const TARGET_LEN = 0.5; // arrow length on the green (m)
+  const STEP = 0.7; // grid spacing on the green (m) — ~2× the arrow count of 1.0
+  const TARGET_LEN = 0.25; // arrow length on the green (m)
   const HOVER = 0.03; // sit just above the turf to avoid z-fighting
   const FLAT_SLOPE = 0.015; // below this gradient the green reads flat → no arrow
   const STEEP_SLOPE = 0.14; // gradient that maxes the severity colour to red
@@ -73,18 +72,19 @@
         : null;
     }
 
-    // cup: {x,y,z}; groundY(x,z): terrain height (for the slope gradient).
+    // cup: {x,y,z} (ray-height reference); groundY(x,z): terrain height (gradient).
+    // Grids the WHOLE green: over the green mesh's world footprint, keeping every
+    // point that ray-hits the green surface.
     build(cup, groundY) {
       this.clear();
       if (!this.isLoaded) return;
       this._top = cup.y + 50;
       this._len = 100;
+      const b = this._greenBounds();
+      if (!b) return;
       const e = 0.6; // finite-difference step for the gradient
-      for (let gx = -RADIUS; gx <= RADIUS; gx += STEP) {
-        for (let gz = -RADIUS; gz <= RADIUS; gz += STEP) {
-          if (gx * gx + gz * gz > RADIUS * RADIUS) continue;
-          const x = cup.x + gx;
-          const z = cup.z + gz;
+      for (let x = b.minX; x <= b.maxX; x += STEP) {
+        for (let z = b.minZ; z <= b.maxZ; z += STEP) {
           const y = this._greenY(x, z);
           if (y == null) continue; // not on the green
           const dydx = (groundY(x + e, z) - groundY(x - e, z)) / (2 * e);
@@ -93,18 +93,56 @@
           if (steep < FLAT_SLOPE) continue; // flat spot → no arrow
           const ddx = -dydx / steep; // downhill unit (XZ)
           const ddz = -dydz / steep;
-          this._addArrow(x, y, z, ddx, ddz, steep);
+          this._addArrow(x, y, z, ddx, ddz, steep, dydx, dydz);
         }
       }
     }
 
-    _addArrow(x, y, z, ddx, ddz, steep) {
+    // Combined world XZ bounds of all green surface meshes, or null if none.
+    _greenBounds() {
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minZ = Infinity;
+      let maxZ = -Infinity;
+      let found = false;
+      for (const m of this.scene.meshes) {
+        if (!m.name || !m.name.startsWith("surf_") || !/green/i.test(m.name)) {
+          continue;
+        }
+        m.computeWorldMatrix(true);
+        const bb = m.getBoundingInfo().boundingBox;
+        minX = Math.min(minX, bb.minimumWorld.x);
+        maxX = Math.max(maxX, bb.maximumWorld.x);
+        minZ = Math.min(minZ, bb.minimumWorld.z);
+        maxZ = Math.max(maxZ, bb.maximumWorld.z);
+        found = true;
+      }
+      return found ? { minX, maxX, minZ, maxZ } : null;
+    }
+
+    _addArrow(x, y, z, ddx, ddz, steep, dydx, dydz) {
       const a = this.template.clone("slopeArrow");
       a.setEnabled(this._visible); // hidden until the putter is out
       a.position.set(x, y + HOVER, z);
-      a.rotationQuaternion = null;
-      a.rotation.set(0, Math.atan2(ddx, ddz), 0); // +Z faces downhill
       a.scaling.setAll(this.arrowScale);
+      // Lay the arrow flat ON the slope with its tip pointing downhill. The model's
+      // tip is at -Z (so yaw = atan2 + π), then tilt so the arrow's up-axis follows
+      // the surface normal — otherwise a flat arrow buries/floats on steep parts.
+      const up = new BABYLON.Vector3(0, 1, 0);
+      const qYaw = BABYLON.Quaternion.RotationAxis(
+        up,
+        Math.atan2(ddx, ddz) + Math.PI,
+      );
+      const n = new BABYLON.Vector3(-dydx, 1, -dydz).normalize();
+      const axis = BABYLON.Vector3.Cross(up, n);
+      const qTilt =
+        axis.lengthSquared() < 1e-8
+          ? BABYLON.Quaternion.Identity()
+          : BABYLON.Quaternion.RotationAxis(
+              axis.normalize(),
+              Math.acos(Math.max(-1, Math.min(1, BABYLON.Vector3.Dot(up, n)))),
+            );
+      a.rotationQuaternion = qTilt.multiply(qYaw);
       const t = Math.min(steep / STEEP_SLOPE, 1);
       const mat = new BABYLON.StandardMaterial("slopeArrowMat", this.scene);
       mat.disableLighting = true;
@@ -162,7 +200,7 @@
     }
   }
 
-  global.SlopeArrows = SlopeArrows;
+  Object.assign(global, { SlopeArrows });
   if (typeof module !== "undefined" && module.exports)
     module.exports = { SlopeArrows };
 })(typeof globalThis !== "undefined" ? globalThis : this);

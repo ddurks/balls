@@ -328,33 +328,27 @@
 
       // Trees + rocks (instanced from decor.glb)
       this.treeZones = [];
+      const authoredRocks = [];
       for (const dm of decorMarkers) {
         dm.computeWorldMatrix(true);
         const parts = dm.name.split("_"); // <tree|rock>_<type>_<idx>
         const type = parts[1] || "tree1";
-        const pos = dm.getAbsolutePosition().clone();
+        const pos = dm.getAbsolutePosition().clone(); // ground (pre-sink) position
         const isTree = dm.name.startsWith("tree_");
         let s = Math.abs(dm.absoluteScaling.x) || 1;
         if (isTree) s *= 3; // trees 3x bigger (relative to the pin)
-        // Sink the trunk base a little into the turf so it never peeks/floats over
-        // undulating ground (bigger tree → deeper plant); bury each rock halfway
-        // under the turf for realism (rock origin sits at its base). The collider
-        // stays at ground level (groundPos) so collision is unchanged.
-        const groundPos = pos.clone();
-        if (isTree) {
-          pos.y -= 0.5 + 0.25 * s;
-        } else {
-          const rh = this.decor.sources[type]?._decorHeight || 2;
-          pos.y -= 0.5 * rh * s;
-        }
         const yaw =
           (dm.rotationQuaternion
             ? dm.rotationQuaternion.toEulerAngles().y
             : dm.rotation.y) || 0;
-        const inst = this.decor.place(type, pos, yaw, s);
-        if (inst) this.holeNodes.push(inst);
         if (isTree) {
-          // Pass-through canopy that slows the ball (no solid trunk collision)
+          // Sink the trunk base a little into the turf so it never peeks/floats
+          // over undulating ground, then add a solid trunk collider (leaves stay
+          // pass-through via the canopy zone below).
+          pos.y -= 0.5 + 0.25 * s;
+          const inst = this.decor.place(type, pos, yaw, s);
+          if (inst) this.holeNodes.push(inst);
+          this.addDecorCollider(type, true, pos, yaw, s);
           this.treeZones.push({
             x: pos.x,
             z: pos.z,
@@ -363,10 +357,14 @@
             y1: pos.y + 7 * s,
           });
         } else {
-          this.addDecorCollider(dm.name, groundPos, s); // collider on the exposed half
+          this.placeRock(type, pos.clone(), yaw, s);
+          authoredRocks.push({ type, groundPos: pos.clone(), scale: s });
         }
         dm.dispose();
       }
+      // More rocks per the design: 2× lining hole 1's water, 3× on hole 2, and a
+      // random scatter across hole 3's rough.
+      this.addExtraRocks(cfg.id, authoredRocks);
       teeMarker.dispose();
       for (const pm of pinMarkers) pm.dispose();
 
@@ -413,35 +411,224 @@
       this.beginTurn();
     }
 
-    // Invisible collider so trees (trunk) and rocks actually block/deflect the ball.
-    addDecorCollider(markerName, pos, scale) {
-      let col, shape, opts;
-      if (markerName.startsWith("tree_")) {
-        const h = 5 * scale;
-        col = BABYLON.MeshBuilder.CreateCylinder(
-          "trunkCol",
-          { height: h, diameter: 0.9 * scale, tessellation: 6 },
-          this.scene,
-        );
-        col.position = new BABYLON.Vector3(pos.x, pos.y + h / 2, pos.z);
-        shape = BABYLON.PhysicsShapeType.CYLINDER;
-        opts = { mass: 0, friction: 0.7, restitution: 0.4 };
-      } else {
-        const r = 1.1 * scale;
-        col = BABYLON.MeshBuilder.CreateSphere(
-          "rockCol",
-          { diameter: 2 * r, segments: 6 },
-          this.scene,
-        );
-        col.position = new BABYLON.Vector3(pos.x, pos.y + 0.6 * r, pos.z);
-        shape = BABYLON.PhysicsShapeType.SPHERE;
-        opts = { mass: 0, friction: 0.8, restitution: 0.45 };
-      }
+    // Place a rock instance (sunk halfway into the turf) plus a convex-hull
+    // collider that matches its mesh exactly.
+    placeRock(type, groundPos, yaw, scale) {
+      const rh = this.decor.sources[type]?._decorHeight || 2;
+      const pos = groundPos.clone();
+      pos.y -= 0.5 * rh * scale; // bury the lower half (origin sits at the base)
+      const inst = this.decor.place(type, pos, yaw, scale);
+      if (inst) this.holeNodes.push(inst);
+      this.addDecorCollider(type, false, pos, yaw, scale);
+    }
+
+    // Invisible CONVEX-HULL collider matching the actual decor mesh, so the ball
+    // can never end up visually inside a rock or tree trunk (the old
+    // sphere/cylinder approximations under-covered the mesh, and trees had no
+    // trunk collider at all). Built from a real clone of the decor source —
+    // rocks hull their whole (convex) mesh; trees hull ONLY the trunk (treewood
+    // submesh) so the leaf canopy stays pass-through (see treeZones slow-down).
+    addDecorCollider(type, isTree, pos, yaw, scale) {
+      const src = this.decor.sources[type];
+      if (!src) return;
+      const col = src.clone("decorCol_" + type, null);
+      if (!col) return;
+      col.setParent(null);
+      col.position = pos.clone();
+      col.rotationQuaternion = null;
+      col.rotation = new BABYLON.Vector3(0, yaw, 0);
+      col.scaling = new BABYLON.Vector3(scale, scale, scale);
+      col.setEnabled(true);
       col.isVisible = false;
       col.isPickable = false;
-      const agg = new BABYLON.PhysicsAggregate(col, shape, opts, this.scene);
-      this.holeAggregates.push(agg);
+      // Geometry can live on the node itself (rocks) or on per-material child
+      // submeshes (trees: foliage + treewood).
+      const meshes = col.getChildMeshes ? col.getChildMeshes(false) : [];
+      if (col.getTotalVertices && col.getTotalVertices() > 0) meshes.push(col);
+      for (const m of meshes) {
+        m.isVisible = false;
+        m.isPickable = false;
+      }
+      const hasGeom = (m) => m.getTotalVertices && m.getTotalVertices() > 0;
+      let parts;
+      if (isTree) {
+        parts = meshes.filter(
+          (m) => m.material && /wood|trunk|bark/i.test(m.material.name),
+        );
+        // Fallback: if the trunk submesh isn't named as expected, hull every
+        // solid part EXCEPT the leaves, so a tree never ends up with no collider.
+        if (parts.length === 0)
+          parts = meshes.filter(
+            (m) =>
+              hasGeom(m) &&
+              !(
+                m.material &&
+                /foliage|leaf|leaves|canopy/i.test(m.material.name)
+              ),
+          );
+      } else {
+        parts = meshes.filter(hasGeom);
+      }
+      const opts = isTree
+        ? { mass: 0, friction: 0.7, restitution: 0.4 }
+        : { mass: 0, friction: 0.8, restitution: 0.45 };
+      for (const m of parts) {
+        m.computeWorldMatrix(true);
+        const agg = new BABYLON.PhysicsAggregate(
+          m,
+          BABYLON.PhysicsShapeType.CONVEX_HULL,
+          opts,
+          this.scene,
+        );
+        this.holeAggregates.push(agg);
+      }
       this.holeNodes.push(col);
+    }
+
+    // Extra rocks beyond the authored markers (see the loadHole call site):
+    //   hole 1 → double, distributed ALONG the water line (not paired on top of
+    //            the originals),
+    //   hole 2 → triple, scattered randomly on the rough around the originals,
+    //   hole 3 → a random scatter across the rough.
+    addExtraRocks(holeId, authored) {
+      if (holeId === 1) {
+        this.distributeRocksAlong(authored, authored.length); // +1× along the water
+      } else if (holeId === 2) {
+        const box = this._rockBBox(authored, 10);
+        this.scatterRoughRocks(authored.length * 2, box, authored); // +2× → triple
+      } else if (holeId === 3) {
+        this.scatterRoughRocks(24, null, authored);
+      }
+    }
+
+    // Distribute `addCount` rocks evenly ALONG the chain the authored rocks form
+    // (nearest-neighbour ordered), interleaved between the originals with a bit of
+    // perpendicular jitter — so hole 1's rocks line the water more densely instead
+    // of doubling up in place.
+    distributeRocksAlong(authored, addCount) {
+      if (authored.length < 2 || addCount <= 0) return;
+      // Greedy nearest-neighbour chain so "between adjacent" follows the shoreline.
+      const used = new Array(authored.length).fill(false);
+      const order = [0];
+      used[0] = true;
+      for (let k = 1; k < authored.length; k++) {
+        const last = authored[order[order.length - 1]].groundPos;
+        let best = -1,
+          bd = Infinity;
+        for (let i = 0; i < authored.length; i++) {
+          if (used[i]) continue;
+          const d = BABYLON.Vector3.DistanceSquared(
+            last,
+            authored[i].groundPos,
+          );
+          if (d < bd) {
+            bd = d;
+            best = i;
+          }
+        }
+        order.push(best);
+        used[best] = true;
+      }
+      const chain = order.map((i) => authored[i]);
+      const seg = [];
+      let total = 0;
+      for (let i = 0; i < chain.length - 1; i++) {
+        const d = BABYLON.Vector3.Distance(
+          chain[i].groundPos,
+          chain[i + 1].groundPos,
+        );
+        seg.push(d);
+        total += d;
+      }
+      if (total < 1e-3) return;
+      for (let n = 0; n < addCount; n++) {
+        let s = (total * (n + 0.5)) / addCount; // interleave between originals
+        let i = 0;
+        while (i < seg.length - 1 && s > seg[i]) {
+          s -= seg[i];
+          i++;
+        }
+        const a = chain[i],
+          b = chain[i + 1];
+        const t = seg[i] > 1e-6 ? Shared.clamp(s / seg[i], 0, 1) : 0.5;
+        const p = BABYLON.Vector3.Lerp(a.groundPos, b.groundPos, t);
+        const dir = b.groundPos.subtract(a.groundPos);
+        const len = Math.hypot(dir.x, dir.z) || 1;
+        const jit = (Math.random() * 2 - 1) * 1.5; // perpendicular wobble (m)
+        const gp = new BABYLON.Vector3(
+          p.x + (-dir.z / len) * jit,
+          0,
+          p.z + (dir.x / len) * jit,
+        );
+        gp.y = this.groundY(gp.x, gp.z);
+        const scale = a.scale * (0.8 + Math.random() * 0.5);
+        this.placeRock(a.type, gp, Math.random() * Math.PI * 2, scale);
+      }
+    }
+
+    // Padded XZ bounding box of a set of authored rocks (fallback: whole hole).
+    _rockBBox(authored, pad) {
+      if (!authored || authored.length === 0) return null;
+      let minX = Infinity,
+        maxX = -Infinity,
+        minZ = Infinity,
+        maxZ = -Infinity;
+      for (const r of authored) {
+        const p = r.groundPos;
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minZ = Math.min(minZ, p.z);
+        maxZ = Math.max(maxZ, p.z);
+      }
+      return {
+        minX: minX - pad,
+        maxX: maxX + pad,
+        minZ: minZ - pad,
+        maxZ: maxZ + pad,
+      };
+    }
+
+    // Randomly spatter `count` rocks on the ROUGH within `box` (defaults to the
+    // whole hole). Rays down to the surface, keeps only rough hits clear of the
+    // tee, cup, and any rocks in `avoid` / already placed, so nothing clusters.
+    scatterRoughRocks(count, box, avoid) {
+      const hg = this.hg;
+      if (!hg) return;
+      const b = box || {
+        minX: hg.minX,
+        maxX: hg.minX + (hg.nx - 1) * hg.cell,
+        minZ: hg.minZ,
+        maxZ: hg.minZ + (hg.nz - 1) * hg.cell,
+      };
+      const types = ["rock1", "rock2", "rock3"];
+      const down = new BABYLON.Vector3(0, -1, 0);
+      const avoidPts = (avoid || []).map((r) => r.groundPos);
+      const placed = [];
+      const tooClose = (gp) =>
+        avoidPts.some((p) => BABYLON.Vector3.DistanceSquared(gp, p) < 9) ||
+        placed.some((p) => BABYLON.Vector3.DistanceSquared(gp, p) < 9);
+      let n = 0;
+      for (let tries = 0; n < count && tries < count * 30; tries++) {
+        const x = b.minX + Math.random() * (b.maxX - b.minX);
+        const z = b.minZ + Math.random() * (b.maxZ - b.minZ);
+        const ray = new BABYLON.Ray(new BABYLON.Vector3(x, 200, z), down, 400);
+        const hit = this.scene.pickWithRay(
+          ray,
+          (m) => m.name && m.name.startsWith("surf_"),
+        );
+        if (!hit || !hit.hit) continue;
+        if (this.surfaces.forSurfaceName(hit.pickedMesh.name) !== "rough")
+          continue;
+        const gp = new BABYLON.Vector3(x, hit.pickedPoint.y, z);
+        if (BABYLON.Vector3.Distance(gp, this.tee) < 5) continue;
+        if (BABYLON.Vector3.Distance(gp, this.cup) < 7) continue;
+        if (tooClose(gp)) continue;
+        const type = types[Math.floor(Math.random() * types.length)];
+        const scale = 0.5 + Math.random() * 0.9;
+        this.placeRock(type, gp, Math.random() * Math.PI * 2, scale);
+        placed.push(gp);
+        n++;
+      }
     }
 
     setupSurface(mesh) {

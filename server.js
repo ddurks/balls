@@ -3,12 +3,17 @@ const path = require("path");
 const app = express();
 const PORT = 3000;
 
-// Cache bundled runtime assets aggressively so the browser does not keep revalidating them.
+// Assets change during development, so DON'T cache them immutably here (that was
+// the cause of "I changed the texture but the browser still shows the old one").
+// max-age=0 + ETag means the browser revalidates every load: a cheap 304 when
+// the file is unchanged, fresh bytes automatically when it changes — no manual
+// ?v= cache-busting needed in dev. (Prod caching is set separately in deploy.sh.)
 app.use(
   "/assets",
   express.static(path.join(__dirname, "assets"), {
-    maxAge: "1y",
-    immutable: true,
+    etag: true,
+    lastModified: true,
+    maxAge: 0,
   }),
 );
 

@@ -194,7 +194,7 @@
     PINS: {
       GREEN_RADIUS: 30,
       PIN_HEIGHT: 2.13, // real flagstick = 7 ft
-      PIN_DIAMETER: 0.013, // real flagstick ≈ 1/2"
+      PIN_DIAMETER: 0.026, // 2× real flagstick (~1") so the pin reads at a distance
       PIN_Y_OFFSET: 1.065, // = PIN_HEIGHT / 2 so the base sits on the green
       GREEN_Y_OFFSET: 0.001,
       GREEN_TEXTURE_PATH: "assets/texture/puttingground.png",

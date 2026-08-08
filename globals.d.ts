@@ -70,6 +70,7 @@ declare const HOLE_ASSET_VERSION: any;
 declare const COURSE_HOLES: any;
 declare const SURFACE_PHYSICS: any;
 declare const CourseManager: any;
+declare const SlopeArrows: any;
 declare const GolfGame: any;
 declare const startGame: any;
 declare var golfNet: any; // dev handle exposed by golfnet.js (M0 console driving)

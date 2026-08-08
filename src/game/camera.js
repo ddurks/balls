@@ -213,8 +213,8 @@
   }
 
   /**
-   * Cinematic tee→green flyover: glide down the fairway, circle the pin a full
-   * 360° while closing in, then pull back to the tee keeping the pin in view.
+   * Cinematic tee→green flyover: glide down the fairway, circle the pin ~180°
+   * while closing in, then peel off straight to the tee keeping the pin in view.
    * Runs on its own temporary camera and resolves when the animation ends.
    */
   class DroneCamera {
@@ -222,7 +222,7 @@
       this.scene = scene;
     }
 
-    fly(teePos, pinPos, restoreCamera, duration = 10000) {
+    fly(teePos, pinPos, restoreCamera, duration = 5000) {
       return new Promise((resolve) => {
         const scene = this.scene;
         const dir = pinPos.subtract(teePos);
@@ -233,27 +233,15 @@
         const off = (along, x, y) =>
           teePos.add(dir.scale(along)).add(new BABYLON.Vector3(x, y, 0));
 
-        // Orbit + return are ONE parametric sweep around the pin: enter abeam
-        // of the green (so the fairway glide is already tangent to the circle),
-        // spiral in over a full 360°, then keep the same rotation going while
-        // the radius opens back out until the arc lands exactly behind the tee.
-        // A single curve means there is no phase boundary to stall or snap at.
+        // Enter abeam of the green (the fairway glide is already tangent to the
+        // circle), spiral in over ~180°, then peel off straight toward the tee —
+        // no second wide loop. The pin stays in frame from the entry onward.
         const entryAngle = Math.atan2(-dir.x, dir.z); // radial ⟂ fairway; tangent = dir
         const R0 = 20,
           R1 = 10; // loop radius shrinks wide → tight (the zoom-in)
         const H0 = 16,
           H1 = 6; // loop height eases down with it
-        const finalPos = off(-9, 0, 5);
-        const homeVec = finalPos.subtract(pinPos);
-        // Extra sweep past the full loop to reach the tee's bearing, in the
-        // same rotational direction; keep at least a quarter turn so the
-        // radius has room to open out gradually.
-        let homeSweep =
-          (Math.atan2(homeVec.z, homeVec.x) - entryAngle) % (2 * Math.PI);
-        if (homeSweep < Math.PI / 2) homeSweep += 2 * Math.PI;
-        const totalSweep = 2 * Math.PI + homeSweep;
-        const loopEnd = (2 * Math.PI) / totalSweep; // sweep fraction where the 360° completes
-        const homeRadius = Math.hypot(homeVec.x, homeVec.z);
+        const finalPos = off(-9, 0, 5); // ends behind the tee, pin in view
         const orbitPos = (angle, r, h) =>
           new BABYLON.Vector3(
             pinPos.x + Math.cos(angle) * r,
@@ -261,23 +249,37 @@
             pinPos.z + Math.sin(angle) * r,
           );
 
-        // Fraction of the eased timeline spent on the approach; the sweep gets
-        // the rest.
-        const FRAC_A = 0.3;
-        const sweepX = 1 - FRAC_A;
+        // Timeline (eased): approach glide, a 180° orbit spiralling in, then a
+        // break-off straight to the tee — no second wide loop.
+        const FRAC_A = 0.28; // approach glide
+        const FRAC_ORBIT = 0.44; // 180° circle around the pin
+        const FRAC_TEE = 1 - FRAC_A - FRAC_ORBIT; // peel off to the tee
+        const orbitTurns = Math.PI; // 180°
 
-        // Approach: cubic Bezier from behind the tee to the orbit entry point.
-        // c1 pulls the glide up over the fairway; c2 sits behind the entry
-        // point along the circle's tangent, at the distance that makes the
-        // arrival velocity exactly the loop's entry velocity (level, tangent
-        // direction, matching speed) — so the join needs no correction at all.
+        // Approach: cubic Bezier from behind the tee to the orbit entry point,
+        // arriving at the loop's entry velocity (tangent = fairway dir) so the
+        // join needs no correction.
         const radial = new BABYLON.Vector3(dir.z, 0, -dir.x); // orbit-entry side
         const a0 = off(-14, 0, 26);
         const a2 = orbitPos(entryAngle, R0, H0);
-        const entrySpeed = (totalSweep / sweepX) * R0; // rad/tl · m = m/tl
+        const entrySpeed = (orbitTurns / FRAC_ORBIT) * R0; // rad/tl · m = m/tl
         const c1 = mid.add(radial.scale(8)).add(new BABYLON.Vector3(0, 38, 0));
         const c2 = a2.subtract(dir.scale((entrySpeed * FRAC_A) / 3));
         const tgt0 = off(30, 0, 1); // initial look: down the fairway
+
+        // Break-off from the 180° point straight to the tee: a quadratic Bezier
+        // that leaves roughly along the orbit tangent (smooth peel-off) then heads
+        // home to finalPos, pin held in view.
+        const orbitEndAngle = entryAngle + orbitTurns;
+        const orbitEnd = orbitPos(orbitEndAngle, R1, H1);
+        const tan = new BABYLON.Vector3(
+          -Math.sin(orbitEndAngle),
+          0,
+          Math.cos(orbitEndAngle),
+        );
+        const teeC = orbitEnd.add(
+          tan.scale(BABYLON.Vector3.Distance(orbitEnd, finalPos) * 0.2),
+        );
 
         const smooth = (u) => u * u * (3 - 2 * u);
 
@@ -318,28 +320,24 @@
             cam.setTarget(
               BABYLON.Vector3.Lerp(tgt0, pinPos, smooth(Math.min(1, g / 0.55))),
             );
+          } else if (s < FRAC_A + FRAC_ORBIT) {
+            // 180° orbit, spiralling in (radius R0→R1, height H0→H1), pin in frame.
+            const x = (s - FRAC_A) / FRAC_ORBIT;
+            const angle = entryAngle + orbitTurns * x;
+            const k = smooth(x);
+            cam.position.copyFrom(
+              orbitPos(angle, R0 + (R1 - R0) * k, H0 + (H1 - H0) * k),
+            );
+            cam.setTarget(pinPos);
           } else {
-            // Constant-rate sweep around the pin: 360° spiralling in, then the
-            // radius opens out and the same arc carries the camera home to the
-            // tee — pin held in frame the whole way.
-            const x = (s - FRAC_A) / sweepX;
-            const angle = entryAngle + totalSweep * x;
-            let r, h;
-            if (x < loopEnd) {
-              const k = smooth(x / loopEnd);
-              r = R0 + (R1 - R0) * k;
-              h = H0 + (H1 - H0) * k;
-            } else {
-              const k = (x - loopEnd) / (1 - loopEnd);
-              // Radius opens out ~20× on the way home, so use eases whose
-              // slope AND curvature are zero at the join — anything less kicks
-              // the camera outward the moment the loop completes.
-              const e = k * k * k * (k * (k * 6 - 15) + 10); // smootherstep
-              r = R1 + (homeRadius - R1) * e;
-              const lift = 12 * Math.sin(Math.PI * k) ** 3;
-              h = H1 + (homeVec.y - H1) * e + lift;
-            }
-            cam.position.copyFrom(orbitPos(angle, r, h));
+            // Peel off straight toward the tee, still looking at the pin.
+            const y = (s - FRAC_A - FRAC_ORBIT) / FRAC_TEE;
+            const inv = 1 - y;
+            const p = orbitEnd
+              .scale(inv * inv)
+              .addInPlace(teeC.scale(2 * y * inv))
+              .addInPlace(finalPos.scale(y * y));
+            cam.position.copyFrom(p);
             cam.setTarget(pinPos);
           }
           if (u >= 1) finish();

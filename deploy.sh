@@ -11,10 +11,16 @@ BUCKET="balls-drawvid-frontend-${ACCOUNT}"
 
 echo "==> Target bucket: s3://${BUCKET}"
 
-# Long-lived, content-addressed by ?v= query (assets) or stable (Babylon lib):
-# cache hard for a year.
-echo "==> Syncing assets + babylon (immutable, 1y)"
-aws s3 sync assets  "s3://${BUCKET}/assets"  --delete --cache-control "public,max-age=31536000,immutable"
+# App assets (models, textures, faces) change between releases and their
+# filenames are NOT content-hashed, so serve them with revalidation instead of
+# immutable: browsers (and CloudFront) re-check via ETag and get a cheap 304 when
+# the file is unchanged, or fresh bytes automatically when it changes — no manual
+# ?v= cache-busting needed.
+echo "==> Syncing assets (no-cache, ETag-revalidated)"
+aws s3 sync assets "s3://${BUCKET}/assets" --delete --cache-control "no-cache"
+
+# Vendored Babylon lib is large and effectively never changes: cache hard for a year.
+echo "==> Syncing babylon (immutable, 1y)"
 aws s3 sync babylon "s3://${BUCKET}/babylon" --delete --cache-control "public,max-age=31536000,immutable"
 
 # App code has no content hash in its filenames, so keep it short and rely on the
