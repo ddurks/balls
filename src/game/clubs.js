@@ -176,7 +176,10 @@
 
     async load(ballPosition) {
       try {
-        const result = await Shared.loadModel("clubs.glb", this.scene);
+        const result = await Shared.loadModel(
+          "models/equipment/clubs.glb",
+          this.scene,
+        );
 
         // Wrap the GLB root in a pivot node so we never overwrite its
         // built-in coordinate conversion (GLBs bake scaling/rotation into __root__)

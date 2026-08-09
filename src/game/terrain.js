@@ -86,7 +86,7 @@
       const blade = BABYLON.Mesh.MergeMeshes([a, b], true, true); // bakes transforms
 
       const tex = new BABYLON.Texture(
-        `./assets/grass/grass${index + 1}.png`,
+        `./assets/sprites/grass/grass${index + 1}.png`,
         this.scene,
       );
       tex.hasAlpha = true;
@@ -323,7 +323,10 @@
     async load() {
       let res;
       try {
-        res = await Shared.loadModel("decor.glb", this.scene);
+        res = await Shared.loadModel(
+          "environments/course/shared/decor.glb",
+          this.scene,
+        );
       } catch (e) {
         // Non-fatal: without decor sources, place() returns null and holes simply
         // render with no trees/rocks rather than the whole round failing to load.
@@ -440,14 +443,14 @@
       );
       this.mats.sand = this._std(
         "courseSand",
-        "assets/texture/sand.png",
+        "assets/textures/course/sand-color.png",
         3,
         new C(0.96, 0.9, 0.76),
         null,
       );
       this.mats.desert = this._std(
         "courseDesert",
-        "assets/texture/sand.png",
+        "assets/textures/course/sand-color.png",
         3.5,
         new C(0.94, 0.87, 0.72),
         null,
@@ -458,8 +461,14 @@
 
       // Water: bright translucent like the distant water ring
       const water = new BABYLON.PBRMaterial("courseWater", this.scene);
-      water.albedoTexture = this._tex("assets/texture/water.png", 10);
-      water.bumpTexture = this._tex("assets/texture/waternormals.png", 10);
+      water.albedoTexture = this._tex(
+        "assets/textures/course/water-color.png",
+        10,
+      );
+      water.bumpTexture = this._tex(
+        "assets/textures/course/water-normal.png",
+        10,
+      );
       water.metallic = 0.6;
       water.roughness = 0.25;
       water.alpha = 0.82;

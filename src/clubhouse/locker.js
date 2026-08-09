@@ -12,17 +12,17 @@
   "use strict";
 
   const ASSET_V = "14"; // keep in step with clubhouse.js (immutable /assets cache)
-  const FACE_SIZE = 512; // matches the gball face texture + assets/faces PNGs
+  const FACE_SIZE = 512; // matches the golf-ball face texture + face sprites
 
   /** @param {string} id @returns {any} */
   const $ = (id) => document.getElementById(id);
 
   // Warm oak wainscot/floor + dark-green carpet: the same hand-painted, seamless
-  // textures the clubhouse uses (assets/texture/clubhouse-*.png), so the locker
+  // textures the clubhouse uses, so the locker
   // room matches. Diffuse only here — the preview boxes carry no tangents.
   function fileTex(scene, file) {
     const t = new BABYLON.Texture(
-      "assets/texture/" + file + "?v=" + ASSET_V,
+      "assets/textures/clubhouse/" + file + "?v=" + ASSET_V,
       scene,
     );
     t.wrapU = t.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
@@ -30,11 +30,11 @@
   }
 
   function woodTex(scene) {
-    return fileTex(scene, "clubhouse-wood.png");
+    return fileTex(scene, "wood-color.png");
   }
 
   function shagTex(scene) {
-    return fileTex(scene, "clubhouse-carpet.png");
+    return fileTex(scene, "carpet-color.png");
   }
 
   function buildRoom(scene, shadow) {
@@ -296,9 +296,13 @@
     buildRoom(scene, shadow);
 
     // ---- the preview avatar (same wrapper→bob idiom as the clubhouse) ------
-    const result = await Shared.loadModel("gball.glb", scene, {
-      version: ASSET_V,
-    });
+    const result = await Shared.loadModel(
+      "models/characters/golf-ball.glb",
+      scene,
+      {
+        version: ASSET_V,
+      },
+    );
     const wrapper = new BABYLON.TransformNode("wrapper", scene);
     const bob = new BABYLON.TransformNode("bob", scene);
     bob.parent = wrapper;
@@ -420,7 +424,7 @@
     ).multiply(Q_PLUSX);
     const arrows = {};
     try {
-      const ar = await Shared.loadModel("arrow.glb", scene, {
+      const ar = await Shared.loadModel("models/gameplay/arrow.glb", scene, {
         version: ASSET_V,
       });
       const tmpl = ar.meshes[0];

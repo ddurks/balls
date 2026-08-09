@@ -1,15 +1,32 @@
-// course.js — HOLE_ASSET_VERSION, COURSE_HOLES, SURFACE_PHYSICS, CourseManager.
+// course.js — COURSE_HOLES, SURFACE_PHYSICS, CourseManager.
 // Split out of game.js; loaded as a plain <script> before game.js (see game.html),
 // and require()-able in Node for unit tests. Cross-module refs resolve via globals.
 (function (global) {
-  // Per-hole definition. Tee, pin/cup and tree placements come from marker meshes
-  // baked into each .glb; only par/name/notes live here.
-  // Bump when hole .glb geometry is rebuilt (assets are served immutable-cached).
-  const HOLE_ASSET_VERSION = "greenfix1";
+  // Runtime mirror of each hole's package manifest. Keep this synchronous because
+  // the course UI reads it during initialization; manifest.json is the authoring
+  // and asset-audit contract stored beside each scene.
   const COURSE_HOLES = [
-    { id: 1, glb: "assets/3d/holes/hole1.glb", par: 4, name: "Wet and Wild" },
-    { id: 2, glb: "assets/3d/holes/hole2.glb", par: 3, name: "Rock and Roll" },
-    { id: 3, glb: "assets/3d/holes/hole3.glb", par: 5, name: "On a Bender" },
+    {
+      id: 1,
+      glb: "environments/course/holes/hole-01/scene.glb",
+      par: 4,
+      name: "Wet and Wild",
+      version: "greenfix1",
+    },
+    {
+      id: 2,
+      glb: "environments/course/holes/hole-02/scene.glb",
+      par: 3,
+      name: "Rock and Roll",
+      version: "greenfix1",
+    },
+    {
+      id: 3,
+      glb: "environments/course/holes/hole-03/scene.glb",
+      par: 5,
+      name: "On a Bender",
+      version: "greenfix1",
+    },
   ];
 
   // Physics + friction per surface type. Golf-ball-scale tuning: rough grabs, greens
@@ -231,8 +248,7 @@
       let res;
       try {
         res = await Shared.loadModel(cfg.glb, this.scene, {
-          root: "",
-          version: HOLE_ASSET_VERSION,
+          version: cfg.version,
         });
       } catch (e) {
         console.error(
@@ -1065,14 +1081,12 @@
   }
 
   Object.assign(global, {
-    HOLE_ASSET_VERSION,
     COURSE_HOLES,
     SURFACE_PHYSICS,
     CourseManager,
   });
   if (typeof module !== "undefined" && module.exports)
     module.exports = {
-      HOLE_ASSET_VERSION,
       COURSE_HOLES,
       SURFACE_PHYSICS,
       CourseManager,

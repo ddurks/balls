@@ -39,7 +39,10 @@
 
     async load() {
       try {
-        const res = await Shared.loadModel("arrow.glb", this.scene);
+        const res = await Shared.loadModel(
+          "models/gameplay/arrow.glb",
+          this.scene,
+        );
         this.template = res.meshes[0];
         this.template.setEnabled(false);
         this.template.position.set(0, -1000, 0);

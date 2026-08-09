@@ -13,6 +13,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit -p jsconfig.json",
+    "render:ball-faces": "node scripts/render-ball-faces.js",
     "hooks": "git config core.hooksPath .githooks"
   },
   "keywords": [

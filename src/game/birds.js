@@ -188,9 +188,11 @@
       try {
         // Keep the model in a container and stamp independent instances from it —
         // instantiateModelsToScene properly clones + retargets skeleton animations.
-        this.container = await Shared.loadModel("ballsbird.glb", this.scene, {
-          container: true,
-        });
+        this.container = await Shared.loadModel(
+          "models/characters/bird.glb",
+          this.scene,
+          { container: true },
+        );
         this.container.animationGroups.forEach((g) => g.stop());
 
         // Underside offset (level pose) so perched birds sit tangent to the surface.

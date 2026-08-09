@@ -307,7 +307,7 @@
       const waterMat = new BABYLON.PBRMaterial("sonicWater", scene);
 
       const diffuseTex = new BABYLON.Texture(
-        "./assets/texture/water.png",
+        "./assets/textures/course/water-color.png",
         scene,
       );
       diffuseTex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
@@ -317,7 +317,7 @@
       waterMat.albedoTexture = diffuseTex;
 
       const normalTex = new BABYLON.Texture(
-        "./assets/texture/waternormals.png",
+        "./assets/textures/course/water-normal.png",
         scene,
       );
       normalTex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;

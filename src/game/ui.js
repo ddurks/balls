@@ -6,13 +6,13 @@
 
   class CircleUIManager {
     static FLAG_PATHS = [
-      "assets/flag/flag.png",
-      "assets/flag/flag-1.png",
-      "assets/flag/flag-2.png",
-      "assets/flag/flag-3.png",
-      "assets/flag/flag-4.png",
-      "assets/flag/flag-5.png",
-      "assets/flag/flag-6.png",
+      "assets/sprites/flags/flag.png",
+      "assets/sprites/flags/flag-1.png",
+      "assets/sprites/flags/flag-2.png",
+      "assets/sprites/flags/flag-3.png",
+      "assets/sprites/flags/flag-4.png",
+      "assets/sprites/flags/flag-5.png",
+      "assets/sprites/flags/flag-6.png",
     ];
 
     static flagImages = new Map();
@@ -212,9 +212,9 @@
 
     static iconForClub(clubName) {
       if (clubName.includes("Driver") || clubName.includes("Wood"))
-        return "assets/clubs/driver.png";
-      if (clubName.includes("Putter")) return "assets/clubs/putter.png";
-      return "assets/clubs/iron.png";
+        return "assets/ui/clubs/driver.png";
+      if (clubName.includes("Putter")) return "assets/ui/clubs/putter.png";
+      return "assets/ui/clubs/iron.png";
     }
 
     // Short badge for the preview minis: D / 3W / 5W / P / S (lob) / PW / H, or the
@@ -1256,7 +1256,18 @@
     setHole() {}
 
     flash(text, ms = 2200) {
-      this.flashEl.textContent = text;
+      this.flashEl.replaceChildren();
+      for (const part of String(text).split(/(\+)/)) {
+        if (!part) continue;
+        if (part === "+") {
+          const plus = document.createElement("span");
+          plus.className = "comic-plus";
+          plus.textContent = part;
+          this.flashEl.appendChild(plus);
+        } else {
+          this.flashEl.appendChild(document.createTextNode(part));
+        }
+      }
       this.flashEl.style.display = "block";
       this.flashEl.classList.remove("cf-show");
       void this.flashEl.offsetWidth; // restart animation
@@ -1281,6 +1292,7 @@
       z-index:1600;font-family:'DrawvidHand','Comic Sans MS',cursive,sans-serif;font-weight:bold;font-size:46px;
       color:#eafff0;text-shadow:0 2px 10px rgba(0,0,0,.6),0 0 24px rgba(80,220,120,.6);
       pointer-events:none;text-align:center;}
+    .comic-plus{font-family:'Comic Sans MS','Comic Sans',cursive,sans-serif;}
     .course-flash.cf-show{animation:cfpop .5s cubic-bezier(.2,1.4,.4,1);}
     @keyframes cfpop{0%{transform:translate(-50%,-50%) scale(.4);opacity:0}
       60%{transform:translate(-50%,-52%) scale(1.08);opacity:1}
@@ -1315,7 +1327,7 @@
        inscribed square (.score-inner ~70%×70%), which stays clear of the curve. */
     .score-card{width:min(94vmin,600px);height:min(94vmin,600px);max-width:none;min-width:0;
       border-radius:50%;padding:0;display:flex;align-items:center;justify-content:center;
-      background:#eef0ea url('assets/golfball_dimples.jpg') center/cover;}
+      background:#fff;border:8px solid #2e8b48;}
     .score-inner{width:70%;max-height:70%;overflow:auto;display:flex;flex-direction:column;
       align-items:center;scrollbar-width:none;}
     .score-inner::-webkit-scrollbar{display:none;}
@@ -1403,7 +1415,7 @@
       const winLine =
         players.length > 1
           ? `<div class="aero-sub">🏆 ${winners.join(" & ")} win${winners.length > 1 ? "" : "s"} (${best})</div>`
-          : `<div class="aero-sub">${best - totalPar === 0 ? "Even par" : (best - totalPar > 0 ? "+" : "") + (best - totalPar)} for the round</div>`;
+          : `<div class="aero-sub">${best - totalPar === 0 ? "Even par" : `${best - totalPar > 0 ? '<span class="comic-plus">+</span>' : ""}${best - totalPar}`} for the round</div>`;
 
       const o = BallsMenu._overlay(
         `<div class="score-inner">
@@ -1411,11 +1423,16 @@
         ${winLine}
         <table class="scorecard"><thead>${head}${parRow}</thead>
         <tbody class="players">${rows}</tbody></table>
-        <button class="aero-btn" id="sbClubhouse">Clubhouse</button>
+        <div>
+          <button class="aero-btn" id="sbPlayAgain">Play Again</button>
+          <button class="aero-btn secondary" id="sbClubhouse">Clubhouse</button>
+        </div>
       </div>`,
         { id: "ballsScoreboard", cardClass: "aero-card score-card" },
       );
       o.classList.add("splash-in"); // end screen opens via an expanding circle
+      /** @type {any} */ (o.querySelector("#sbPlayAgain")).onclick = () =>
+        window.location.reload();
       // The clubhouse (index.html) is the game's root — head back to the lobby.
       // The "course" stamp spawns us just inside the lobby's COURSE door, as if
       // walking back in off the links (see Shared.roomFX + clubhouse arrival).

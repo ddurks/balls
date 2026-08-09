@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/balls_golf.png" alt="Balls Golf" width="560" />
+  <img src="assets/ui/branding/balls-golf.png" alt="Balls Golf" width="560" />
 </p>
 
 <p align="center">
@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/ball-faces.png" alt="Googly-eyed golf balls making faces" width="620" />
+  <img src="assets/ui/branding/ball-faces.png" alt="Googly-eyed golf balls making faces" width="620" />
 </p>
 
 Balls Golf is built with **[Babylon.js](https://www.babylonjs.com/)** and the **Havok** physics engine. Become a golf ball.Swipe to launch yourself down the fairway, add spin, sink the putt. Bond and hang out with with other balls at the clubhouse.
@@ -69,14 +69,13 @@ locker.html           Locker Room — avatar editor
 server.js             Tiny Express static server (caches assets + babylon aggressively)
 
 src/
-  clubhouse/           clubhouse.js — the multiplayer lounge
+  clubhouse/           clubhouse.js + locker.js — the lounge and avatar editor
   game/                Per-system golf modules: scene, physics, camera, input,
                        aim, clubs, course, terrain, birds, clouds, wind, ui, config…
-  locker/              locker.js — the avatar editor
   shared/              shared.js, balls.js, materials.js, style.js
                        (loaded by every page before its mode script)
 
-assets/               3D models (.glb), textures, ball faces, art, and the logo
+assets/               Packaged environments, models, textures, sprites, UI, and fonts
 course_design/        Blender authoring scripts (local, git-ignored — see below)
 scripts/              vendor-babylon.js + puppeteer club-distance tooling
 babylon/              Vendored Babylon.js + Havok runtime
@@ -85,11 +84,27 @@ test/                 node --test unit tests
 
 The three pages are independent Babylon apps that share a common set of small modules in `src/shared/` (math helpers, ball blinking/faces, materials, and the `BallsStyle` customization module). No bundler — pages load plain `<script>`s in order.
 
+Asset packages are grouped by runtime role:
+
+```text
+assets/
+  environments/       Course, hole, clubhouse, and VIP Lounge packages
+  models/              Shared characters, equipment, and gameplay models
+  textures/            Tiled course, clubhouse, and character textures
+  sprites/             Faces, grass, clouds, flags, fire, and birds
+  ui/                  Branding, club icons, effects, and smoke art
+  fonts/               Drawvid Hand
+```
+
+Each course hole keeps its `scene.glb` and `manifest.json` together. The manifest
+records the package's public metadata and cache version; `COURSE_HOLES` mirrors
+that data synchronously for the runtime.
+
 ## The authoring pipeline
 
 The committed `.glb` models are produced from a set of **Blender** scripts under `course_design/` (kept locally — the directory is git-ignored). Everything is modeled procedurally and exported geometry-only; the runtime assigns materials and physics by mesh name.
 
-- `holes_build.py` + `hole_gen.py` — generate the three golf holes (heightfield terrain, greens, bunkers, water, solid-sided ground) into `assets/3d/holes/`.
+- `holes_build.py` + `hole_gen.py` — generate the three golf holes (heightfield terrain, greens, bunkers, water, solid-sided ground) into `assets/environments/course/holes/`.
 - `clubhouse_build.py` — builds the clubhouse and Members Lounge rooms.
 - `gen_sand.py` — procedural bunker sand texture.
 
@@ -99,7 +114,10 @@ The scripts run either through the Blender MCP add-on or headless:
 /Applications/Blender.app/Contents/MacOS/Blender --background --python course_design/holes_build.py
 ```
 
-> After rebuilding any `.glb`, bump the matching asset version (`HOLE_ASSET_VERSION` in `src/game`, `ASSET_V` in the clubhouse) — `/assets` is served with a one-year immutable cache.
+> After rebuilding a hole `.glb`, bump its `version` in both the package manifest and `COURSE_HOLES`; bump `ASSET_V` for shared clubhouse assets. `/assets` is served with a one-year immutable cache.
+
+See [`docs/texture-scaling-plan.md`](docs/texture-scaling-plan.md) before changing
+texture dimensions or formats.
 
 ## Development
 

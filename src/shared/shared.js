@@ -21,14 +21,14 @@
 
   const wrapAngle = (a) => mod(a, 2 * Math.PI);
 
-  // Load a .glb from `root` (default "assets/3d/"). container:true returns an
+  // Load an asset-relative .glb from `root` (default "assets/"). container:true returns an
   // AssetContainer (for instancing); otherwise a standard ImportMesh result.
   // `version` appends ?v=<version> AND forces the glb loader — the query string
   // hides the ".glb" extension the loader would otherwise sniff, so this must be
   // passed together (the bug this centralizes: it was easy to forget one half).
   // Rejects on failure; callers keep their own try/catch. Uses global BABYLON.
   function loadModel(file, scene, opts = {}) {
-    const { root = "assets/3d/", container = false, version = null } = opts;
+    const { root = "assets/", container = false, version = null } = opts;
     const name = version ? `${file}?v=${version}` : file;
     const ext = version ? [null, ".glb"] : []; // force glb loader when ?v= hides the ext
     return container

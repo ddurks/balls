@@ -23,7 +23,10 @@
 
     async loadArrowModel() {
       try {
-        const result = await Shared.loadModel("arrow.glb", this.scene);
+        const result = await Shared.loadModel(
+          "models/gameplay/arrow.glb",
+          this.scene,
+        );
 
         if (result.meshes && result.meshes.length > 0) {
           this.arrowTemplate = result.meshes[0];
@@ -514,11 +517,11 @@
       this.liveArrow = null;
       this.idealArrow = null;
 
-      // Swipe feedback uses the real arrow.glb art (baked to assets/swipe-arrow.png,
+      // Swipe feedback uses the real arrow.glb art (baked to the swipe-arrow sprite,
       // a flat white silhouette — no cel outline) instead of hand-drawn lines. The
       // white sprite is tinted per color and cached.
       this.arrowSprite = new Image();
-      this.arrowSprite.src = "assets/swipe-arrow.png";
+      this.arrowSprite.src = "assets/ui/effects/swipe-arrow.png";
       this.tintCache = new Map();
 
       this.setupCanvas();

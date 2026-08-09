@@ -194,7 +194,10 @@
     async loadCharacter() {
       let result;
       try {
-        result = await Shared.loadModel("gball.glb", this.scene);
+        result = await Shared.loadModel(
+          "models/characters/golf-ball.glb",
+          this.scene,
+        );
       } catch (e) {
         // Non-fatal: the ball still has its physics body + collider mesh, it just
         // won't have the character face/skeleton. Don't kill the whole game.

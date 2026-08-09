@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Ball faces render</title>
+    <style>
+      html,
+      body,
+      canvas {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="renderCanvas" width="2484" height="578"></canvas>
+    <script src="../babylon/babylon.js"></script>
+    <script src="../babylon/babylonjs.loaders.min.js"></script>
+    <script>
+      (async function () {
+        const canvas = document.getElementById("renderCanvas");
+        const engine = new BABYLON.Engine(
+          canvas,
+          true,
+          { preserveDrawingBuffer: true, premultipliedAlpha: false },
+          false,
+        );
+        engine.setSize(2484, 578);
+
+        const scene = new BABYLON.Scene(engine);
+        scene.clearColor = new BABYLON.Color4(0, 0, 0, 0);
+        scene.ambientColor = new BABYLON.Color3(1, 1, 1);
+
+        const camera = new BABYLON.ArcRotateCamera(
+          "camera",
+          Math.PI / 2,
+          Math.PI / 2,
+          12,
+          new BABYLON.Vector3(0, 0.82, 0),
+          scene,
+        );
+        camera.mode = BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
+        camera.orthoLeft = -5.65;
+        camera.orthoRight = 5.65;
+        camera.orthoTop = 1.32;
+        camera.orthoBottom = -1.32;
+
+        const hemi = new BABYLON.HemisphericLight(
+          "hemi",
+          new BABYLON.Vector3(0.25, 1, 0.15),
+          scene,
+        );
+        hemi.intensity = 0.72;
+        hemi.diffuse = new BABYLON.Color3(1, 1, 1);
+        hemi.groundColor = new BABYLON.Color3(0.55, 0.58, 0.62);
+
+        const key = new BABYLON.DirectionalLight(
+          "key",
+          new BABYLON.Vector3(-0.45, -1, 0.35),
+          scene,
+        );
+        key.position = new BABYLON.Vector3(5, 8, 6);
+        key.intensity = 0.55;
+
+        const texture = (file) =>
+          new Promise((resolve, reject) => {
+            const tex = new BABYLON.Texture(
+              `../assets/sprites/faces/${file}`,
+              scene,
+              false,
+              false,
+              BABYLON.Texture.TRILINEAR_SAMPLINGMODE,
+              () => resolve(tex),
+              reject,
+            );
+            tex.hasAlpha = true;
+          });
+
+        const faces = [
+          null,
+          await texture("elated.png"),
+          await texture("grimace.png"),
+          await texture("o.png"),
+          await texture("frown.png"),
+        ];
+        const container = await BABYLON.SceneLoader.LoadAssetContainerAsync(
+          "../assets/models/characters/",
+          "golf-ball.glb",
+          scene,
+        );
+
+        for (let i = 0; i < faces.length; i++) {
+          const entries = container.instantiateModelsToScene(
+            (name) => `ball${i}_${name}`,
+            true,
+          );
+          for (const root of entries.rootNodes)
+            root.position.x = (2 - i) * 2.18;
+          const meshes = entries.rootNodes.flatMap((root) => [
+            ...(root.getChildMeshes?.(false) || []),
+            ...(root.getTotalVertices?.() ? [root] : []),
+          ]);
+          const ball = meshes.find(
+            (mesh) => mesh.name && /gball/i.test(mesh.name) && mesh.material,
+          );
+          if (ball?.material) {
+            ball.material.metallic = 0;
+            ball.material.roughness = 1;
+            if ("environmentIntensity" in ball.material)
+              ball.material.environmentIntensity = 0;
+          }
+          const face = meshes.find(
+            (mesh) => mesh.name && /face/i.test(mesh.name) && mesh.material,
+          );
+          if (face && faces[i]) {
+            if ("albedoTexture" in face.material)
+              face.material.albedoTexture = faces[i];
+            else face.material.diffuseTexture = faces[i];
+          }
+        }
+
+        let min = new BABYLON.Vector3(Infinity, Infinity, Infinity);
+        let max = new BABYLON.Vector3(-Infinity, -Infinity, -Infinity);
+        for (const mesh of scene.meshes) {
+          if (!mesh.name.startsWith("ball") || !mesh.getTotalVertices())
+            continue;
+          mesh.computeWorldMatrix(true);
+          const bounds = mesh.getBoundingInfo().boundingBox;
+          min = BABYLON.Vector3.Minimize(min, bounds.minimumWorld);
+          max = BABYLON.Vector3.Maximize(max, bounds.maximumWorld);
+        }
+        camera.setTarget(BABYLON.Vector3.Center(min, max));
+        const aspect = 2484 / 578;
+        const halfHeight =
+          Math.max((max.y - min.y) / 2, (max.x - min.x) / (2 * aspect)) * 1.06;
+        camera.orthoLeft = -halfHeight * aspect;
+        camera.orthoRight = halfHeight * aspect;
+        camera.orthoTop = halfHeight;
+        camera.orthoBottom = -halfHeight;
+
+        scene.render();
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        scene.render();
+        window.renderComplete = true;
+      })().catch((error) => {
+        window.renderError = error?.stack || String(error);
+      });
+    </script>
+  </body>
+</html>

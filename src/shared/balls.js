@@ -22,12 +22,12 @@
     BLINK.MIN_INTERVAL +
     Math.random() * (BLINK.MAX_INTERVAL - BLINK.MIN_INTERVAL);
 
-  // A face texture from assets/faces/<file> with the shared alpha + trilinear
+  // A face texture from assets/sprites/faces/<file> with the shared alpha + trilinear
   // recipe both modes use.
   function faceTexture(scene, file, version) {
     const url = version
-      ? `assets/faces/${file}?v=${version}`
-      : `assets/faces/${file}`;
+      ? `assets/sprites/faces/${file}?v=${version}`
+      : `assets/sprites/faces/${file}`;
     const t = new BABYLON.Texture(
       url,
       scene,

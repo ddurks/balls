@@ -43,7 +43,7 @@
   const ROOM = params.get("room") === "vip" ? "vip" : "main";
   const ROOM_CFG = {
     main: {
-      glb: "clubhouse.glb",
+      glb: "environments/clubhouse/scene.glb",
       area: 0,
       doors: {
         course: { label: "COURSE", url: "game.html?mode=course" },
@@ -52,7 +52,7 @@
       },
     },
     vip: {
-      glb: "vip_lounge.glb",
+      glb: "environments/vip-lounge/scene.glb",
       area: 1,
       doors: {
         main: { label: "LOBBY", url: "index.html" },
@@ -76,22 +76,25 @@
   whenReady();
 
   // ---- hand-drawn seamless textures ------------------------------------------
-  // Wood / carpet / stone are hand-painted (assets/texture/clubhouse-*.png), made
+  // Wood / carpet / stone are hand-painted tileable textures, made
   // perfectly tileable + paired with normal maps offline. Loaded mipmapped +
   // wrapping so they read as clean as the course grass/water (not the tiny
   // nearest-sampled PS1 fields they replace). Cache-busted with ASSET_V.
   function fileTex(scene, file) {
-    const t = new BABYLON.Texture(`assets/texture/${file}?v=` + ASSET_V, scene);
+    const t = new BABYLON.Texture(
+      `assets/textures/clubhouse/${file}?v=` + ASSET_V,
+      scene,
+    );
     t.wrapU = t.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
     return t;
   }
 
   function woodTexture(scene) {
-    return fileTex(scene, "clubhouse-wood.png");
+    return fileTex(scene, "wood-color.png");
   }
 
   function shagTexture(scene) {
-    return fileTex(scene, "clubhouse-carpet.png");
+    return fileTex(scene, "carpet-color.png");
   }
 
   // Compute per-vertex tangents from positions/uvs/normals so StandardMaterial
@@ -151,7 +154,7 @@
   }
 
   function stoneTexture(scene) {
-    return fileTex(scene, "clubhouse-stone.png");
+    return fileTex(scene, "stone-color.png");
   }
 
   // ---- main ------------------------------------------------------------------
@@ -218,14 +221,14 @@
     const stoneTex = stoneTexture(scene);
     const woodMat = flatMat("wood", scene, woodTex);
     woodMat.emissiveColor = new BABYLON.Color3(0.13, 0.11, 0.07);
-    woodMat.bumpTexture = fileTex(scene, "clubhouse-wood-normal.png");
+    woodMat.bumpTexture = fileTex(scene, "wood-normal.png");
     woodMat.bumpTexture.level = 0.8;
     const shagMat = flatMat("shag", scene, shagTex);
-    shagMat.bumpTexture = fileTex(scene, "clubhouse-carpet-normal.png");
+    shagMat.bumpTexture = fileTex(scene, "carpet-normal.png");
     shagMat.bumpTexture.level = 0.7;
     const stoneMat = flatMat("stone", scene, stoneTex);
     stoneMat.emissiveColor = new BABYLON.Color3(0.15, 0.15, 0.15);
-    stoneMat.bumpTexture = fileTex(scene, "clubhouse-stone-normal.png");
+    stoneMat.bumpTexture = fileTex(scene, "stone-normal.png");
     stoneMat.bumpTexture.level = 0.6;
     const creamMat = colorMat(
       "cream",
@@ -265,9 +268,9 @@
     const vipFloorMat = flatMat(
       "floorVip",
       scene,
-      fileTex(scene, "clubhouse-carpet-vip.png"),
+      fileTex(scene, "carpet-vip-color.png"),
     );
-    vipFloorMat.bumpTexture = fileTex(scene, "clubhouse-carpet-normal.png");
+    vipFloorMat.bumpTexture = fileTex(scene, "carpet-normal.png");
     vipFloorMat.bumpTexture.level = 0.7;
     const fireRedMat = colorMat(
       "fireRed",
@@ -503,7 +506,7 @@
       spawn = fromDoor.pos.add(inward.scale(ARRIVE_DIST));
       arriveYaw = Math.atan2(inward.x, inward.z); // face away from the door
     }
-    // Sprite hearth fire: hand-drawn frames (assets/fire) swapped on flat planes
+    // Sprite hearth fire: hand-drawn frames swapped on flat planes
     // instead of the 3D cones — one big central + two smaller flanking to fill the
     // recess without stretching. Each plane's bottom sits on the log tops (just
     // above the cones' base). Planes are double-sided + emissive so the fire glows.
@@ -525,7 +528,7 @@
 
       const frames = [1, 2, 3, 4].map((n) => {
         const t = new BABYLON.Texture(
-          `assets/fire/fire-${n}.png?v=` + ASSET_V,
+          `assets/sprites/fire/fire-${n}.png?v=` + ASSET_V,
           scene,
         );
         t.hasAlpha = true;
@@ -830,18 +833,30 @@
     }
 
     // -- gball avatar template (loaded once, instanced for local + remotes) --
-    const gballContainer = await Shared.loadModel("gball.glb", scene, {
-      container: true,
-      version: ASSET_V,
-    });
-    const cybeerContainer = await Shared.loadModel("cybeer.glb", scene, {
-      container: true,
-      version: ASSET_V,
-    });
-    const cigContainer = await Shared.loadModel("cigarette.glb", scene, {
-      container: true,
-      version: ASSET_V,
-    });
+    const gballContainer = await Shared.loadModel(
+      "models/characters/golf-ball.glb",
+      scene,
+      {
+        container: true,
+        version: ASSET_V,
+      },
+    );
+    const cybeerContainer = await Shared.loadModel(
+      "models/equipment/beer.glb",
+      scene,
+      {
+        container: true,
+        version: ASSET_V,
+      },
+    );
+    const cigContainer = await Shared.loadModel(
+      "models/equipment/cigarette.glb",
+      scene,
+      {
+        container: true,
+        version: ASSET_V,
+      },
+    );
 
     function spawnAvatar() {
       // clone (don't hardware-instance) so the eyelids morph survives per-avatar
@@ -946,7 +961,7 @@
     const HAND_LOCAL = new BABYLON.Vector3(0.24, -0.05, 1.02); // wrapper-local: front, just past the ball surface at mouth height
 
     const smokeTex = new BABYLON.Texture(
-      "assets/smokesheet.png?v=" + ASSET_V,
+      "assets/ui/smoke/smoke-sheet.png?v=" + ASSET_V,
       scene,
       false,
       false,
@@ -2691,7 +2706,7 @@
     tags.delete(id);
   }
 
-  // ---- speech bubbles: assets/speech_bubble.png, text shaped into the round
+  // ---- speech bubbles: background sprite + text shaped into the round
   // part of the balloon. DOM-projected over the head, so it's always
   // camera-facing (billboarded) for free.
   const BUBBLE_PX = 188; // on-screen size of the square bubble sprite (enlarged for 2x text)
@@ -2729,7 +2744,7 @@
       transform: "translate(-50%,-97%)",
       width: BUBBLE_PX + "px",
       height: BUBBLE_PX + "px",
-      backgroundImage: "url('assets/speech_bubble.png')",
+      backgroundImage: "url('assets/ui/effects/speech-bubble.png')",
       backgroundSize: "100% 100%",
       pointerEvents: "none",
       fontFamily: "DrawvidHand, Comic Sans MS, cursive, sans-serif",

@@ -27,7 +27,7 @@
       UI_SCALE: window.innerWidth < 1024 ? 2 / 3 : 1.0,
     },
     ENVIRONMENT: {
-      ENV_TEXTURE_PATH: "assets/3d/puresky.env",
+      ENV_TEXTURE_PATH: "assets/environments/course/shared/sky.env",
       SKYBOX_ENABLED: true,
       SKYBOX_SIZE: 1000,
       SKYBOX_PBRBRIGHT: 0,
@@ -38,8 +38,8 @@
       SUBDIVISIONS: 50,
       FRICTION: 0.4,
       RESTITUTION: 0.3,
-      TEXTURE_PATH: "assets/texture/ground.png",
-      NORMAL_MAP_PATH: "assets/texture/groundnormals.png",
+      TEXTURE_PATH: "assets/textures/course/ground-color.png",
+      NORMAL_MAP_PATH: "assets/textures/course/ground-normal.png",
     },
     BALL: {
       COLLIDER_DIAMETER: 0.0427, // real golf ball = 42.7 mm (1 unit = 1 m)
@@ -187,8 +187,8 @@
       PIN_DIAMETER: 0.026, // 2× real flagstick (~1") so the pin reads at a distance
       PIN_Y_OFFSET: 1.065, // = PIN_HEIGHT / 2 so the base sits on the green
       GREEN_Y_OFFSET: 0.001,
-      GREEN_TEXTURE_PATH: "assets/texture/puttingground.png",
-      GREEN_NORMAL_MAP_PATH: "assets/texture/puttinggroundnormals.png",
+      GREEN_TEXTURE_PATH: "assets/textures/course/green-color.png",
+      GREEN_NORMAL_MAP_PATH: "assets/textures/course/green-normal.png",
       GREEN_UV_TILING: 10,
       PIN_COLLISION_RADIUS: 0.06,
       PIN_COLLISION_MIN_SPEED: 0.5,
@@ -245,7 +245,7 @@
       COMPASS_RIGHT: 15,
     },
     CLOUDS: {
-      TEXTURE_DIR: "assets/clouds",
+      TEXTURE_DIR: "assets/sprites/clouds",
       TEXTURE_COUNT: 10,
       COUNT: 25,
       HORIZON_DISTANCE: 300,
