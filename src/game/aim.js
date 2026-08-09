@@ -422,8 +422,20 @@
           // the arrow-color ±10 m band below). Do NOT convert to yards here.
           const distanceToPin = this.getDistanceToNearestPin(ballPos);
 
-          if (this.clubSelector.autoSelectClubIfNeeded(distanceToPin)) {
-            this.clubSelector.updateUI();
+          // Only default to the putter when the ball is actually on the green;
+          // off the green the suggestion is at least a wedge. (Compute onGreen
+          // only when auto-selecting, so the surface ray doesn't run every frame
+          // once the player has picked a club.)
+          if (!this.clubSelector.manuallySelectedClub) {
+            const cm = this.game?.courseManager;
+            const onGreen =
+              cm && typeof cm.isOnGreen === "function"
+                ? cm.isOnGreen(ballPos)
+                : distanceToPin <= (CONFIG.PINS?.GREEN_RADIUS ?? 30);
+            if (
+              this.clubSelector.autoSelectClubIfNeeded(distanceToPin, onGreen)
+            )
+              this.clubSelector.updateUI();
           }
 
           const predictedDistance =

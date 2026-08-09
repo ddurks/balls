@@ -214,20 +214,23 @@
      * bank gravity wins → it keeps rolling. Makes the ball settle instead of creep.
      */
     applyRollingResistance(dt) {
-      if (this.isAirborne()) return;
+      if (this.isAirborne()) {
+        this._restNormal = null;
+        return;
+      }
       // Scratch vectors reused every frame instead of allocating (this runs each
       // render frame while the ball is settling on an undulation).
       const v = this._rrLin || (this._rrLin = new BABYLON.Vector3());
       const av = this._rrAng || (this._rrAng = new BABYLON.Vector3());
       this.body.getLinearVelocityToRef(v);
       const hs = Math.hypot(v.x, v.z);
-      if (hs < 1e-3) return;
 
       // Sand grabs the ball hard (plush bunker): once it's on sand, brake at ANY
       // speed and kill the spin so it plugs almost immediately instead of skidding
       // or rolling through. grab = per-second decay rate (SURFACE_PHYSICS.sand.grab).
       const grab = this.getHeight() < 0.6 ? this._sandGrabUnderBall() : 0;
       if (grab > 0) {
+        this._restNormal = null;
         const s = 1 - Math.min(grab * dt, 1);
         if (hs * s < 0.06) {
           v.set(0, Math.min(0, v.y), 0);
@@ -244,28 +247,77 @@
         return;
       }
 
-      if (hs > GolfBallGuy.ROLL_BRAKE_SPEED) return;
-      const newHs = hs - GolfBallGuy.ROLL_BRAKE_DECEL * dt;
-      if (newHs < 0.06) {
-        // A manually-spun ball can pass through ~0 linear speed while its spin is
-        // still converting to roll — killing it there murders the roll-out. Only
-        // snap to rest once the spin is also low (a normal rolling ball at this
-        // speed spins at <3 rad/s, so this never blocks ordinary settling).
-        this.body.getAngularVelocityToRef(av);
-        if (av.length() >= CONFIG.PHYSICS.LANDED_ANGULAR_THRESHOLD) return;
-        // Fully stopped: kill motion so static friction can hold it on the slope.
-        v.set(0, Math.min(0, v.y), 0);
-        this.body.setLinearVelocity(v);
-        av.set(0, 0, 0);
-        this.body.setAngularVelocity(av);
-      } else {
-        const s = newHs / hs;
-        v.set(v.x * s, v.y, v.z * s);
+      // Experiment toggle: skip the custom kinetic brake + slope hold and let native
+      // physics roll/settle the ball (see CONFIG.PHYSICS.ROLL_RESISTANCE_ENABLED).
+      if (!CONFIG.PHYSICS.ROLL_RESISTANCE_ENABLED) {
+        this._restNormal = null;
+        return;
+      }
+
+      const Crr = GolfBallGuy.ROLL_BRAKE_DECEL; // rolling-resistance decel cap (m/s²)
+
+      if (hs > 1e-4) {
+        // KINETIC rolling resistance: a constant deceleration opposing travel,
+        // applied once the ball has slowed below ROLL_BRAKE_SPEED (fast roll-outs
+        // run free). Smooth all the way to zero — no snap threshold — and coupled
+        // to the angular velocity so roll-without-slip holds.
+        this._restNormal = null;
+        if (hs > GolfBallGuy.ROLL_BRAKE_SPEED) return;
+        const s = Math.max(0, hs - Crr * dt) / hs;
+        v.x *= s;
+        v.z *= s;
         this.body.setLinearVelocity(v);
         this.body.getAngularVelocityToRef(av);
         av.scaleInPlace(s);
         this.body.setAngularVelocity(av);
+        return;
       }
+
+      // STATIC rolling resistance: the ball has effectively stopped. Real rolling
+      // resistance now resists the slope's PULL (not motion) up to the SAME cap,
+      // cancelling gravity's along-slope component so the ball genuinely stays put
+      // on any grade it can hold. Grades steeper than the cap aren't fully
+      // cancelled, so the ball eases back into a roll over the next frames — real
+      // physics, and no velocity clamp (we only pre-empt the gravity Havok is about
+      // to integrate this step; beforeRender runs before the physics step). One
+      // surface-normal ray per rest episode, cached.
+      if (!this._restNormal) this._restNormal = this._surfaceNormalUnderBall();
+      const n = this._restNormal;
+      const g = PhysicsConfig.GRAVITY;
+      const gDotN = g.x * n.x + g.y * n.y + g.z * n.z;
+      const tx = g.x - n.x * gDotN; // gravity's tangential (along-slope) accel
+      const tz = g.z - n.z * gDotN;
+      const driveMag = Math.hypot(tx, tz);
+      if (driveMag > 1e-5) {
+        const resist = Math.min(driveMag, Crr) * dt;
+        v.x -= (tx / driveMag) * resist;
+        v.z -= (tz / driveMag) * resist;
+        this.body.setLinearVelocity(v);
+      }
+    }
+
+    // World-space surface normal directly under the ball (course terrain), for the
+    // static rolling-resistance hold. Falls back to straight up (flat) when nothing
+    // is hit — e.g. the practice ground, which is level so no hold is needed.
+    _surfaceNormalUnderBall() {
+      const p = this.mesh.getAbsolutePosition();
+      const ray =
+        this._nRay ||
+        (this._nRay = new BABYLON.Ray(
+          new BABYLON.Vector3(),
+          new BABYLON.Vector3(0, -1, 0),
+          4,
+        ));
+      ray.origin.set(p.x, p.y + 1, p.z);
+      const hit = this.scene.pickWithRay(ray, GolfBallGuy._surfPred);
+      if (hit && hit.hit) {
+        const nrm = hit.getNormal(true);
+        if (nrm) {
+          if (nrm.y < 0) nrm.scaleInPlace(-1); // ensure it points up
+          return nrm;
+        }
+      }
+      return new BABYLON.Vector3(0, 1, 0);
     }
 
     // Downward ray → the surface grab under the ball (sand > 0; 0 elsewhere), so a
@@ -389,25 +441,10 @@
       // speed is the calibrated value regardless of frame length (frame-rate safe).
       this.body.applyImpulse(launchVel.scale(CONFIG.BALL.MASS), impactPoint);
 
-      // Loft generates backspin at the strike (real physics). High-loft wedges spin
-      // hard and land steeply, so on landing friction bites and can check/draw the
-      // ball back; low-loft clubs spin little and land shallow, so they run out.
-      // Backspin axis = horizontal-travel × up. Not tied to pendingSpinAmount, so it
-      // doesn't light the manual-spin aura.
-      const horiz = new BABYLON.Vector3(launchVel.x, 0, launchVel.z);
-      if (clubLaunchAngle > 0 && horiz.lengthSquared() > 1e-6) {
-        const axis = BABYLON.Vector3.Cross(
-          horiz.normalize(),
-          new BABYLON.Vector3(0, 1, 0),
-        ).normalize();
-        const backspin = Math.min(
-          clubLaunchAngle * powerRatio * CONFIG.PHYSICS.STRIKE_SPIN_FACTOR,
-          CONFIG.PHYSICS.STRIKE_SPIN_MAX,
-        );
-        this.body.setAngularVelocity(axis.scale(backspin));
-      } else {
-        this.body.setAngularVelocity(BABYLON.Vector3.Zero());
-      }
+      // The clubface imparts NO spin — the ball launches spin-free and the
+      // player's swipe is the only source of spin (see applySpin / applyMagnus).
+      // (Loft still sets the launch ANGLE above; it just no longer auto-backspins.)
+      this.body.setAngularVelocity(BABYLON.Vector3.Zero());
     }
 
     applySpin(spinAxis, spinAmount) {
@@ -440,20 +477,6 @@
       const speed = this.getSpeed();
 
       this.updateSpinAura(); // spin glow (runs every frame; fades out at rest)
-
-      // Flight air-drag (LINEAR_DAMPING, calibrated for carry) also over-brakes a
-      // grounded roll, killing roll-out. Drop to a low rolling damping while on the
-      // ground so the ball releases into real roll (ROLL_BRAKE + slope still settle
-      // it); restore full air-drag when airborne. Toggle on state change only.
-      const airborne = height > PhysicsConfig.AIRBORNE_HEIGHT;
-      if (airborne !== this._airborneNow) {
-        this._airborneNow = airborne;
-        this.body.setLinearDamping(
-          airborne
-            ? PhysicsConfig.BALL_LINEAR_DAMPING
-            : CONFIG.BALL.ROLL_LINEAR_DAMPING,
-        );
-      }
 
       if (height < PhysicsConfig.GROUND_CONTACT_HEIGHT && !this.touchedGround) {
         this.touchedGround = true;

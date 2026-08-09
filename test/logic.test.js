@@ -64,6 +64,10 @@ const { Wind } = require("../src/game/wind.js");
 const { ClubData, ClubSelector } = require("../src/game/clubs.js");
 const { CourseManager } = require("../src/game/course.js");
 
+test("gentle-slope rolling resistance is enabled", () => {
+  assert.strictEqual(CONFIG.PHYSICS.ROLL_RESISTANCE_ENABLED, true);
+});
+
 test("rotate2D rotates a unit vector by 90°", () => {
   const r = Utils.rotate2D(1, 0, Math.PI / 2);
   assert.ok(Math.abs(r.x - 0) < 1e-9, `x=${r.x}`);

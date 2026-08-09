@@ -52,13 +52,10 @@
      *   against ClubData.maxDistance, which is in metres). Callers must NOT
      *   pass yards.
      */
-    findBestClubForDistance(distance) {
-      let bestClubId = 12; // Default to driver
-      let bestDifference = Math.abs(
-        this.getPredictedDistanceForClub(ClubData.getClub(12)) - distance,
-      );
-
-      for (let i = 0; i < ClubData.CLUBS.length; i++) {
+    findBestClubForDistance(distance, minId = 0) {
+      let bestClubId = minId;
+      let bestDifference = Infinity;
+      for (let i = minId; i < ClubData.CLUBS.length; i++) {
         const club = ClubData.CLUBS[i];
         const predicted = this.getPredictedDistanceForClub(club);
         const difference = Math.abs(predicted - distance);
@@ -74,9 +71,20 @@
       return club.maxDistance;
     }
 
-    autoSelectClubIfNeeded(distance) {
+    /**
+     * The club to default to for a shot. On the green → the putter. Off the
+     * green → the nearest club by distance but NEVER the putter (floored at the
+     * most-lofted wedge, id 1), so a greenside chip defaults to a wedge instead
+     * of the putter.
+     */
+    suggestClub(distance, onGreen) {
+      if (onGreen) return 0; // putter
+      return this.findBestClubForDistance(distance, 1); // exclude the putter
+    }
+
+    autoSelectClubIfNeeded(distance, onGreen = false) {
       if (!this.manuallySelectedClub) {
-        this.currentClub = this.findBestClubForDistance(distance);
+        this.currentClub = this.suggestClub(distance, onGreen);
         return true;
       }
       return false;

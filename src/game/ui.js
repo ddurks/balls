@@ -98,6 +98,8 @@
       this.clubButtonsContainer = document.getElementById(
         "clubSelectorWrapper",
       );
+      this.clubBackBtn = document.getElementById("clubBackBtn");
+      this.clubSelectBackCallback = null;
 
       this._statsFlagImg = document.getElementById("statsFlagImg");
       this._lastFlagFrame = -1;
@@ -128,6 +130,14 @@
       if (clubCircle && this.modeToggleCallback) {
         clubCircle.addEventListener("click", () => {
           this.modeToggleCallback();
+        });
+      }
+
+      this._attachPressEffect(this.clubBackBtn);
+      if (this.clubBackBtn) {
+        this.clubBackBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (this.clubSelectBackCallback) this.clubSelectBackCallback();
         });
       }
     }
@@ -326,10 +336,17 @@
           el.style.opacity = "";
         }
         onDone(); // commit the new selection + re-render the static 3-club state
-        clicked.animate([{ opacity: 0 }, { opacity: 1 }], {
-          duration: 200,
-          easing: "ease-out",
-        }); // the newly-revealed club FADES in
+        // Reveal-fade the newly-shown club — but ONLY while the carousel is on
+        // screen. If a roll is interrupted by entering strike mode the circles go
+        // display:none, and a fade started on a hidden element strands at opacity 0
+        // (the icon then stays invisible when the carousel returns — see
+        // _resetClubCarousel, which mops up any that slip through).
+        if (clicked.offsetParent !== null) {
+          clicked.animate([{ opacity: 0 }, { opacity: 1 }], {
+            duration: 200,
+            easing: "ease-out",
+          });
+        }
         this._rollAnimating = false;
       };
       Promise.all([a1.finished, a2.finished])
@@ -361,13 +378,41 @@
       if (wind) wind.style.display = "none";
     }
 
+    // Force the carousel back to a clean, fully-visible static state: cancel any
+    // in-flight or orphaned roll animations and drop the inline transform/opacity
+    // they leave behind. A roll interrupted by strike mode can otherwise strand a
+    // reveal fade at opacity 0, making a club icon vanish when the carousel returns.
+    _resetClubCarousel() {
+      this._rollAnimating = false;
+      for (const el of [
+        this.clubPrev,
+        this.circles.bottomRight,
+        this.clubNext,
+      ]) {
+        if (!el) continue;
+        el.getAnimations().forEach((a) => a.cancel());
+        el.style.transform = "";
+        el.style.opacity = "";
+      }
+    }
+
     showClubCircle() {
+      this._resetClubCarousel();
       const prev = document.getElementById("clubPrev");
       const circle = document.getElementById("circleClub");
       const next = document.getElementById("clubNext");
       if (prev) prev.style.display = "flex";
       if (circle) circle.style.display = "flex";
       if (next) next.style.display = "flex";
+      this.hideClubBackButton(); // the carousel and the back button never co-exist
+    }
+
+    showClubBackButton() {
+      if (this.clubBackBtn) this.clubBackBtn.style.display = "flex";
+    }
+
+    hideClubBackButton() {
+      if (this.clubBackBtn) this.clubBackBtn.style.display = "none";
     }
 
     hideClubCircle() {

@@ -172,6 +172,26 @@
       );
     }
 
+    // Is the given position sitting on a green surface? Used by club auto-select
+    // so the putter is only ever the default on the green. Rays straight down and
+    // reads the surface it hits.
+    isOnGreen(pos) {
+      const ray = new BABYLON.Ray(
+        new BABYLON.Vector3(pos.x, pos.y + 3, pos.z),
+        new BABYLON.Vector3(0, -1, 0),
+        20,
+      );
+      const hit = this.scene.pickWithRay(
+        ray,
+        (m) => m.name && m.name.startsWith("surf_"),
+      );
+      return !!(
+        hit &&
+        hit.hit &&
+        this.surfaces.forSurfaceName(hit.pickedMesh.name) === "green"
+      );
+    }
+
     grassAllowed(x, z) {
       const hg = this.hg;
       if (!hg) return false;
@@ -387,6 +407,20 @@
       this.hud.setHole(cfg.id, cfg.par, cfg.name);
       this.game.isControlsDisabled = true;
       this.game.aimView?.deactivate?.();
+
+      // Start the hole on the club the tee shot actually calls for — not the
+      // putter left selected from holing out on the previous green. Clear the
+      // manual lock so it's a suggestion the player can still override, and set
+      // it BEFORE the flyover so the HUD reads right from the reveal.
+      const cs = this.game.aimView?.clubSelector;
+      if (cs) {
+        cs.enableAutoSelect();
+        cs.currentClub = cs.suggestClub(
+          BABYLON.Vector3.Distance(this.tee, this.cup),
+          false, // teeing off is never "on the green"
+        );
+        cs.updateUI?.();
+      }
 
       // Hold the logo until every mesh + texture is ready (no flash of just the ball
       // + water). Race a 4 s safety so a stuck texture can't keep the logo up forever.

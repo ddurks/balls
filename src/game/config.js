@@ -52,15 +52,8 @@
       FRICTION: 0.4,
       RESTITUTION: 0.5, // soft-turf COR — bounces without being a superball (0.3 was dead, 0.6 = hard court)
       LINEAR_DAMPING: 0.3, // air-drag model for flight carry (club distances are calibrated to this — do not retune for roll)
-      // Air drag (above) also over-brakes a ball ROLLING on the ground, so it stops
-      // instead of releasing into roll. Apply this much lower damping once grounded
-      // (ROLL_BRAKE_DECEL + slope still settle it); flight keeps LINEAR_DAMPING so
-      // carry stays calibrated. Lower = more roll-out (and longer putts).
-      ROLL_LINEAR_DAMPING: 0.08,
-      // Spin barely decays in air on a real ball. High angular damping instead acts,
-      // through rolling-without-slip friction coupling, as a hidden STRONG rolling
-      // brake that kills roll — worst for putts (pure roll). Keep it near zero and let
-      // ROLL_BRAKE_DECEL be the one, tunable rolling-resistance knob (was 1.2 → froze putts).
+      // Spin barely decays in flight on a real ball, and spin drives Magnus
+      // (curve/lift), so keep angular damping near zero.
       ANGULAR_DAMPING: 0.1,
     },
     // Swing/hit + landing-detection tuning. Single home for these values; the
@@ -68,19 +61,16 @@
     PHYSICS: {
       HIT_FORWARD_FORCE: 100, // reduced for finesse gameplay
       HIT_UPWARD_FORCE: 60,
-      // Strength of the player's mid-flight spin-swipe, ADDED on top of the strike's
-      // loft backspin (see applySpin). Scaled so a firm swipe imparts bite-capable
-      // spin comparable to a wedge's loft — swipe down = more backspin (more bite),
-      // up = topspin (kills the check, runs out), sideways = curve. Total spin from
-      // all sources is clamped to STRIKE_SPIN_MAX.
+      // Adds low-speed rolling resistance and holds a stopped ball against gravity
+      // on gentle slopes. The 0.6 m/s² resistance cap in GolfBallGuy lets the ball
+      // perch through roughly a 3.5° grade; steeper slopes still overcome it.
+      ROLL_RESISTANCE_ENABLED: true,
+      // Strength of the player's spin-swipe (see applySpin) — the ONLY source of
+      // spin now (the clubface imparts none). Scaled so a firm swipe imparts
+      // bite-capable spin: swipe down = backspin (bite), up = topspin (runs out),
+      // sideways = curve. Total spin is clamped to STRIKE_SPIN_MAX.
       SPIN_MULTIPLIER: 6000,
-      // Backspin the LOFT imparts at the strike (rad/s ≈ loft° × power × this) — the
-      // real source of "bite". High-loft wedges spin hard AND land steeply (low
-      // horizontal speed at landing), so friction can check/draw them back; low-loft
-      // clubs spin little and land shallow, so they run out. The sphere collider
-      // tolerates high spin fine. Capped by _MAX. Higher = more bite.
-      STRIKE_SPIN_FACTOR: 13,
-      STRIKE_SPIN_MAX: 850,
+      STRIKE_SPIN_MAX: 850, // clamp on total swipe-imparted spin (rad/s)
       // Magnus: aerodynamic force F = MAGNUS_COEFF × (ω × v) applied while airborne.
       // Backspin lifts (carry/float), topspin drops, sidespin curves (slice/hook).
       // This adds lift → carry, so club v0s get recalibrated once this is dialed.
@@ -300,8 +290,12 @@
       LAND_JOIN_BONUS: 0.12, // small extra chance near an already-landed group
       GROUP_RANGE: 20, // horizontal range for "join the group" landings
       GROUP_CAP: 6, // stop adding join-bonus once a group reaches this many
-      ARRIVAL_RADIUS: 10, // start decelerating within this of the landing spot
-      TOUCHDOWN_DIST: 1.0, // perch once this close to the spot
+      // Landing is a direct glide-and-flare (see BirdFlockSystem.glideToLanding):
+      // LAND_GLIDE_SPEED is the descent speed (per-60fps-frame units, MAX_SPEED
+      // scale); over the last LAND_FLARE_DIST metres it eases down for a soft
+      // touchdown instead of snapping to the spot.
+      LAND_GLIDE_SPEED: 0.16,
+      LAND_FLARE_DIST: 4,
       PERCH_SECONDS_MIN: 4,
       PERCH_SECONDS_MAX: 20,
       TAKEOFF_KICK: 0.09, // initial upward velocity on takeoff (~5 m/s hop)

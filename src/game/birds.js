@@ -26,7 +26,8 @@
       this.driftAngle = Math.random() * Math.PI * 2;
 
       // Smoothed orientation (radians) — birds bank into turns and level out to perch.
-      this.yaw = Math.atan2(this.velocity.x, this.velocity.z) + Math.PI;
+      // The model's nose is +Z, so yaw = atan2(x,z) faces the travel direction.
+      this.yaw = Math.atan2(this.velocity.x, this.velocity.z);
       this.pitch = 0;
       this.roll = 0;
 
@@ -130,7 +131,7 @@
       let targetRoll = 0;
       const hLen = Math.hypot(this.velocity.x, this.velocity.z);
       if (this.state !== "perched" && hLen > 0.02) {
-        targetYaw = Math.atan2(this.velocity.x, this.velocity.z) + Math.PI;
+        targetYaw = Math.atan2(this.velocity.x, this.velocity.z);
         targetPitch = Math.max(
           -Math.PI / 3,
           Math.min(Math.PI / 3, Math.atan2(this.velocity.y, hLen)),
@@ -180,7 +181,6 @@
       this._align = new BABYLON.Vector3();
       this._center = new BABYLON.Vector3();
       this._steer = new BABYLON.Vector3();
-      this._desired = new BABYLON.Vector3();
       this._down = new BABYLON.Vector3(0, -1, 0);
     }
 
@@ -281,13 +281,10 @@
             break;
 
           case "landing":
-            this.seek(boid, boid.landTarget, true);
-            this.separationOnly(boid);
-            this.steer(boid, f);
             if (this.startled(boid, ballPosition)) {
               this.takeOff(boid);
-            } else if (this.arrived(boid)) {
-              this.perch(boid);
+            } else {
+              this.glideToLanding(boid, f);
             }
             break;
 
@@ -324,18 +321,33 @@
       boid.position.addInPlace(boid.velocity.scale(f));
     }
 
-    // Reynolds seek (with arrival slow-down) toward a point.
-    seek(boid, target, arrive) {
+    // Smooth glide-down landing: ease the bird straight toward its landing spot at
+    // a steady glide speed, flaring (slowing) over the last stretch for a soft
+    // touchdown, then perch. Velocity is derived from the motion (per-frame units)
+    // so the bird pitches into the descent and the wings switch to a glide — no
+    // steering overshoot, and no final snap (it lerps all the way in).
+    glideToLanding(boid, f) {
       const c = CONFIG.BOIDS;
-      target.subtractToRef(boid.position, this._desired);
-      const d = this._desired.length();
-      if (d < 1e-3) return;
-      let speed = c.MAX_SPEED;
-      if (arrive && d < c.ARRIVAL_RADIUS)
-        speed = c.MAX_SPEED * (d / c.ARRIVAL_RADIUS);
-      this._desired.scaleInPlace(speed / d);
-      this._desired.subtractInPlace(boid.velocity);
-      boid.applyForce(this._desired);
+      const t = boid.landTarget;
+      const dx = t.x - boid.position.x;
+      const dy = t.y - boid.position.y;
+      const dz = t.z - boid.position.z;
+      const dist = Math.hypot(dx, dy, dz);
+      if (dist < 0.04) {
+        this.perch(boid);
+        return;
+      }
+      let speed = c.LAND_GLIDE_SPEED; // per-frame units (same scale as MAX_SPEED)
+      if (dist < c.LAND_FLARE_DIST)
+        speed *= Math.max(0.15, dist / c.LAND_FLARE_DIST); // flare to a soft touch
+      const step = Math.min(dist, speed * f); // metres to move this frame
+      const inv = step / dist;
+      boid.position.x += dx * inv;
+      boid.position.y += dy * inv;
+      boid.position.z += dz * inv;
+      // per-frame velocity along the glide, for orient() + wing animation
+      const vscale = step / f / dist;
+      boid.velocity.set(dx * vscale, dy * vscale, dz * vscale);
     }
 
     wander(boid) {
@@ -470,6 +482,20 @@
         // MIN_AVOID_DISTANCE so separation doesn't block the touchdown.
         tx = anchor.landTarget.x + (Math.random() - 0.5) * 6;
         tz = anchor.landTarget.z + (Math.random() - 0.5) * 6;
+      } else {
+        // Project the spot AHEAD along the current heading (lead scaled to
+        // altitude for a natural ~25° glide slope) so the bird glides
+        // forward-and-down to it instead of dropping straight down.
+        const hx = boid.velocity.x,
+          hz = boid.velocity.z;
+        const hlen = Math.hypot(hx, hz);
+        if (hlen > 1e-3) {
+          const below = this.sampleSurface(tx, tz);
+          const alt = below ? Math.max(2, boid.position.y - below.y) : 20;
+          const lead = Math.min(30, Math.max(6, alt * 2));
+          tx += (hx / hlen) * lead;
+          tz += (hz / hlen) * lead;
+        }
       }
       const surf = this.sampleSurface(tx, tz);
       if (!surf) return; // nothing to land on (over the void) — keep flying
@@ -478,17 +504,6 @@
       boid.onWater = surf.isWater;
       boid.hasTarget = true;
       boid.state = "landing";
-    }
-
-    arrived(boid) {
-      const c = CONFIG.BOIDS;
-      const dx = boid.position.x - boid.landTarget.x;
-      const dz = boid.position.z - boid.landTarget.z;
-      const dy = boid.position.y - boid.landTarget.y;
-      return (
-        Math.sqrt(dx * dx + dz * dz) < c.TOUCHDOWN_DIST &&
-        Math.abs(dy) < c.TOUCHDOWN_DIST
-      );
     }
 
     perch(boid) {

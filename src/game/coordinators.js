@@ -17,6 +17,9 @@
       const currentClubId = this.game.aimView?.currentClub ?? 12;
       const club = ClubData.getClub(currentClubId);
 
+      // Ball's committed — the "back to club select" option is gone.
+      this.game.circleUIManager?.hideClubBackButton();
+
       this.game.swingCameraRestored = false;
 
       // Zoom camera out for swing view (scaled to the 42.7 mm ball; old values
@@ -81,6 +84,7 @@
         this.game.circleUIManager.showStatsCircle();
         this.game.circleUIManager.showPowerCircle();
         this.game.circleUIManager.hideClubCircle();
+        this.game.circleUIManager.showClubBackButton();
         this.game.circleUIManager.showCompassCircle();
       }
 
@@ -128,6 +132,42 @@
       }
       // (Clicking the club circle in PLAY mode used to reset the shot to the tee;
       // that mulligan was removed — it fired accidentally and threw the ball back.)
+    }
+
+    // Back out of strike mode (the "club select" button) — only valid before the
+    // ball is struck. Reverses transitionAimToPlay: un-counts the up-front stroke,
+    // drops the tee-anchored trail, and re-arms aim so the player can change clubs.
+    transitionPlayToAim() {
+      if (this.game.gameState !== GameState.PLAY) return;
+      if (this.game.golfBall.isAirborne()) return; // shot already committed
+
+      this.game.gameState = GameState.AIM;
+      this.game._awaitingSettle = false;
+      if (this.game.currentHoleShotCount > 0) this.game.currentHoleShotCount--;
+
+      if (this.game.ballTrail) {
+        this.game.ballTrail.stopTracing();
+        this.game.ballTrail.clear();
+      }
+
+      if (this.game.circleUIManager) {
+        this.game.circleUIManager.hidePowerCircle();
+      }
+
+      // activate() restores orbit controls, the trajectory arrow, aim camera, and
+      // re-shows the club carousel (which also hides the back button). It also
+      // resets the club to the auto-suggestion — but here the player backed out
+      // precisely to change clubs, so keep their current pick: snapshot it around
+      // activate() and repaint the carousel. Preserving manuallySelectedClub stops
+      // the aim loop's auto-select from clobbering the restored club.
+      if (this.game.aimView) {
+        const club = this.game.aimView.currentClub;
+        const manual = this.game.aimView.manuallySelectedClub;
+        this.game.aimView.activate();
+        this.game.aimView.currentClub = club;
+        this.game.aimView.manuallySelectedClub = manual;
+        this.game.aimView.clubSelector.updateUI();
+      }
     }
 
     applySpin(spinAxis, spinAmount) {

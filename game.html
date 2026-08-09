@@ -375,10 +375,44 @@
           1px 1px 2px rgba(0, 0, 0, 1);
       }
       .club-mini-yds {
-        font-size: calc(var(--ui-size) * 0.055);
+        font-size: calc(var(--ui-yardage-fs) * 0.5);
       }
       .club-sel-yds {
-        font-size: calc(var(--ui-size) * 0.11);
+        font-size: var(--ui-yardage-fs);
+      }
+
+      /* Strike mode swaps the selected-club circle for this "back to aim" button,
+         sharing #circleClub's corner slot, size, and green glass look. */
+      #clubBackBtn {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        z-index: 1002;
+        cursor: pointer;
+        touch-action: manipulation;
+        gap: calc(var(--ui-size) * 0.01);
+      }
+      .club-back-arrow {
+        color: #e1e44e;
+        font-size: calc(var(--ui-size) * 0.36);
+        font-weight: bold;
+        line-height: 0.8;
+        pointer-events: none;
+        text-shadow:
+          0 0 3px rgba(0, 0, 0, 0.9),
+          1px 1px 2px rgba(0, 0, 0, 1);
+      }
+      .club-back-label {
+        color: #e1e44e;
+        font-family: "DrawvidHand", "Comic Sans MS", cursive, sans-serif;
+        font-weight: bold;
+        font-size: calc(var(--ui-size) * 0.16);
+        line-height: 0.95;
+        text-align: center;
+        pointer-events: none;
+        text-shadow:
+          0 0 3px rgba(0, 0, 0, 0.9),
+          1px 1px 2px rgba(0, 0, 0, 1);
       }
 
       /* ── Stats circle content ── */
@@ -420,7 +454,7 @@
           1px 1px 2px rgba(0, 0, 0, 1);
       }
       .yardage-display {
-        color: #e1e44e;
+        color: #f4f8ff;
         font-weight: bold;
         font-size: var(--ui-yardage-fs);
         text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
@@ -755,6 +789,15 @@
         />
         <span class="club-mini-yds"></span>
         <span class="club-mini-abbr"></span>
+      </div>
+      <div
+        id="clubBackBtn"
+        class="ui-circle glass-circle"
+        style="display: none"
+        aria-label="back to club select"
+      >
+        <span class="club-back-arrow">&#8592;</span>
+        <span class="club-back-label">club<br />select</span>
       </div>
     </div>
   </body>

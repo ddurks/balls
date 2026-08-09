@@ -146,6 +146,8 @@
 
       this.circleUIManager.modeToggleCallback = () =>
         this.gameStateCoordinator.toggleMode();
+      this.circleUIManager.clubSelectBackCallback = () =>
+        this.gameStateCoordinator.transitionPlayToAim();
 
       // Setup AimView after coordinators are ready (it depends on them)
       this.setupAimView();
@@ -618,23 +620,31 @@
         this._awaitingSettle = this.gameState !== GameState.LANDED;
       }
 
-      // Enter aim mode only after the ball has stopped for 1 second — but NOT
-      // while a hole-out is being processed (holeSinkProcessed), so the make
-      // result + reset isn't interrupted by an auto re-aim.
+      // Enter aim mode only once the ball has actually STOPPED — but NOT while a
+      // hole-out is being processed (holeSinkProcessed), so the make result +
+      // reset isn't interrupted by an auto re-aim. Rolling resistance now brings
+      // the ball to a genuine, complete rest (and its static component holds it on
+      // the slope), so we just wait for the real velocity to be ~zero and not
+      // spinning — no drift/speed clamps or guesses.
       if (
         this._awaitingSettle &&
         this.gameState !== GameState.AIM &&
         !this.holeSinkProcessed
       ) {
-        if (this.golfBall.getSpeed() < 0.15 && !this.golfBall.isAirborne()) {
+        const atRest =
+          !this.golfBall.isAirborne() &&
+          this.golfBall.getSpeed() < 0.03 &&
+          this.golfBall.getAngularVelocity().length() <
+            CONFIG.PHYSICS.LANDED_ANGULAR_THRESHOLD;
+        if (atRest) {
           this._settleTimer += this.engine.getDeltaTime() / 1000;
-          if (this._settleTimer >= 1.0) {
+          if (this._settleTimer >= 0.3) {
             this._awaitingSettle = false;
             this.gameState = GameState.AIM;
             this.aimView.activate();
           }
         } else {
-          this._settleTimer = 0; // still rolling — reset the settle clock
+          this._settleTimer = 0; // still moving — wait for a real stop
         }
       }
 
@@ -944,7 +954,8 @@
         }
         // Keep the small, fast ball from tunneling through the thin terrain mesh.
         this.golfBall.preventTunneling();
-        // Rolling resistance so the ball actually settles on undulations.
+        // Rolling resistance so the ball actually settles on undulations (and its
+        // low-speed "grab" holds it put on a grade instead of creeping).
         this.golfBall.applyRollingResistance(this.engine.getDeltaTime() / 1000);
 
         this.updateBallState();
