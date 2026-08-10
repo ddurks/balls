@@ -39,7 +39,7 @@
       FRICTION: 0.4,
       RESTITUTION: 0.3,
       TEXTURE_PATH: "assets/textures/course/ground-color.png",
-      NORMAL_MAP_PATH: "assets/textures/course/ground-normal.png",
+      NORMAL_MAP_PATH: "assets/textures/course/ground-normal.ktx2",
     },
     BALL: {
       COLLIDER_DIAMETER: 0.0427, // real golf ball = 42.7 mm (1 unit = 1 m)
@@ -188,7 +188,7 @@
       PIN_Y_OFFSET: 1.065, // = PIN_HEIGHT / 2 so the base sits on the green
       GREEN_Y_OFFSET: 0.001,
       GREEN_TEXTURE_PATH: "assets/textures/course/green-color.png",
-      GREEN_NORMAL_MAP_PATH: "assets/textures/course/green-normal.png",
+      GREEN_NORMAL_MAP_PATH: "assets/textures/course/green-normal.ktx2",
       GREEN_UV_TILING: 10,
       PIN_COLLISION_RADIUS: 0.06,
       PIN_COLLISION_MIN_SPEED: 0.5,

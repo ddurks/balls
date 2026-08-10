@@ -978,7 +978,7 @@
       // ~1.6 world metres, matching CourseSurfaces' green tiling.
       const tiling = (radius * 2) / 1.6;
       const greenDiffuse = new BABYLON.Texture(
-        CONFIG.PINS.GREEN_TEXTURE_PATH,
+        Shared.v(CONFIG.PINS.GREEN_TEXTURE_PATH),
         scene,
       );
       greenDiffuse.wrapU = greenDiffuse.wrapV =
@@ -986,7 +986,7 @@
       greenDiffuse.uScale = greenDiffuse.vScale = tiling;
       greenMat.diffuseTexture = greenDiffuse;
       const greenNormal = new BABYLON.Texture(
-        CONFIG.PINS.GREEN_NORMAL_MAP_PATH,
+        Shared.v(CONFIG.PINS.GREEN_NORMAL_MAP_PATH),
         scene,
       );
       greenNormal.wrapU = greenNormal.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;

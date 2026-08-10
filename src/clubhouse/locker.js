@@ -11,7 +11,7 @@
 (function () {
   "use strict";
 
-  const ASSET_V = "14"; // keep in step with clubhouse.js (immutable /assets cache)
+  const ASSET_V = Shared.ASSET_V; // single source of truth: src/shared/shared.js
   const FACE_SIZE = 512; // matches the golf-ball face texture + face sprites
 
   /** @param {string} id @returns {any} */

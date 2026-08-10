@@ -96,7 +96,7 @@
       );
 
       const diffuseTex = new BABYLON.Texture(
-        CONFIG.TERRAIN.TEXTURE_PATH,
+        Shared.v(CONFIG.TERRAIN.TEXTURE_PATH),
         scene,
       );
       diffuseTex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
@@ -106,7 +106,7 @@
       groundMat.diffuseTexture = diffuseTex;
 
       const normalTex = new BABYLON.Texture(
-        CONFIG.TERRAIN.NORMAL_MAP_PATH,
+        Shared.v(CONFIG.TERRAIN.NORMAL_MAP_PATH),
         scene,
       );
       normalTex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
@@ -307,7 +307,7 @@
       const waterMat = new BABYLON.PBRMaterial("sonicWater", scene);
 
       const diffuseTex = new BABYLON.Texture(
-        "./assets/textures/course/water-color.png",
+        Shared.v("./assets/textures/course/water-color.png"),
         scene,
       );
       diffuseTex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
@@ -317,7 +317,7 @@
       waterMat.albedoTexture = diffuseTex;
 
       const normalTex = new BABYLON.Texture(
-        "./assets/textures/course/water-normal.png",
+        Shared.v("./assets/textures/course/water-normal.ktx2"),
         scene,
       );
       normalTex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;

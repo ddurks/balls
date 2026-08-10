@@ -31,7 +31,7 @@
     params.get("ws") ||
     (isLocal ? "ws://localhost:7779" : "wss://balls-world.drawvid.com");
 
-  const ASSET_V = "15"; // bump to bust the immutable /assets cache after a rebuild
+  const ASSET_V = Shared.ASSET_V; // single source of truth: src/shared/shared.js
   const AV_SCALE = 0.8; // gball model radius ~1 -> ~1.6 dia avatar
   const MOVE_SPEED = 6.0;
   const SEND_HZ = 10;

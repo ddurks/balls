@@ -86,7 +86,7 @@
       const blade = BABYLON.Mesh.MergeMeshes([a, b], true, true); // bakes transforms
 
       const tex = new BABYLON.Texture(
-        `./assets/sprites/grass/grass${index + 1}.png`,
+        Shared.v(`./assets/sprites/grass/grass${index + 1}.png`),
         this.scene,
       );
       tex.hasAlpha = true;
@@ -398,7 +398,7 @@
 
     // Terrain meshes carry planar world (x,y) UVs, so tiling = 1/tileWorld units.
     _tex(path, tileWorld) {
-      const t = new BABYLON.Texture(path, this.scene);
+      const t = new BABYLON.Texture(Shared.v(path), this.scene);
       t.wrapU = t.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
       t.uScale = t.vScale = 1 / tileWorld;
       return t;
@@ -466,7 +466,7 @@
         10,
       );
       water.bumpTexture = this._tex(
-        "assets/textures/course/water-normal.png",
+        "assets/textures/course/water-normal.ktx2",
         10,
       );
       water.metallic = 0.6;

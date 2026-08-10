@@ -21,6 +21,33 @@
 
   const wrapAngle = (a) => mod(a, 2 * Math.PI);
 
+  // ---- asset cache-busting ---------------------------------------------------
+  // /assets is served immutable in production, so a texture/model URL must change
+  // for a redeploy to reach returning users. This is the single source of truth —
+  // bump it on any asset rebuild. v(path) appends it; loadModel() takes `version`.
+  const ASSET_V = "16";
+  const v = (path) => path + (path.includes("?") ? "&" : "?") + "v=" + ASSET_V;
+
+  // Point Babylon's KTX2 transcoder at the self-hosted decoder + WASM (vendored
+  // under babylon/ktx2/) instead of cdn.babylonjs.com, so the course normal maps
+  // (UASTC .ktx2) transcode with no external round-trip. Guarded: BABYLON is
+  // absent under Node's test runner.
+  if (typeof BABYLON !== "undefined" && BABYLON.KhronosTextureContainer2) {
+    const K = "babylon/ktx2/";
+    const T = K + "ktx2Transcoders/1/";
+    Object.assign(BABYLON.KhronosTextureContainer2.URLConfig, {
+      jsDecoderModule: K + "babylon.ktx2Decoder.js",
+      wasmUASTCToASTC: T + "uastc_astc.wasm",
+      wasmUASTCToBC7: T + "uastc_bc7.wasm",
+      wasmUASTCToRGBA_UNORM: T + "uastc_rgba8_unorm_v2.wasm",
+      wasmUASTCToRGBA_SRGB: T + "uastc_rgba8_srgb_v2.wasm",
+      wasmUASTCToR8_UNORM: T + "uastc_r8_unorm.wasm",
+      wasmUASTCToRG8_UNORM: T + "uastc_rg8_unorm.wasm",
+      wasmMSCTranscoder: T + "msc_basis_transcoder.wasm",
+      wasmZSTDDecoder: K + "zstddec.wasm",
+    });
+  }
+
   // Load an asset-relative .glb from `root` (default "assets/"). container:true returns an
   // AssetContainer (for instancing); otherwise a standard ImportMesh result.
   // `version` appends ?v=<version> AND forces the glb loader — the query string
@@ -220,6 +247,8 @@
     mod,
     lerpAngle,
     wrapAngle,
+    ASSET_V,
+    v,
     loadModel,
     roomFX,
     hideBoot,

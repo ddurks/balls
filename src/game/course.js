@@ -836,7 +836,7 @@
       // Out of bounds: ball rolled/flew off the hole terrain (an island) and is
       // falling into the void — take a penalty drop instead of falling forever.
       if (!this.busy && !this.holeComplete && bp.y < -15) {
-        this.applyPenalty("Out of bounds — +1");
+        this.applyPenalty("Out of bounds +1");
         return;
       }
 
