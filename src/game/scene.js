@@ -5,7 +5,7 @@
   // ─── SCENE SETUP ──────────────────────────────────────────────────────────────
 
   class SceneSetup {
-    static async createEnvironment(scene, opts = {}) {
+    static async createEnvironment(scene) {
       let envTexture = null;
       try {
         envTexture = BABYLON.CubeTexture.CreateFromPrefilteredData(
@@ -57,98 +57,14 @@
       shadowGenerator.bias = 0.001;
       scene.shadowGenerator = shadowGenerator;
 
-      // Ground disc with distant horizon dressing.
-      // Course mode skips the flat playable disc (each hole ships its own terrain)
-      // but keeps the distant hills + water backdrop.
-      if (opts.skipGround) {
-        this.createRollingHillsRing(scene, 183);
-        this.createTallerHillsRing(scene, 183);
-        this.createWaterRing(scene, 183);
-      } else {
-        this.createGroundDisc(scene);
-      }
+      // Distant horizon dressing around the playable hole (each hole, and the
+      // practice range, ships its own terrain).
+      this.createRollingHillsRing(scene, 183);
+      this.createTallerHillsRing(scene, 183);
+      this.createWaterRing(scene, 183);
 
       scene.birdFlockSystem = new BirdFlockSystem(scene, 0, 0);
       await scene.birdFlockSystem.load();
-    }
-
-    static createGroundDisc(scene) {
-      const radius = 183; // 400 yard diameter (200 yard radius)
-
-      const ground = BABYLON.MeshBuilder.CreateDisc(
-        "groundDisc",
-        {
-          radius: radius,
-          tessellation: 64,
-        },
-        scene,
-      );
-
-      ground.rotation.x = Math.PI / 2;
-      ground.position.y = 0;
-
-      const groundMat = Utils.createMaterial(
-        "groundDiscMat",
-        scene,
-        new BABYLON.Color3(0.25, 0.5, 0.15),
-        new BABYLON.Color3(0.02, 0.02, 0.02), // Much darker specular for matte
-        4, // Lower power for matte finish
-      );
-
-      const diffuseTex = new BABYLON.Texture(
-        Shared.v(CONFIG.TERRAIN.TEXTURE_PATH),
-        scene,
-      );
-      diffuseTex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
-      diffuseTex.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
-      diffuseTex.uScale = 50;
-      diffuseTex.vScale = 50;
-      groundMat.diffuseTexture = diffuseTex;
-
-      const normalTex = new BABYLON.Texture(
-        Shared.v(CONFIG.TERRAIN.NORMAL_MAP_PATH),
-        scene,
-      );
-      normalTex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
-      normalTex.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
-      normalTex.uScale = 50;
-      normalTex.vScale = 50;
-      groundMat.bumpTexture = normalTex;
-
-      ground.material = groundMat;
-      ground.receiveShadows = true;
-      ground.isPickable = false;
-
-      // Physics for terrain - create a separate collision body for reliable ground
-      const collisionBox = BABYLON.MeshBuilder.CreateBox(
-        "groundCollision",
-        {
-          width: radius * 2 * 1.1, // Slightly larger than disc
-          height: 1, // Thin enough to not interfere but enough for collision
-          depth: radius * 2 * 1.1,
-        },
-        scene,
-      );
-      collisionBox.position.y = -0.5; // Position so top surface is at y=0
-      collisionBox.visibility = 0;
-
-      const groundAggregate = new BABYLON.PhysicsAggregate(
-        collisionBox,
-        BABYLON.PhysicsShapeType.BOX,
-        {
-          mass: 0,
-          friction: CONFIG.TERRAIN.FRICTION,
-          restitution: CONFIG.TERRAIN.RESTITUTION,
-        },
-        scene,
-      );
-      scene.groundPhysicsBody = groundAggregate.body;
-
-      this.createRollingHillsRing(scene, radius);
-      this.createTallerHillsRing(scene, radius);
-      this.createWaterRing(scene, radius);
-
-      return ground;
     }
 
     static createRollingHillsRing(scene, groundRadius) {

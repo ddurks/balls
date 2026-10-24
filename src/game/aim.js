@@ -430,11 +430,7 @@
           // only when auto-selecting, so the surface ray doesn't run every frame
           // once the player has picked a club.)
           if (!this.clubSelector.manuallySelectedClub) {
-            const cm = this.game?.courseManager;
-            const onGreen =
-              cm && typeof cm.isOnGreen === "function"
-                ? cm.isOnGreen(ballPos)
-                : distanceToPin <= (CONFIG.PINS?.GREEN_RADIUS ?? 30);
+            const onGreen = !!this.game?.courseManager?.isOnGreen(ballPos);
             if (
               this.clubSelector.autoSelectClubIfNeeded(distanceToPin, onGreen)
             )
@@ -516,6 +512,7 @@
       this.fadeArrows = [];
       this.liveArrow = null;
       this.idealArrow = null;
+      this.magnusArrow = null;
 
       // Swipe feedback uses the real arrow.glb art (baked to the swipe-arrow sprite,
       // a flat white silhouette — no cel outline) instead of hand-drawn lines. The
@@ -567,6 +564,15 @@
 
     clearLiveArrow() {
       this.liveArrow = null;
+    }
+
+    // Which way spin's Magnus force is pushing the ball in flight (screen px).
+    setMagnusArrow(start, end) {
+      this.magnusArrow = { start, end };
+    }
+
+    clearMagnusArrow() {
+      this.magnusArrow = null;
     }
 
     addFadeArrow(start, end, color, durationMs, width) {
@@ -656,6 +662,16 @@
           this.liveArrow.end,
           this.liveArrow.color,
           CONFIG.SWIPE_OVERLAY.HIT_WIDTH,
+          0.9,
+        );
+      }
+
+      if (this.magnusArrow) {
+        this.drawArrow(
+          this.magnusArrow.start,
+          this.magnusArrow.end,
+          CONFIG.SWIPE_OVERLAY.MAGNUS_COLOR,
+          CONFIG.SWIPE_OVERLAY.SPIN_WIDTH,
           0.9,
         );
       }

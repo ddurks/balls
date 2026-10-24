@@ -5,36 +5,66 @@
   // ─── CHARACTER (GOLF BALL WITH ANIMATIONS) ─────────────────────────────────
 
   class GolfBallGuy {
-    // Rolling resistance: only brake once the ball is already slow, and use a
-    // constant decel. 0.6 m/s² ≈ a medium-fast green (Stimp ~9): a lag putt rolls a
-    // realistic distance and settles. (3.0 was ~5× real green resistance and, with the
-    // old 1.2 angular damping, made putting almost impossible — the ball died in ~1 m.)
-    // Trade-off: 0.6 only holds the ball on slopes up to ~3.5°; steeper banks keep
-    // rolling, which is realistic — a ball won't sit still on a steep green either.
-    static ROLL_BRAKE_SPEED = 2.5;
-    static ROLL_BRAKE_DECEL = 0.6;
-    // Anti-tunnel guard: a real-size (42.7 mm) ball at ~100 m/s moves far more than
-    // its own radius per physics step, so on a fast terrain impact (tee-shot into a
-    // rise, or a hard landing) it can punch straight through the thin triangle-MESH
-    // terrain. No substep rate is high enough to catch that reliably, so we sweep it
-    // back on top each frame instead. Only meaningful above this speed.
+    // Havok handles ordinary contacts; a native sphere sweep recovers fast misses.
     static TUNNEL_GUARD_MIN_SPEED = 6;
-    // Above this height over the terrain the ball can't tunnel through it, so we skip
-    // the (costly) per-frame terrain ray-pick — it only matters in the last metre or
-    // two before the surface. Comfortably clears one frame's fall at drive speed.
-    static TUNNEL_GUARD_MAX_HEIGHT = 3;
-    static _surfPred = (m) =>
-      m.name && m.name.startsWith("surf_") && !m.name.startsWith("surf_water");
+    // How far past a swept surface a step may end before it counts as a miss.
+    static TUNNEL_DEPTH = 0.01;
+    // At rest = in ground contact with speed and spin this low for REST_STEPS
+    // consecutive physics steps. The rolling law, not a snap, brings it there.
+    static REST_SPEED = 0.01;
+    static REST_SPIN = 1;
+    static REST_STEPS = 6;
+    // Normal speed into a surface that counts as a landing impact (applyTurfImpact).
+    // A rolling ball meets the ground at ~g·dt ≈ 0.08 m/s per step.
+    static IMPACT_SPEED = 1;
+    // Speed away from the surface at which the ball is leaving it (a bounce).
+    static LEAVING_SPEED = 0.5;
+    // Havok reports one contact per body pair per step, so a ball touching two
+    // faces of the same mesh (a valley crease) sees them on alternate steps. The
+    // support normal is the mean of this many recent contact normals.
+    static SUPPORT_STEPS = 16;
+    // Contact normals within 2° of each other count as one plane.
+    static SAME_PLANE_COS = Math.cos((2 * Math.PI) / 180);
+    // Below this speed turf grips a ball like a stopped one (see the hold in
+    // applyRollingResistance), so a crawl near the hold angle ends instead of
+    // inching on for tens of seconds.
+    static STATIC_CATCH_SPEED = 0.02;
+    // Turf's grip radius for spin about the contact normal (twistDecel). Grass
+    // blades grip well beyond the ball's geometric contact patch; this is sized
+    // so a capped sidespin dies within ~2 s of landing rather than pirouetting.
+    static TURF_TWIST_RADIUS = 0.04;
+    // Havok decelerates any contact slower than this by HAVOK_SLOW_CONTACT_DECEL
+    // (m/s², linear) by itself; see restoreSlowRoll.
+    static HAVOK_SLOW_CONTACT_SPEED = 0.1;
+    static HAVOK_SLOW_CONTACT_DECEL = 0.3;
 
     constructor(mesh, physicsBody, skeleton, scene) {
       this.mesh = mesh;
       this.body = physicsBody;
       this.startPosition = mesh.position.clone();
       this.landed = true;
+      // From applyHit until that shot's rest; a reset/drop is not a shot.
+      this.inShot = false;
       this.touchedGround = false;
-      // Terrain height directly under the ball (0 for the flat practice ground).
-      // Course mode updates this each frame so airborne/contact tests are measured
-      // relative to the ground below, not absolute world Y.
+      // Ground contact comes from Havok's collision events (see the observer below).
+      this._onGround = false;
+      this._contactPhysics = null; // SURFACE_PHYSICS of the stamped surface touched
+      this._contactNormal = new BABYLON.Vector3(0, 1, 0);
+      this._supportNormals = Array.from(
+        { length: GolfBallGuy.SUPPORT_STEPS },
+        () => new BABYLON.Vector3(),
+      );
+      this._supportCount = 0;
+      this._restSteps = 0;
+      this._grip = 0; // see applyTurfImpact
+      this._topGrip = 0;
+      this._shotDir = new BABYLON.Vector3(); // horizontal launch line (applyHit)
+      this._restSpin = new BABYLON.Vector3();
+      this._rrRoll = new BABYLON.Vector3();
+      this._heldThisStep = false;
+      this.wind = null; // Wind, set by the game; tests run without it
+      // Terrain height directly under the ball. CourseManager updates this each
+      // frame so height readouts are relative to the ground below, not world Y.
       this.heightRef = 0;
 
       // Teleport support: reset() flips disablePreStep off so the body follows the
@@ -42,11 +72,72 @@
       this._teleportRestoreFrames = 0;
       this._inCup = false; // sitting in a real cavity cup — exempt from preventTunneling
       this.pendingSpinAmount = 0;
-      this.pendingSpinAxis = BABYLON.Vector3.Zero();
 
       this.skeleton = skeleton;
       this.spinBone = null;
       this.scene = scene;
+      // Ball values are 1, so MULTIPLY hands every contact the surface's own value
+      // (Havok's defaults, MINIMUM friction / MAXIMUM restitution, let the ball win).
+      this._material = {
+        ...this.body.shape.material,
+        friction: PhysicsConfig.BALL_FRICTION,
+        frictionCombine: BABYLON.PhysicsMaterialCombineMode.MULTIPLY,
+        restitution: PhysicsConfig.BALL_RESTITUTION,
+        restitutionCombine: BABYLON.PhysicsMaterialCombineMode.MULTIPLY,
+      };
+      this.body.shape.material = this._material;
+      this._frictionlessMaterial = { ...this._material, friction: 0 };
+      this._stepStart = mesh.position.clone();
+      this._stepEnd = mesh.position.clone();
+      this._stepStartVel = new BABYLON.Vector3();
+      this._renderPos = new BABYLON.Vector3();
+      this._renderOffset = new BABYLON.Vector3();
+      this._renderQ = new BABYLON.Quaternion();
+      this.body.setCollisionCallbackEnabled(true);
+      this.body.getCollisionObservable().add((e) => {
+        this._collidedThisStep = true;
+        const phys = e.collidedAgainst.transformNode?._surfacePhysics;
+        if (phys) {
+          this._contactPhysics = phys;
+          // While held, keep the support the ball came to rest on (static
+          // friction persists); Havok's normals at rest can wander off it.
+          if (!this._heldThisStep) this.addSupportNormal(e.normal);
+        }
+      });
+      // The single per-physics-step hook: forces and the rolling law run at the fixed
+      // STEP_SECONDS, so behaviour is the same at any render frame rate.
+      scene.onBeforePhysicsObservable.add(() => {
+        // mesh.position, not getAbsolutePosition(): the world matrix is only
+        // recomputed per rendered frame, but this runs every physics sub-step.
+        this._stepStart.copyFrom(this.mesh.position);
+        this.body.getLinearVelocityToRef(this._stepStartVel);
+        this._collidedThisStep = false;
+        this._heldThisStep = false;
+        if (this._onGround) {
+          this.applyRollingResistance(PhysicsConfig.STEP_SECONDS);
+        } else if (!this.landed) {
+          if (this.wind) this.applyWind();
+          this.applyMagnus();
+        }
+      });
+      scene.onAfterPhysicsObservable.add(() => {
+        if (this._frictionless) {
+          this._frictionless = false;
+          this.body.shape.material = this._material;
+        }
+        this.applyTurfImpact();
+        this.releaseContactFriction();
+        this.restoreSlowRoll();
+        this.updateGroundContact();
+        this.preventTunneling();
+        if (
+          this._teleportRestoreFrames > 0 &&
+          --this._teleportRestoreFrames === 0
+        ) {
+          this.body.disablePreStep = true;
+        }
+        this._stepEnd.copyFrom(this.mesh.position);
+      });
 
       this.faceMesh = null;
       this.faceMaterial = null;
@@ -65,7 +156,16 @@
       this.targetRotation = 0;
       this.facingAimDirection = false;
       // Visual root the character meshes hang from (set up in loadCharacter).
-      // Facing is applied here, not on this.mesh — see updateRotation.
+      // Facing is applied here, not on this.mesh — see updateVisualRotation.
+      this._visualQ = BABYLON.Quaternion.Identity();
+      // Havok syncs into the Euler .rotation while there's no quaternion, and
+      // updateVisualRotation needs the body's orientation as one.
+      if (!mesh.rotationQuaternion)
+        mesh.rotationQuaternion = BABYLON.Quaternion.FromEulerVector(
+          mesh.rotation,
+        );
+      this._visualTmp = new BABYLON.Quaternion();
+      this._visualW = new BABYLON.Vector3();
       this.characterRoot = null;
 
       // Blinking system — the state machine lives in balls.js; this.blink and
@@ -94,6 +194,42 @@
     // === PHYSICS METHODS ===
     getPosition() {
       return this.mesh.position;
+    }
+
+    // Where the ball is drawn this frame. Physics steps at a fixed 120 Hz, so a
+    // frame lands 0..N steps after the last one and the raw step position makes a
+    // fast ball judder by up to a step (~0.6 m off a driver). Blend the last
+    // step's start→end by the time Babylon's accumulator has left over instead:
+    // a constant one-step lag, smooth at any frame rate.
+    getRenderPosition() {
+      const p = this.mesh.position;
+      // Moved outside a physics step (reset, teleport): nothing to blend from.
+      if (!p.equals(this._stepEnd)) return p;
+      const alpha = Math.min(
+        (this.scene._physicsTimeAccumulator || 0) /
+          (PhysicsConfig.STEP_SECONDS * 1000),
+        1,
+      );
+      return BABYLON.Vector3.LerpToRef(
+        this._stepStart,
+        p,
+        alpha,
+        this._renderPos,
+      );
+    }
+
+    // Draw the visible ball at getRenderPosition() without moving the physics
+    // body: shift its visual children by the difference, expressed in the body's
+    // rotated frame (they hang off this.mesh). Once per rendered frame.
+    applyRenderOffset() {
+      const off = this.getRenderPosition().subtractToRef(
+        this.mesh.position,
+        this._renderOffset,
+      );
+      this.mesh.rotationQuaternion.conjugateToRef(this._renderQ);
+      off.rotateByQuaternionToRef(this._renderQ, off);
+      this.characterRoot?.position.copyFrom(off);
+      this.spinAura?.position.copyFrom(off);
     }
 
     getHeight() {
@@ -125,16 +261,50 @@
     // airborne. Backspin lifts (float/carry), topspin drops, sidespin curves the
     // shot (slice/hook). This is what makes spin shape the path of travel.
     applyMagnus() {
-      const w = this.getAngularVelocity();
-      const v = this.getVelocity();
-      const c = CONFIG.PHYSICS.MAGNUS_COEFF;
       const f = this._magnus || (this._magnus = new BABYLON.Vector3());
-      f.set(
-        (w.y * v.z - w.z * v.y) * c,
-        (w.z * v.x - w.x * v.z) * c,
-        (w.x * v.y - w.y * v.x) * c,
+      this.body.applyForce(this.magnusForceToRef(f), this.getPosition());
+    }
+
+    // Wind acts through the air flowing past the ball, so its push grows with
+    // the ball's airspeed, up to the tuned full-shot force at FULL_FORCE_SPEED: a
+    // slow hop off the turf barely feels it (a constant force rolled bounces off
+    // sideways). Full shots fly faster than that nearly all the way.
+    applyWind() {
+      const f = this._windForce || (this._windForce = new BABYLON.Vector3());
+      f.copyFrom(this.wind.getForceVector()).scaleInPlace(
+        Math.min(1, this.getSpeed() / CONFIG.WIND.FULL_FORCE_SPEED),
       );
       this.body.applyForce(f, this.getPosition());
+    }
+
+    // Magnus force c·(ω × v), with its sideways (horizontal, ⟂ v) part scaled by
+    // MAGNUS_SIDE_GAIN — see CONFIG.PHYSICS for why the two are tuned apart.
+    magnusForceToRef(out) {
+      const w = this._mgW || (this._mgW = new BABYLON.Vector3());
+      const v = this._mgV || (this._mgV = new BABYLON.Vector3());
+      this.body.getAngularVelocityToRef(w);
+      this.body.getLinearVelocityToRef(v);
+      BABYLON.Vector3.CrossToRef(w, v, out).scaleInPlace(
+        CONFIG.PHYSICS.MAGNUS_COEFF,
+      );
+      // Horizontal unit ⟂ travel (v × up, up = +y).
+      const sx = -v.z;
+      const sz = v.x;
+      const sLen = Math.hypot(sx, sz);
+      if (sLen > 1e-6) {
+        const side = (out.x * sx + out.z * sz) / sLen;
+        const extra = ((CONFIG.PHYSICS.MAGNUS_SIDE_GAIN - 1) * side) / sLen;
+        out.x += sx * extra;
+        out.z += sz * extra;
+      }
+      return out;
+    }
+
+    // Unit direction of the Magnus push (ω × v), or zero when there is none to show.
+    getMagnusDirection() {
+      const f = this.magnusForceToRef(new BABYLON.Vector3());
+      const len = f.length();
+      return len > 1e-8 ? f.scaleInPlace(1 / len) : f.setAll(0);
     }
 
     // Cartoonish glow shell around the ball. Additive so intensity 0 = invisible
@@ -205,189 +375,466 @@
       this.spinAura.scaling.setAll(1 + 0.14 * t);
     }
 
+    addSupportNormal(normal) {
+      const n =
+        this._supportNormals[this._supportCount++ % GolfBallGuy.SUPPORT_STEPS];
+      n.copyFrom(normal);
+      // The event normal's sign depends on which body Havok lists first.
+      if (n.y < 0) n.scaleInPlace(-1);
+      this._contactNormal.copyFrom(n);
+    }
+
+    // Whether all recent contacts were on (nearly) the current contact plane.
+    supportIsPlane() {
+      const count = Math.min(this._supportCount, GolfBallGuy.SUPPORT_STEPS);
+      for (let i = 0; i < count; i++) {
+        const c = BABYLON.Vector3.Dot(
+          this._supportNormals[i],
+          this._contactNormal,
+        );
+        if (c < GolfBallGuy.SAME_PLANE_COS) return false;
+      }
+      return true;
+    }
+
+    // Cosine of the steepest slope the recent contacts can support the ball on
+    // together: the most upright direction in the cone of their normals. One face
+    // gives its own normal; the two faces of a valley crease give the vertical
+    // between them, so a ball resting in the crease is held although neither face
+    // alone could hold it.
+    // (Gravity is −y, so "upright" is a normal's y.)
+    supportUpright() {
+      const list = this._supportNormals;
+      const count = Math.min(this._supportCount, GolfBallGuy.SUPPORT_STEPS);
+      let best = 0;
+      for (let i = 0; i < count; i++) {
+        const a = list[i];
+        best = Math.max(best, a.y);
+        for (let j = i + 1; j < count; j++) {
+          const b = list[j];
+          const c = BABYLON.Vector3.Dot(a, b);
+          if (c > 0.9999) continue;
+          // Up projected onto span{a, b} is α·a + β·b; inside the cone when both
+          // are ≥ 0, and its length² is then α·a.y + β·b.y.
+          const ua = a.y;
+          const ub = b.y;
+          const alpha = (ua - c * ub) / (1 - c * c);
+          const beta = (ub - c * ua) / (1 - c * c);
+          if (alpha < 0 || beta < 0) continue;
+          best = Math.max(best, Math.sqrt(alpha * ua + beta * ub));
+        }
+      }
+      return best;
+    }
+
+    setOnGround(onGround) {
+      this._onGround = onGround;
+      // Keep the support history through a brief hop (a crease's edge can
+      // kick the ball off for a step); teleports and strikes clear it.
+      if (!onGround) this._contactPhysics = null;
+      // Damping is the air-drag model: none on the ground, where the surface's
+      // rolling resistance is the only drag. On the ground the rolling law
+      // applies gravity itself.
+      this.body.setGravityFactor(onGround ? 0 : 1);
+      this.body.setLinearDamping(
+        onGround ? 0 : PhysicsConfig.BALL_LINEAR_DAMPING,
+      );
+      this.body.setAngularDamping(
+        onGround ? 0 : PhysicsConfig.BALL_ANGULAR_DAMPING,
+      );
+    }
+
+    // Ground contact for the step just taken. Havok reports a collision event every
+    // step while touching — except for a sleeping body, which reports nothing but
+    // also isn't moving, so a still ball keeps its last state.
+    updateGroundContact() {
+      const speed = this.getSpeed();
+      this.body.getAngularVelocityToRef(this._restSpin);
+      const onGround =
+        this._collidedThisStep || (this._onGround && speed < 1e-3);
+      if (onGround !== this._onGround) this.setOnGround(onGround);
+      // On a stamped surface only the rolling law's hold counts as rest, so a ball
+      // easing off a slope it can't hold is never mistaken for a stopped one.
+      const resting =
+        onGround &&
+        (this._contactPhysics ? this._heldThisStep : true) &&
+        speed < GolfBallGuy.REST_SPEED &&
+        this._restSpin.length() < GolfBallGuy.REST_SPIN;
+      this._restSteps = resting ? this._restSteps + 1 : 0;
+    }
+
     /**
-     * Rolling resistance. A physics sphere rolls down any slope forever (sliding
-     * friction can't stop a rolling ball — only rolling resistance can). So when
-     * the ball is on the ground and already slow, bleed off horizontal speed with
-     * a CONSTANT deceleration (not proportional damping, which only asymptotes).
-     * On a gentle undulation this beats gravity → the ball fully stops; on a steep
-     * bank gravity wins → it keeps rolling. Makes the ball settle instead of creep.
+     * Rolling law, once per physics step while in ground contact. The ball's
+     * gravity is applied here (Havok's is off on the ground — see
+     * updateGroundContact), then the contact absorbs up to μr·g·dt of the
+     * resulting tangential velocity: at any speed, never past zero. A ball whose
+     * gravity pull fits inside that budget therefore stays exactly put, and one
+     * that doesn't rolls on. The braking acts on linear velocity; Havok's contact
+     * friction shares it with the spin, so a rolling ball feels 5/7 of it — the
+     * same factor as slope gravity. Net: rest on any slope up to asin(μr), else
+     * accelerate at 5/7·g·(sinθ − μr); on the flat decelerate at 5/7·μr·g.
+     * (Applying gravity ourselves matters: pre-cancelling Havok's own gravity
+     * lets its friction see the slope pull mid-step and creep the ball.)
      */
     applyRollingResistance(dt) {
-      if (this.isAirborne()) {
-        this._restNormal = null;
-        return;
-      }
-      // Scratch vectors reused every frame instead of allocating (this runs each
-      // render frame while the ball is settling on an undulation).
-      const v = this._rrLin || (this._rrLin = new BABYLON.Vector3());
-      const av = this._rrAng || (this._rrAng = new BABYLON.Vector3());
-      this.body.getLinearVelocityToRef(v);
-      const hs = Math.hypot(v.x, v.z);
-
-      // Sand grabs the ball hard (plush bunker): once it's on sand, brake at ANY
-      // speed and kill the spin so it plugs almost immediately instead of skidding
-      // or rolling through. grab = per-second decay rate (SURFACE_PHYSICS.sand.grab).
-      const grab = this.getHeight() < 0.6 ? this._sandGrabUnderBall() : 0;
-      if (grab > 0) {
-        this._restNormal = null;
-        const s = 1 - Math.min(grab * dt, 1);
-        if (hs * s < 0.06) {
-          v.set(0, Math.min(0, v.y), 0);
-          this.body.setLinearVelocity(v);
-          av.set(0, 0, 0);
-          this.body.setAngularVelocity(av);
-        } else {
-          v.set(v.x * s, v.y, v.z * s);
-          this.body.setLinearVelocity(v);
-          this.body.getAngularVelocityToRef(av);
-          av.scaleInPlace(s);
-          this.body.setAngularVelocity(av);
-        }
-        return;
-      }
-
-      // Experiment toggle: skip the custom kinetic brake + slope hold and let native
-      // physics roll/settle the ball (see CONFIG.PHYSICS.ROLL_RESISTANCE_ENABLED).
-      if (!CONFIG.PHYSICS.ROLL_RESISTANCE_ENABLED) {
-        this._restNormal = null;
-        return;
-      }
-
-      const Crr = GolfBallGuy.ROLL_BRAKE_DECEL; // rolling-resistance decel cap (m/s²)
-
-      if (hs > 1e-4) {
-        // KINETIC rolling resistance: a constant deceleration opposing travel,
-        // applied once the ball has slowed below ROLL_BRAKE_SPEED (fast roll-outs
-        // run free). Smooth all the way to zero — no snap threshold — and coupled
-        // to the angular velocity so roll-without-slip holds.
-        this._restNormal = null;
-        if (hs > GolfBallGuy.ROLL_BRAKE_SPEED) return;
-        const s = Math.max(0, hs - Crr * dt) / hs;
-        v.x *= s;
-        v.z *= s;
-        this.body.setLinearVelocity(v);
-        this.body.getAngularVelocityToRef(av);
-        av.scaleInPlace(s);
-        this.body.setAngularVelocity(av);
-        return;
-      }
-
-      // STATIC rolling resistance: the ball has effectively stopped. Real rolling
-      // resistance now resists the slope's PULL (not motion) up to the SAME cap,
-      // cancelling gravity's along-slope component so the ball genuinely stays put
-      // on any grade it can hold. Grades steeper than the cap aren't fully
-      // cancelled, so the ball eases back into a roll over the next frames — real
-      // physics, and no velocity clamp (we only pre-empt the gravity Havok is about
-      // to integrate this step; beforeRender runs before the physics step). One
-      // surface-normal ray per rest episode, cached.
-      if (!this._restNormal) this._restNormal = this._surfaceNormalUnderBall();
-      const n = this._restNormal;
+      const phys = this._contactPhysics;
+      const n = this._contactNormal;
       const g = PhysicsConfig.GRAVITY;
-      const gDotN = g.x * n.x + g.y * n.y + g.z * n.z;
-      const tx = g.x - n.x * gDotN; // gravity's tangential (along-slope) accel
-      const tz = g.z - n.z * gDotN;
-      const driveMag = Math.hypot(tx, tz);
-      if (driveMag > 1e-5) {
-        const resist = Math.min(driveMag, Crr) * dt;
-        v.x -= (tx / driveMag) * resist;
-        v.z -= (tz / driveMag) * resist;
+      const v = this._rrLin || (this._rrLin = new BABYLON.Vector3());
+      this.body.getLinearVelocityToRef(v);
+      v.x += g.x * dt;
+      v.y += g.y * dt;
+      v.z += g.z * dt;
+      this._slowRollExpected = false;
+      const vn = BABYLON.Vector3.Dot(v, n);
+      // No surface law to apply, or the ball is leaving the surface (struck, or
+      // bouncing off): gravity only.
+      if (!phys || vn > 0) {
         this.body.setLinearVelocity(v);
+        return;
       }
-    }
-
-    // World-space surface normal directly under the ball (course terrain), for the
-    // static rolling-resistance hold. Falls back to straight up (flat) when nothing
-    // is hit — e.g. the practice ground, which is level so no hold is needed.
-    _surfaceNormalUnderBall() {
-      const p = this.mesh.getAbsolutePosition();
-      const ray =
-        this._nRay ||
-        (this._nRay = new BABYLON.Ray(
-          new BABYLON.Vector3(),
-          new BABYLON.Vector3(0, -1, 0),
-          4,
-        ));
-      ray.origin.set(p.x, p.y + 1, p.z);
-      const hit = this.scene.pickWithRay(ray, GolfBallGuy._surfPred);
-      if (hit && hit.hit) {
-        const nrm = hit.getNormal(true);
-        if (nrm) {
-          if (nrm.y < 0) nrm.scaleInPlace(-1); // ensure it points up
-          return nrm;
+      let tx = v.x - n.x * vn;
+      let ty = v.y - n.y * vn;
+      let tz = v.z - n.z * vn;
+      const hs = Math.hypot(tx, ty, tz);
+      const w = this._rrAng || (this._rrAng = new BABYLON.Vector3());
+      this.body.getAngularVelocityToRef(w);
+      // Spinning friction about the contact normal (see twistDecel).
+      const wn = BABYLON.Vector3.Dot(w, n);
+      const r = CONFIG.BALL.COLLIDER_DIAMETER / 2;
+      const spinCut = Math.min(Math.abs(wn), GolfBallGuy.twistDecel(phys) * dt);
+      if (spinCut > 0) {
+        n.scaleAndAddToRef(-Math.sign(wn) * spinCut, w);
+        this.body.setAngularVelocity(w);
+      }
+      // The slope's pull (gravity along the surface), and the motion before it.
+      const gn = BABYLON.Vector3.Dot(g, n);
+      const px = g.x - n.x * gn;
+      const py = g.y - n.y * gn;
+      const pz = g.z - n.z * gn;
+      const pull = Math.hypot(px, py, pz);
+      const moving = Math.hypot(tx - px * dt, ty - py * dt, tz - pz * dt);
+      // Above putting speeds a ball hops and skids through grass rather than
+      // rolling over it: the surface's turfDrag (1/s) adds to the budget there.
+      // Judged on the speed it will roll at, so a putt launched sliding (rolling
+      // at 5/7 of its launch speed) stays under the threshold the whole way.
+      const roll = this.rollingVelocity(tx, ty, tz, w, this._rrRoll).length();
+      const budget =
+        (phys.rollingResistance * g.length() +
+          phys.turfDrag * Math.max(0, roll - phys.turfDragSpeed)) *
+        dt;
+      // Held when the ball has all but stopped (the rolling resistance can absorb
+      // its motion this step, or it is down to a crawl turf grips like a stopped
+      // ball) and the static resistance — larger, as turf's breakaway is — can
+      // absorb the pull: rest on slopes up to asin(holdResistance), but once
+      // moving keep rolling on slopes above asin(rollingResistance).
+      const held =
+        moving <=
+          Math.max(
+            phys.rollingResistance * g.length() * dt,
+            GolfBallGuy.STATIC_CATCH_SPEED,
+          ) &&
+        (pull <= phys.holdResistance * g.length() ||
+          Math.sqrt(Math.max(0, 1 - this.supportUpright() ** 2)) <=
+            phys.holdResistance);
+      if (!held) {
+        const k = Math.max(0, hs - budget) / hs;
+        tx *= k;
+        ty *= k;
+        tz *= k;
+        // Remember the slow roll this should produce; see restoreSlowRoll.
+        const u = this.rollingVelocity(tx, ty, tz, w, this._slowRoll);
+        this._slowRoll = u;
+        this._slowRollExpected =
+          u.length() <= GolfBallGuy.HAVOK_SLOW_CONTACT_SPEED + 0.01;
+      } else {
+        tx = ty = tz = 0;
+        // Stopped: end the leftover roll too — at these speeds Havok's friction
+        // no longer turns it back into motion — but keep real spin (a backspin
+        // bite) for friction to act on.
+        if (w.length() * r <= GolfBallGuy.HAVOK_SLOW_CONTACT_SPEED) {
+          this.body.setAngularVelocity(w.setAll(0));
+          this._heldThisStep = true;
         }
       }
-      return new BABYLON.Vector3(0, 1, 0);
+      v.set(tx + n.x * vn, ty + n.y * vn, tz + n.z * vn);
+      this.body.setLinearVelocity(v);
     }
 
-    // Downward ray → the surface grab under the ball (sand > 0; 0 elsewhere), so a
-    // bunker can brake the roll. Throttled + cached so it isn't a fresh ray every
-    // frame of every roll (the pick cost is what spikes frame times — see below).
-    _sandGrabUnderBall() {
-      this._surfTick = (this._surfTick || 0) + 1;
-      if (this._surfGrab !== undefined && this._surfTick % 4 !== 0) {
-        return this._surfGrab;
-      }
-      const p = this.mesh.getAbsolutePosition();
-      const ray =
-        this._sbRay ||
-        (this._sbRay = new BABYLON.Ray(
-          new BABYLON.Vector3(),
-          new BABYLON.Vector3(0, -1, 0),
-          4,
-        ));
-      ray.origin.set(p.x, p.y + 1, p.z);
-      const hit = this.scene.pickWithRay(ray, GolfBallGuy._surfPred);
-      this._surfGrab =
-        (hit && hit.hit && hit.pickedMesh && hit.pickedMesh._surfaceGrab) || 0;
-      return this._surfGrab;
-    }
-
-    // Swept anti-tunnel guard (see TUNNEL_GUARD_MIN_SPEED). If the ball ended a step
-    // below the terrain surface at its x,z, it tunneled through — bounce it off the
-    // surface (reflect velocity by restitution) and lift it back on top.
-    preventTunneling() {
-      if (!this.body || this._teleportRestoreFrames > 0 || this._inCup) return;
-      if (this.getSpeed() < GolfBallGuy.TUNNEL_GUARD_MIN_SPEED) return;
-      // Skip the terrain ray-pick while the ball is well above the ground — it can't
-      // tunnel from up there, and picking every frame of the whole flight is what
-      // spikes frame times (and makes the follow camera look jittery). getHeight() is
-      // an O(1) height-grid read, so this early-out is essentially free.
-      if (this.getHeight() > GolfBallGuy.TUNNEL_GUARD_MAX_HEIGHT) return;
-      const p = this.mesh.getAbsolutePosition();
+    // A landing, once per impact (Havok spreads one over two steps). Applied here
+    // rather than left to Havok: its solver gave a landing wedge only a fraction
+    // of the friction the bounce allows, and replays it as the ball leaves.
+    //  1. Pitch mark: turf gives way under the ball, costing impactLoss·vn of its
+    //     forward motion (never pushing it backwards). It acts on the ball as a
+    //     whole; the contact friction below then shares it with the spin.
+    //  2. Coulomb friction at the contact point, up to μ·(1+e)·vn, never past
+    //     rolling (slip/3.5) and never reversing the ball: it conserves the
+    //     rolling speed (5v + 2Rω×n)/7, so heavy backspin stops the ball here and
+    //     the skid that follows draws it back.
+    //  3. Grip: the turf can only hold so much spin. Like friction, its grip
+    //     scales with how hard the landing presses the ball in: the backward
+    //     rolling speed backspin can produce is capped at spinGrip·(1+e)·vn, and
+    //     the forward speed topspin can add at topspinGrip·(1+e)·vn, so stacked
+    //     spin saturates and a soft, shallow landing bites or releases less.
+    //  4. Twist: the impact's large contact force wrings out most spin about the
+    //     contact normal (the same torsional friction as at rest, on (1+e)·vn).
+    // Rolling and putting never reach IMPACT_SPEED.
+    applyTurfImpact() {
+      const phys = this._contactPhysics;
+      if (!this._collidedThisStep || !phys || this._onGround) return;
+      const n = this._contactNormal;
+      const before = this._stepStartVel;
+      const vn = -BABYLON.Vector3.Dot(before, n);
+      if (vn < GolfBallGuy.IMPACT_SPEED) return;
       const r = CONFIG.BALL.COLLIDER_DIAMETER / 2;
-      const ray =
-        this._tgRay ||
-        (this._tgRay = new BABYLON.Ray(
-          new BABYLON.Vector3(),
-          new BABYLON.Vector3(0, -1, 0),
-          80,
-        ));
-      ray.origin.set(p.x, p.y + 3, p.z);
-      const hit = this.scene.pickWithRay(ray, GolfBallGuy._surfPred);
-      if (!hit || !hit.hit) return;
-      const surfaceY = hit.pickedPoint.y;
-      if (p.y >= surfaceY + r - 0.03) return; // on/above the surface — nothing to do
-      // Reflect the into-surface velocity component (a bounce), then lift on top.
-      const v = this._tgV || (this._tgV = new BABYLON.Vector3());
+      const v = this._impactVel || (this._impactVel = new BABYLON.Vector3());
+      const w = this._impactSpin || (this._impactSpin = new BABYLON.Vector3());
       this.body.getLinearVelocityToRef(v);
-      let n = hit.getNormal(true);
-      if (!n) n = new BABYLON.Vector3(0, 1, 0);
-      const vn = v.x * n.x + v.y * n.y + v.z * n.z;
-      if (vn < 0) {
-        // Bounce with the STRUCK surface's restitution (sand deadens, rock kicks);
-        // falls back to the ball default off unstamped surfaces (practice disc).
-        const e =
-          hit.pickedMesh?._surfaceRestitution ?? CONFIG.BALL.RESTITUTION;
-        v.x -= (1 + e) * vn * n.x;
-        v.y -= (1 + e) * vn * n.y;
-        v.z -= (1 + e) * vn * n.z;
-        this.body.setLinearVelocity(v);
+      this.body.getAngularVelocityToRef(w);
+      // Forward = the tangential direction the ball came in on.
+      const f = this._impactDir || (this._impactDir = new BABYLON.Vector3());
+      f.copyFrom(before).subtractInPlace(n.scale(-vn));
+      const fLen = f.length();
+      if (fLen > 1e-6) f.scaleInPlace(1 / fLen);
+      else f.setAll(0);
+
+      const ahead = BABYLON.Vector3.Dot(v, f);
+      if (ahead > 0)
+        f.scaleAndAddToRef(-Math.min(phys.impactLoss * vn, ahead), v);
+
+      // Backspin and topspin are relative to the shot's line, not to however
+      // the ball happens to be drifting when it comes down from a later hop.
+      const shot =
+        this._impactShot || (this._impactShot = new BABYLON.Vector3());
+      shot.copyFrom(this._shotDir);
+      shot.subtractInPlace(n.scale(BABYLON.Vector3.Dot(shot, n)));
+      if (shot.lengthSquared() > 1e-6) shot.normalize();
+      else shot.copyFrom(f);
+
+      // Topspin's grip: the forward rolling speed spin beyond plain rolling can
+      // add, 2/7·(R(ω×n) − v)·shot, is capped like backspin's by how hard the
+      // landing pressed the ball in. (A ball that is simply rolling adds none.)
+      const roll =
+        this._impactRoll || (this._impactRoll = new BABYLON.Vector3());
+      BABYLON.Vector3.CrossToRef(w, n, roll).scaleInPlace(r);
+      this._topGrip = Math.max(
+        this._topGrip,
+        phys.topspinGrip * (1 + phys.restitution) * vn,
+      );
+      const added =
+        (2 * (BABYLON.Vector3.Dot(roll, shot) - BABYLON.Vector3.Dot(v, shot))) /
+        7;
+      if (added > this._topGrip) {
+        const ds = shot.scale(-3.5 * (added - this._topGrip));
+        w.addInPlace(BABYLON.Vector3.Cross(n, ds).scaleInPlace(1 / r));
       }
-      this.mesh.position.y = surfaceY + r + 0.01;
-      this.body.disablePreStep = false;
+
+      // Contact point velocity v + R·n × ω, tangential part.
+      const slip =
+        this._impactSlip || (this._impactSlip = new BABYLON.Vector3());
+      BABYLON.Vector3.CrossToRef(n, w, slip).scaleInPlace(r).addInPlace(v);
+      slip.subtractInPlace(n.scale(BABYLON.Vector3.Dot(slip, n)));
+      const slipSpeed = slip.length();
+      if (slipSpeed > 1e-6) {
+        slip.scaleInPlace(1 / slipSpeed);
+        let j = Math.min(
+          phys.friction * (1 + phys.restitution) * vn,
+          slipSpeed / 3.5,
+        );
+        const along = BABYLON.Vector3.Dot(slip, f);
+        const fwd = BABYLON.Vector3.Dot(v, f);
+        if (along > 1e-6) j = Math.min(j, Math.max(0, fwd) / along);
+        slip.scaleAndAddToRef(-j, v);
+        // Δω = (5j / 2R)·(n × ŝ)
+        w.addInPlace(
+          BABYLON.Vector3.Cross(n, slip).scaleInPlace((2.5 * j) / r),
+        );
+      }
+
+      // Backward rolling speed this spin will produce: −shot·(5v + 2Rω×n)/7.
+      const s = roll;
+      BABYLON.Vector3.CrossToRef(w, n, s).scaleInPlace(r);
+      const back =
+        -(5 * BABYLON.Vector3.Dot(v, shot) + 2 * BABYLON.Vector3.Dot(s, shot)) /
+        7;
+      // The shot's hardest landing sets the grip; the small hops that follow
+      // can't lower it.
+      this._grip = Math.max(
+        this._grip,
+        phys.spinGrip * (1 + phys.restitution) * vn,
+      );
+      const grip = this._grip;
+      if (back > grip) {
+        // Raise the spin's surface speed along the shot by 7/2 of the excess.
+        const ds = shot.scale(3.5 * (back - grip));
+        w.addInPlace(BABYLON.Vector3.Cross(n, ds).scaleInPlace(1 / r));
+      }
+
+      const wn = BABYLON.Vector3.Dot(w, n);
+      const twist = Math.min(
+        Math.abs(wn),
+        (GolfBallGuy.twistDecel(phys) * ((1 + phys.restitution) * vn)) /
+          -PhysicsConfig.GRAVITY.y,
+      );
+      n.scaleAndAddToRef(-Math.sign(wn) * twist, w);
+
+      this.body.setLinearVelocity(v);
+      this.body.setAngularVelocity(w);
+      this.skipFrictionNextStep();
+    }
+
+    // Spin about the contact normal lost per second resting on `phys` (rad/s²):
+    // torsional friction (3π/16)·μ·m·g·a over the turf's grip radius a, divided
+    // by I = 2/5·m·R². Havok has none, so without it a sidespun ball never rests.
+    static twistDecel(phys) {
+      const r = CONFIG.BALL.COLLIDER_DIAMETER / 2;
+      return (
+        (((15 * Math.PI) / 32) *
+          phys.friction *
+          -PhysicsConfig.GRAVITY.y *
+          GolfBallGuy.TURF_TWIST_RADIUS) /
+        (r * r)
+      );
+    }
+
+    // Havok warm-starts a contact with the impulses it solved the step before. On
+    // the step a ball leaves the turf (struck, or bouncing off it) that replays the
+    // landing's whole friction impulse again — measured: a backspinning wedge
+    // flipped from ωR = 2 m/s of backspin to 6 m/s of overspin as it bounced. The
+    // ball is frictionless for that one step; it is leaving the contact anyway.
+    releaseContactFriction() {
+      if (!this._collidedThisStep) return;
+      const v = this._impactVel || (this._impactVel = new BABYLON.Vector3());
+      this.body.getLinearVelocityToRef(v);
+      if (
+        BABYLON.Vector3.Dot(v, this._contactNormal) > GolfBallGuy.LEAVING_SPEED
+      )
+        this.skipFrictionNextStep();
+    }
+
+    skipFrictionNextStep() {
+      this._frictionless = true;
+      this.body.shape.material = this._frictionlessMaterial;
+    }
+
+    // The ball's speed once contact friction has made it roll without slipping:
+    // (5·v + 2·R·ω×n) / 7, which that friction can't change (it conserves angular
+    // momentum about the contact point). Tangential v is (tx, ty, tz).
+    rollingVelocity(tx, ty, tz, w, out) {
+      const n = this._contactNormal;
+      const r = CONFIG.BALL.COLLIDER_DIAMETER / 2;
+      out = out || new BABYLON.Vector3();
+      return out.set(
+        (5 * tx + 2 * r * (w.y * n.z - w.z * n.y)) / 7,
+        (5 * ty + 2 * r * (w.z * n.x - w.x * n.z)) / 7,
+        (5 * tz + 2 * r * (w.x * n.y - w.y * n.x)) / 7,
+      );
+    }
+
+    // Havok brakes any contact slower than ~0.1 m/s by about 0.3 m/s² by itself
+    // (friction-, shape- and mass-independent; measured with Havok 1.3.12). Left
+    // in, it would stall balls near the hold angle and make μr alone not decide
+    // how they roll, so after a step that should have kept a slow roll, give
+    // back what it took.
+    restoreSlowRoll() {
+      if (!this._slowRollExpected || !this._collidedThisStep) return;
+      this._slowRollExpected = false;
+      // Only on a single plane: in a crease the faces' collisions take speed too,
+      // and refunding those would keep a rocking ball going.
+      if (!this.supportIsPlane()) return;
+      const n = this._contactNormal;
+      const v = this._rrLin;
+      const w = this._rrAng;
+      this.body.getLinearVelocityToRef(v);
+      this.body.getAngularVelocityToRef(w);
+      const vn = BABYLON.Vector3.Dot(v, n);
+      const u = this.rollingVelocity(
+        v.x - n.x * vn,
+        v.y - n.y * vn,
+        v.z - n.z * vn,
+        w,
+        this._slowRollNow,
+      );
+      this._slowRollNow = u;
+      const want = this._slowRoll;
+      const speed = want.length();
+      const lost = speed - BABYLON.Vector3.Dot(u, want) / speed;
+      // Its brake is linear, so the rolling speed loses exactly 5/7 of it, or all
+      // of a slower roll. Give back only a loss like that: anything else is a real
+      // collision (e.g. the far face of a crease), and refunding it would pump
+      // energy in.
+      const brake =
+        (5 / 7) *
+        GolfBallGuy.HAVOK_SLOW_CONTACT_DECEL *
+        PhysicsConfig.STEP_SECONDS;
+      const stopped = u.length() < 0.2 * brake;
+      if (lost <= 0 || lost > 1.2 * brake || (lost < 0.8 * brake && !stopped))
+        return;
+      // A linear push changes the rolling speed by 5/7 of itself.
+      want.scaleAndAddToRef((1.4 * lost) / speed, v);
+      this.body.setLinearVelocity(v);
+    }
+
+    preventTunneling() {
+      if (
+        this._inCup ||
+        this._teleportRestoreFrames > 0 ||
+        // Pre-step speed: Havok can slow a ball within the very step it passes
+        // through the surface.
+        Math.max(this.getSpeed(), this._stepStartVel.length()) <
+          GolfBallGuy.TUNNEL_GUARD_MIN_SPEED
+      )
+        return;
+      const end = this.mesh.position;
+      if (
+        BABYLON.Vector3.DistanceSquared(this._stepStart, end) <
+        (CONFIG.BALL.COLLIDER_DIAMETER / 2) ** 2
+      )
+        return;
+      const input =
+        this._castInput || (this._castInput = new BABYLON.ShapeCastResult());
+      const hit =
+        this._castHit || (this._castHit = new BABYLON.ShapeCastResult());
+      this.scene.getPhysicsEngine().getPhysicsPlugin().shapeCast(
+        {
+          shape: this.body.shape,
+          rotation: BABYLON.Quaternion.Identity(),
+          startPosition: this._stepStart,
+          endPosition: end,
+          shouldHitTriggers: false,
+          ignoreBody: this.body,
+        },
+        input,
+        hit,
+      );
+      // A zero-fraction hit is an existing overlap, not a newly crossed surface.
+      if (!hit.hasHit || hit.hitFraction <= 1e-4) return;
+      const n = hit.hitNormal;
+      // Judge by where the step ended, not by whether Havok reported a contact:
+      // a fast ball can get a contact event and still end the step through the
+      // surface (a steep facet meeting the ground). A ball Havok did resolve ends
+      // on the near side, ~R from the struck plane — leave it, or it would bounce
+      // twice.
+      const r = CONFIG.BALL.COLLIDER_DIAMETER / 2;
+      const end2plane = BABYLON.Vector3.Dot(end.subtract(hit.hitPoint), n);
+      if (end2plane > r - GolfBallGuy.TUNNEL_DEPTH) return;
+      const v = this.getVelocity();
+      const vn = BABYLON.Vector3.Dot(v, n);
+      if (vn >= 0) return;
+      const material = (hit.shape || hit.body.shape).material;
+      const restitution = PhysicsConfig.BALL_RESTITUTION * material.restitution;
+      v.subtractInPlace(n.scale((1 + restitution) * vn));
+      // Stop at first impact. Havok resolves tangential contact on the next step;
+      // reflecting only misses avoids applying a second bounce to native contacts.
+      const contact = BABYLON.Vector3.Lerp(
+        this._stepStart,
+        end,
+        hit.hitFraction,
+      );
+      contact.addInPlace(n.scale(0.001));
+      this.teleport(contact.x, contact.y, contact.z, false);
       this._teleportRestoreFrames = 2;
-      this.mesh.computeWorldMatrix(true);
+      this.body.setLinearVelocity(v);
     }
 
     applyHit(
@@ -398,6 +845,15 @@
       clubLaunchAngle = 0,
       clubLaunchSpeed = 40,
     ) {
+      // Struck: the ball leaves the ground now, not after the step. Havok still
+      // solves the resting contact on the launch step, and its friction (on the
+      // last step's normal impulse) would hand a no-spin shot ~5 rad/s of topspin.
+      this.forgetContact();
+      this.skipFrictionNextStep();
+      this.landed = false;
+      this.inShot = true;
+      this.touchedGround = false;
+      this._restSteps = 0;
       const swipeStrength = Math.min(
         force / 100,
         CONFIG.GOLF_BALL.MAX_HIT_STRENGTH,
@@ -428,18 +884,14 @@
         aimedDirection,
       );
       const launchVel = new BABYLON.Vector3(rotX, localVel.y, rotZ);
-
-      const impactPoint = this.getPosition().add(
-        new BABYLON.Vector3(
-          CONFIG.GOLF_BALL.IMPACT_POINT_OFFSET_X,
-          CONFIG.GOLF_BALL.IMPACT_POINT_OFFSET_Y,
-          CONFIG.GOLF_BALL.IMPACT_POINT_OFFSET_Z,
-        ),
-      );
+      this._shotDir.set(rotX, 0, rotZ);
 
       // From rest, an impulse J = m·Δv delivers Δv = launchVel exactly, so the launch
       // speed is the calibrated value regardless of frame length (frame-rate safe).
-      this.body.applyImpulse(launchVel.scale(CONFIG.BALL.MASS), impactPoint);
+      this.body.applyImpulse(
+        launchVel.scale(CONFIG.BALL.MASS),
+        this.getPosition(),
+      );
 
       // The clubface imparts NO spin — the ball launches spin-free and the
       // player's swipe is the only source of spin (see applySpin / applyMagnus).
@@ -462,53 +914,35 @@
         this.pendingSpinAmount + spinAmount,
         1.2,
       );
-      this.pendingSpinAxis = spinAxis;
     }
 
     updateLandingState() {
-      // Restore physics control a few steps after a teleport (see reset()).
-      if (this._teleportRestoreFrames > 0) {
-        this._teleportRestoreFrames--;
-        if (this._teleportRestoreFrames === 0 && this.body) {
-          this.body.disablePreStep = true;
-        }
-      }
-      const height = this.getHeight();
-      const speed = this.getSpeed();
-
       this.updateSpinAura(); // spin glow (runs every frame; fades out at rest)
 
-      if (height < PhysicsConfig.GROUND_CONTACT_HEIGHT && !this.touchedGround) {
+      if (this._onGround && !this.touchedGround) {
         this.touchedGround = true;
         this.pendingSpinAmount = 0;
-        this.pendingSpinAxis = BABYLON.Vector3.Zero();
         return "firstContact";
       }
 
       if (
-        speed < PhysicsConfig.LANDED_SPEED_THRESHOLD &&
-        this.getAngularVelocity().length() <
-          CONFIG.PHYSICS.LANDED_ANGULAR_THRESHOLD &&
-        height < PhysicsConfig.GROUND_CONTACT_HEIGHT &&
-        this.touchedGround
+        !this.landed &&
+        this.touchedGround &&
+        this._teleportRestoreFrames === 0 &&
+        this._restSteps >= GolfBallGuy.REST_STEPS
       ) {
-        if (!this.landed) {
-          this.landed = true;
-          this.body.setLinearVelocity(BABYLON.Vector3.Zero());
-          this.body.setAngularVelocity(BABYLON.Vector3.Zero());
-          return "fullLand";
-        }
+        this.landed = true;
+        return "fullLand";
       }
 
-      if (height > PhysicsConfig.AIRBORNE_HEIGHT && this.touchedGround) {
-        this.touchedGround = false;
-      }
+      // Airborne again (a bounce): the next contact ends any player spin too.
+      if (!this._onGround && this.touchedGround) this.touchedGround = false;
 
       return null;
     }
 
     isAirborne() {
-      return this.getHeight() > PhysicsConfig.AIRBORNE_HEIGHT;
+      return !this._onGround;
     }
 
     isLanded() {
@@ -747,18 +1181,6 @@
       }
     }
 
-    animateSpin(spinAxis, spinAmount) {
-      if (!this.spinBone) return;
-      const spinSpeed = spinAmount * PhysicsConfig.SPIN_ANIMATION_SPEED;
-      // The hat is parented to this bone's node (see applyStyle), so it tumbles
-      // with the head automatically — no separate rotation needed.
-      this.spinBone.rotate(spinAxis, spinSpeed, BABYLON.Space.LOCAL);
-    }
-
-    hasSpinBone() {
-      return this.spinBone !== null;
-    }
-
     // === ROTATION METHODS ===
     setFacingAim(aimDirection) {
       this.targetRotation = aimDirection + Math.PI;
@@ -772,42 +1194,73 @@
       this.facingAimDirection = false;
     }
 
-    updateRotation(lerpSpeed = 0.1) {
-      // The physics body owns this.mesh's rotationQuaternion (re-synced from the
-      // body every step, and the Euler .rotation is ignored once a quaternion is
-      // set), so writing this.mesh.rotation.y does nothing. Instead, counter-rotate
-      // the visual characterRoot so the character's WORLD orientation becomes a
-      // pure upright yaw of targetRotation, whatever tumble the body ended on.
+    // The character's visible orientation, once per rendered frame. The physics
+    // body owns this.mesh's rotationQuaternion, so the visual characterRoot below
+    // it is counter-rotated to show _visualQ instead. In flight and rolling,
+    // _visualQ turns about the body's spin axis but no faster than
+    // VISUAL_SPIN_MAX: a real ~1000 rad/s spin would strobe (several turns per
+    // frame) and read as slow, backwards or random. While aiming it eases to an
+    // upright yaw of targetRotation instead.
+    updateVisualRotation(dt, faceUpright) {
       const root = this.characterRoot;
       const bodyQ = this.mesh.rotationQuaternion;
       if (!root || !bodyQ) return;
-      const desiredWorld = BABYLON.Quaternion.RotationAxis(
-        BABYLON.Axis.Y,
-        this.targetRotation,
-      );
-      const targetLocal =
-        BABYLON.Quaternion.Inverse(bodyQ).multiply(desiredWorld);
+      const q = this._visualQ;
+      if (faceUpright) {
+        BABYLON.Quaternion.RotationAxisToRef(
+          BABYLON.Axis.Y,
+          this.targetRotation,
+          this._visualTmp,
+        );
+        // 10% of the way per 60 fps frame, at any frame rate.
+        const ease = 1 - Math.exp(-0.105 * 60 * dt);
+        BABYLON.Quaternion.SlerpToRef(q, this._visualTmp, ease, q);
+      } else {
+        const w = this._visualW;
+        this.body.getAngularVelocityToRef(w);
+        const rate = w.length();
+        if (rate > 1e-6) {
+          BABYLON.Quaternion.RotationAxisToRef(
+            w.scaleInPlace(1 / rate),
+            // A frame hitch must not turn the ball past readability either.
+            Math.min(rate, CONFIG.PHYSICS.VISUAL_SPIN_MAX) *
+              Math.min(dt, 1 / 30),
+            this._visualTmp,
+          );
+          this._visualTmp.multiplyToRef(q, q).normalize();
+        }
+      }
       if (!root.rotationQuaternion)
-        root.rotationQuaternion = BABYLON.Quaternion.Identity();
-      BABYLON.Quaternion.SlerpToRef(
-        root.rotationQuaternion,
-        targetLocal,
-        lerpSpeed,
-        root.rotationQuaternion,
-      );
+        root.rotationQuaternion = new BABYLON.Quaternion();
+      // world = bodyQ · local, so local = bodyQ⁻¹ · _visualQ.
+      bodyQ.conjugateToRef(this._visualTmp);
+      this._visualTmp.multiplyToRef(q, root.rotationQuaternion);
     }
 
     // === GENERAL METHODS ===
+    // A moved ball starts from fresh contact: the old support (e.g. a crease's
+    // two faces) must not hold it wherever it lands.
+    forgetContact() {
+      if (this._onGround) this.setOnGround(false);
+      this._grip = 0;
+      this._topGrip = 0;
+      this._shotDir.setAll(0);
+      this._supportCount = 0;
+      this._heldThisStep = false;
+      this._restSteps = 0;
+    }
+
     reset() {
+      this.forgetContact();
       this.mesh.position = this.startPosition.clone();
-      this.mesh.rotation = BABYLON.Vector3.Zero();
-      // .rotation alone is inert once physics has set a rotationQuaternion; reset
-      // that too (the pre-step dance below pushes it into the body), and clear any
-      // aim-facing offset on the visual root.
-      if (this.mesh.rotationQuaternion)
-        this.mesh.rotationQuaternion.set(0, 0, 0, 1);
+      // Reset the orientation as a quaternion (the pre-step dance below pushes it
+      // into the body); assigning .rotation would null it, and Havok would then
+      // sync into Euler angles that updateVisualRotation can't read. Clear any
+      // aim-facing offset on the visual root too.
+      this.mesh.rotationQuaternion = BABYLON.Quaternion.Identity();
       if (this.characterRoot?.rotationQuaternion)
         this.characterRoot.rotationQuaternion.set(0, 0, 0, 1);
+      this._visualQ.set(0, 0, 0, 1);
       this.body.setLinearVelocity(BABYLON.Vector3.Zero());
       this.body.setAngularVelocity(BABYLON.Vector3.Zero());
       // Teleport the physics body to the new spot: let it read the mesh transform
@@ -817,10 +1270,12 @@
         this._teleportRestoreFrames = 3;
         this.mesh.computeWorldMatrix(true);
       }
-      this.landed = true;
+      // Not landed until rest detection says so: the spot may be a slope the
+      // surface can't hold, and the ball must not roll away during aim.
+      this.landed = false;
+      this.inShot = false;
       this.touchedGround = false;
       this.pendingSpinAmount = 0;
-      this.pendingSpinAxis = BABYLON.Vector3.Zero();
       this.targetRotation = 0;
       this.facingAimDirection = false;
       this._inCup = false;
@@ -830,6 +1285,7 @@
     // body read the mesh transform for a couple of physics steps, then hand control
     // back to the simulation (same dance as reset()).
     teleport(x, y, z, zeroVel = true) {
+      this.forgetContact();
       this.mesh.position.set(x, y, z);
       if (zeroVel && this.body) {
         this.body.setLinearVelocity(BABYLON.Vector3.Zero());

@@ -4,6 +4,21 @@
 (function (global) {
   // ─── FOLLOW CAMERA ──────────────────────────────────────────────────────────
 
+  // Exponential follow (rate k per second) of a goal that moved linearly from g0
+  // to g1 over dt, solved exactly, in place on x. Lerp(x, g1, 1 − e^(−k·dt))
+  // trails a moving goal by an amount that depends on dt, so uneven frame times
+  // shook the camera against a fast ball; this trails it by velocity/k at any
+  // frame rate.
+  function followToRef(x, g0, g1, k, dt) {
+    const e = Math.exp(-k * dt);
+    const r = (1 - e) / (k * dt);
+    x.set(
+      g1.x + (x.x - g0.x) * e - (g1.x - g0.x) * r,
+      g1.y + (x.y - g0.y) * e - (g1.y - g0.y) * r,
+      g1.z + (x.z - g0.z) * e - (g1.z - g0.z) * r,
+    );
+  }
+
   class FollowCamera {
     constructor(camera, targetMesh, golfBallGuy = null) {
       this.camera = camera;
@@ -124,7 +139,7 @@
     }
 
     update(dt) {
-      if (!this.targetMesh) return;
+      if (!this.targetMesh || !(dt > 0)) return;
 
       // Exponential smoothing — frame-rate independent
       // f approaches 1 as dt grows, giving consistent feel at any fps
@@ -136,7 +151,7 @@
         this.viewMode === CameraViewMode.PLAY
           ? CONFIG.CAMERA.POSITION_LERP_SPEED_PLAY
           : CONFIG.CAMERA.POSITION_LERP_SPEED;
-      const fPos = 1 - Math.exp(-posSpeed * 60 * dt);
+      const kPos = posSpeed * 60;
 
       this.offsetX = BABYLON.Scalar.Lerp(this.offsetX, this.targetOffsetX, f);
       this.offsetY = BABYLON.Scalar.Lerp(this.offsetY, this.targetOffsetY, f);
@@ -157,8 +172,14 @@
         fAngle,
       );
 
+      // The ball's drawn position this frame. Not getAbsolutePosition(): the world
+      // matrix is only refreshed during render, so here it is the previous frame's
+      // and the camera/ball offset would jump with each frame's physics step count.
       const referencePoint =
-        this.framingMidpoint || this.targetMesh.getAbsolutePosition();
+        this.framingMidpoint ||
+        (this.golfBallGuy
+          ? this.golfBallGuy.getRenderPosition()
+          : this.targetMesh.getAbsolutePosition());
       const { x: offsetX, z: offsetZ } = Utils.rotate2D(
         this.offsetX,
         this.offsetZ,
@@ -179,12 +200,10 @@
       // our smoothing source). No distance-clamp: the tight PLAY follow rate keeps
       // the ball framed on its own, and the old clamp was what pinned the camera to
       // the ball's (fast-rotating) velocity direction and made it shake.
-      BABYLON.Vector3.LerpToRef(
-        this.lastPosition,
-        newPosition,
-        fPos,
-        this.lastPosition,
-      );
+      const prevPosGoal =
+        this._prevPosGoal || (this._prevPosGoal = newPosition.clone());
+      followToRef(this.lastPosition, prevPosGoal, newPosition, kPos, dt);
+      prevPosGoal.copyFrom(newPosition);
       // Governor: never let the camera sink below the terrain or the water
       // surface. Clamp the smoothing source too, so the lerp can't fight it.
       if (this.floorYAt) {
@@ -207,7 +226,10 @@
       // Smooth the look target too (same rate as position) so any transient in the
       // aim point — an impact, a landing bounce — can't snap the view's rotation.
       const lookTarget = this._camLook || (this._camLook = newLook.clone());
-      BABYLON.Vector3.LerpToRef(lookTarget, newLook, fPos, lookTarget);
+      const prevLookGoal =
+        this._prevLookGoal || (this._prevLookGoal = newLook.clone());
+      followToRef(lookTarget, prevLookGoal, newLook, kPos, dt);
+      prevLookGoal.copyFrom(newLook);
       this.camera.setTarget(lookTarget);
     }
   }

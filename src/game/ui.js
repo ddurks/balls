@@ -492,7 +492,7 @@
       // Course mode: the flag shows the HOLE number and the stats circle shows the
       // hole's PAR. Practice: the aimed-at pin index and no par.
       const cm = this.game?.courseManager;
-      const hole = cm ? COURSE_HOLES[cm.holeIndex] : null;
+      const hole = cm && !cm.practice ? COURSE_HOLES[cm.holeIndex] : null;
       let pinNumber;
       let par = null;
       if (hole) {
@@ -562,7 +562,7 @@
       const inFlight =
         this.game?.gameState === GameState.PLAY &&
         shotStart &&
-        !this.golfBall.isLanded();
+        this.golfBall.inShot;
       if (!inFlight) {
         if (m.style.display !== "none") m.style.display = "none";
         this._shotLineDir = null; // reset the launch-line capture for the next shot
@@ -674,7 +674,6 @@
       this.golfBall = golfBall;
       this.eventManager = eventManager || new EventManager();
       this.pins = [];
-      this.greens = [];
       this.currentFlagFrame = 0; // shared frame index (0=still, 1-6=animated)
 
       this.COLLISION_CHECK_RADIUS = CONFIG.PINS.PIN_COLLISION_RADIUS * 3; // 3x collision radius for early detection
@@ -807,10 +806,8 @@
       const flagTextures = PinManager.flagTexturesCache;
 
       // ── The cup ──
-      // Course mode gets a REAL cavity (open-top cylinder well: dark wall + floor
-      // colliders) at the pin's actual surface height, so the ball drops in and
-      // rests below the lip. Practice keeps the flat decorative disc at the legacy
-      // absolute HOLE_Y_OFFSET (its squashed-sphere green isn't surface-sampled).
+      // A REAL cavity (open-top cylinder well: dark wall + floor colliders) at the
+      // pin's actual surface height, so the ball drops in and rests below the lip.
       const holeMat = new BABYLON.StandardMaterial("holeMat", scene);
       holeMat.diffuseColor = new BABYLON.Color3(0, 0, 0);
       holeMat.specularColor = new BABYLON.Color3(0, 0, 0);
@@ -825,105 +822,100 @@
         cupFloor = null,
         cupWallAgg = null,
         cupFloorAgg = null;
-      if (opts.cavity) {
-        const surfaceY = position.y;
-        const r = cfg.HOLE_RADIUS;
-        // Dark inner wall (open cylinder) — visually the hole + contains a bouncing ball.
-        cupWall = BABYLON.MeshBuilder.CreateCylinder(
-          "cupWall",
-          {
-            diameter: r * 2,
-            height: cfg.CUP_DEPTH,
-            tessellation: 20,
-            cap: BABYLON.Mesh.NO_CAP,
-          },
-          scene,
-        );
-        cupWall.position = new BABYLON.Vector3(
-          position.x,
-          surfaceY - cfg.CUP_DEPTH / 2,
-          position.z,
-        );
-        cupWall.material = holeMat;
-        cupWall.isPickable = false;
-        cupWallAgg = new BABYLON.PhysicsAggregate(
-          cupWall,
-          BABYLON.PhysicsShapeType.MESH,
-          { mass: 0, friction: 1.0, restitution: 0.05 },
-          scene,
-        );
-        // Cup floor the ball rests on. Made thick (extends well below) so a ball
-        // that drops in fast can't tunnel through it — preventTunneling is disabled
-        // while the ball is in the cup, so the floor itself must be the backstop.
-        const floorH = 0.4;
-        cupFloor = BABYLON.MeshBuilder.CreateCylinder(
-          "cupFloor",
-          { diameter: r * 2, height: floorH, tessellation: 20 },
-          scene,
-        );
-        cupFloor.position = new BABYLON.Vector3(
-          position.x,
-          surfaceY - cfg.CUP_DEPTH + 0.01 - floorH / 2,
-          position.z,
-        );
-        cupFloor.material = holeMat;
-        cupFloor.isPickable = false;
-        cupFloorAgg = new BABYLON.PhysicsAggregate(
-          cupFloor,
-          BABYLON.PhysicsShapeType.CYLINDER,
-          { mass: 0, friction: 1.0, restitution: 0.05 },
-          scene,
-        );
-        // Visible mouth: a black disc laid flush with the green. The cavity is
-        // buried inside the (uncut) green mesh, so without this the hole doesn't
-        // show against the surface at all. On undulating greens a flat horizontal
-        // disc floats above the tilted turf → a bright gap between it and the
-        // cylinder; orienting the disc to the green's normal (both disc + wall are
-        // black, so any overlap reads as hole) keeps it flush and closes the gap.
-        const n =
-          opts.surfaceNormal && opts.surfaceNormal.length() > 1e-4
-            ? opts.surfaceNormal.clone().normalize()
-            : new BABYLON.Vector3(0, 1, 0);
-        hole = BABYLON.MeshBuilder.CreateDisc(
-          "holeMouth",
-          { radius: r * 1.15, tessellation: 24 }, // slight overlap onto the rim
-          scene,
-        );
-        hole.position = new BABYLON.Vector3(
-          position.x + n.x * 0.005,
-          surfaceY + n.y * 0.005,
-          position.z + n.z * 0.005,
-        );
-        // Rotate the disc's +Z face onto the green normal so it lies flat on slopes.
-        const zAxis = new BABYLON.Vector3(0, 0, 1);
-        const axis = BABYLON.Vector3.Cross(zAxis, n);
-        const dot = Math.max(-1, Math.min(1, BABYLON.Vector3.Dot(zAxis, n)));
-        hole.rotationQuaternion =
-          axis.lengthSquared() < 1e-8
-            ? dot > 0
-              ? BABYLON.Quaternion.Identity()
-              : BABYLON.Quaternion.RotationAxis(
-                  new BABYLON.Vector3(1, 0, 0),
-                  Math.PI,
-                )
-            : BABYLON.Quaternion.RotationAxis(axis.normalize(), Math.acos(dot));
-        hole.isPickable = false;
-        hole.material = holeMat;
-      } else {
-        hole = BABYLON.MeshBuilder.CreateDisc(
-          "hole",
-          { radius: cfg.HOLE_RADIUS, tessellation: 24 },
-          scene,
-        );
-        hole.position = position.clone();
-        // Sit a hair above the green surface when the caller knows it (practice
-        // passes the squashed-sphere apex); the legacy absolute offset floated
-        // the disc 0.23 m in the air.
-        hole.position.y = (opts.surfaceY ?? cfg.HOLE_Y_OFFSET) + 0.005;
-        hole.rotation.x = -Math.PI / 2; // face up
-        hole.isPickable = false;
-        hole.material = holeMat;
-      }
+      const surfaceY = position.y;
+      const r = cfg.HOLE_RADIUS;
+      // Dark inner wall (open cylinder) — visually the hole + contains a bouncing ball.
+      cupWall = BABYLON.MeshBuilder.CreateCylinder(
+        "cupWall",
+        {
+          diameter: r * 2,
+          height: cfg.CUP_DEPTH,
+          tessellation: 20,
+          cap: BABYLON.Mesh.NO_CAP,
+        },
+        scene,
+      );
+      // Its top sits 1 cm below the turf: the green isn't cut, so a wall rim at the
+      // surface caught balls rolling past the hole (sideways kicks and hops), and
+      // on a tilted green half the rim stood proud of the turf. A captured ball
+      // is dropped in below this lip, so it's still contained.
+      cupWall.position = new BABYLON.Vector3(
+        position.x,
+        surfaceY - 0.01 - cfg.CUP_DEPTH / 2,
+        position.z,
+      );
+      cupWall.material = holeMat;
+      cupWall.isPickable = false;
+      cupWallAgg = new BABYLON.PhysicsAggregate(
+        cupWall,
+        BABYLON.PhysicsShapeType.MESH,
+        { mass: 0, friction: 1.0, restitution: 0.05 },
+        scene,
+      );
+      // Cup floor the ball rests on. Made thick (extends well below) so a ball
+      // that drops in fast can't tunnel through it — preventTunneling is disabled
+      // while the ball is in the cup, so the floor itself must be the backstop.
+      const floorH = 0.4;
+      cupFloor = BABYLON.MeshBuilder.CreateCylinder(
+        "cupFloor",
+        { diameter: r * 2, height: floorH, tessellation: 20 },
+        scene,
+      );
+      cupFloor.position = new BABYLON.Vector3(
+        position.x,
+        surfaceY - cfg.CUP_DEPTH + 0.01 - floorH / 2,
+        position.z,
+      );
+      cupFloor.material = holeMat;
+      cupFloor.isPickable = false;
+      cupFloorAgg = new BABYLON.PhysicsAggregate(
+        cupFloor,
+        BABYLON.PhysicsShapeType.CYLINDER,
+        { mass: 0, friction: 1.0, restitution: 0.05 },
+        scene,
+      );
+      // Visible mouth: a black disc laid flush with the green. The cavity is
+      // buried inside the (uncut) green mesh, so without this the hole doesn't
+      // show against the surface at all. On undulating greens a flat horizontal
+      // disc floats above the tilted turf → a bright gap between it and the
+      // cylinder; orienting the disc to the green's normal (both disc + wall are
+      // black, so any overlap reads as hole) keeps it flush and closes the gap.
+      const n =
+        opts.surfaceNormal && opts.surfaceNormal.length() > 1e-4
+          ? opts.surfaceNormal.clone().normalize()
+          : new BABYLON.Vector3(0, 1, 0);
+      // Exactly the cup's size, 1 mm off the turf, and drawn on top of the green
+      // by a depth bias rather than a visible hover: an oversized disc floating
+      // 5 mm up read as a raised lip around the hole from the low aim camera.
+      hole = BABYLON.MeshBuilder.CreateDisc(
+        "holeMouth",
+        { radius: r, tessellation: 24 },
+        scene,
+      );
+      hole.position = new BABYLON.Vector3(
+        position.x + n.x * 0.001,
+        surfaceY + n.y * 0.001,
+        position.z + n.z * 0.001,
+      );
+      // Rotate the disc's +Z face onto the green normal so it lies flat on slopes.
+      const zAxis = new BABYLON.Vector3(0, 0, 1);
+      const axis = BABYLON.Vector3.Cross(zAxis, n);
+      const dot = Math.max(-1, Math.min(1, BABYLON.Vector3.Dot(zAxis, n)));
+      hole.rotationQuaternion =
+        axis.lengthSquared() < 1e-8
+          ? dot > 0
+            ? BABYLON.Quaternion.Identity()
+            : BABYLON.Quaternion.RotationAxis(
+                new BABYLON.Vector3(1, 0, 0),
+                Math.PI,
+              )
+          : BABYLON.Quaternion.RotationAxis(axis.normalize(), Math.acos(dot));
+      hole.isPickable = false;
+      // Own material: the bias must not pull the buried cup wall through the green.
+      const mouthMat = holeMat.clone("holeMouthMat");
+      mouthMat.zOffset = -2;
+      mouthMat.zOffsetUnits = -4;
+      hole.material = mouthMat;
 
       this.pins.push({
         mesh: pole,
@@ -934,9 +926,8 @@
         flagPivot,
         flagMat, // per-pin (its diffuseTexture is the shared flagTexturesCache)
         flagTextures,
-        hole, // black mouth disc (practice flat cup, or over the course cavity)
+        hole, // black mouth disc over the cavity
         holeMat, // per-pin
-        cavity: !!opts.cavity,
         surfaceY: position.y, // green surface height at the cup mouth
         captured: false, // ball has dropped into the cavity, awaiting settle
         captureFrames: 0,
@@ -948,84 +939,6 @@
         flagAnimFrame: 0,
         holePosition: position.clone(),
       });
-    }
-
-    addGreen(centerPos, radius, scene) {
-      // Flat green pad, styled like the course's greens: same putting texture at
-      // the course's world-scale tiling (~1.6 m per tile), same brighter palette
-      // and low sheen, and a flat top that actually matches the flat collider
-      // below (the old squashed-sphere mound curved away under the ball near the
-      // edges). Height keeps the legacy apex (0.001 + radius/100) so the hole
-      // disc, sink thresholds and camera floor stay put.
-      const padH = radius * 0.01;
-      const green = BABYLON.MeshBuilder.CreateCylinder(
-        "green",
-        { diameter: radius * 2, height: padH, tessellation: 48 },
-        scene,
-      );
-      green.position = centerPos.clone();
-      green.position.y = 0.001 + padH / 2;
-      green.isPickable = false;
-
-      const greenMat = Utils.createMaterial(
-        `greenMat_${Math.random()}`,
-        scene,
-        new BABYLON.Color3(0.5, 0.82, 0.28), // courseGreen palette
-        new BABYLON.Color3(0.02, 0.02, 0.02),
-        8,
-      );
-      // Cylinder caps map UV 0..1 across the diameter; scale so one tile spans
-      // ~1.6 world metres, matching CourseSurfaces' green tiling.
-      const tiling = (radius * 2) / 1.6;
-      const greenDiffuse = new BABYLON.Texture(
-        Shared.v(CONFIG.PINS.GREEN_TEXTURE_PATH),
-        scene,
-      );
-      greenDiffuse.wrapU = greenDiffuse.wrapV =
-        BABYLON.Texture.WRAP_ADDRESSMODE;
-      greenDiffuse.uScale = greenDiffuse.vScale = tiling;
-      greenMat.diffuseTexture = greenDiffuse;
-      const greenNormal = new BABYLON.Texture(
-        Shared.v(CONFIG.PINS.GREEN_NORMAL_MAP_PATH),
-        scene,
-      );
-      greenNormal.wrapU = greenNormal.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
-      greenNormal.uScale = greenNormal.vScale = tiling;
-      greenMat.bumpTexture = greenNormal;
-      green.material = greenMat;
-      green.receiveShadows = true;
-
-      // Physics: a thin invisible CYLINDER with real thickness instead of a ~2000-tri
-      // MESH collider on the squashed sphere. Much cheaper (no triangle soup + wasted
-      // underside), and the thickness prevents fast landings from tunnelling through.
-      const colThickness = 1.0;
-      const greenTopY = green.position.y + padH / 2; // top of the pad
-      const greenCol = BABYLON.MeshBuilder.CreateCylinder(
-        "greenCol",
-        { diameter: radius * 2, height: colThickness, tessellation: 24 },
-        scene,
-      );
-      greenCol.position = new BABYLON.Vector3(
-        centerPos.x,
-        greenTopY - colThickness / 2,
-        centerPos.z,
-      );
-      greenCol.isVisible = false;
-      greenCol.isPickable = false;
-      // Roll like the course greens (SURFACE_PHYSICS.green): true and fast.
-      const greenPhysics = new BABYLON.PhysicsAggregate(
-        greenCol,
-        BABYLON.PhysicsShapeType.CYLINDER,
-        {
-          mass: 0,
-          friction: SURFACE_PHYSICS.green.friction,
-          restitution: SURFACE_PHYSICS.green.restitution,
-        },
-        scene,
-      );
-
-      this.greens.push({ mesh: green, body: greenPhysics, collider: greenCol });
-      return greenTopY; // surface height at the pin, for placing the hole disc
     }
 
     updateFlags(wind, dt) {
@@ -1078,31 +991,7 @@
           continue;
         }
 
-        if (pin.cavity) {
-          this._sinkCavity(pin, ballPos, ballSpeed);
-          continue;
-        }
-
-        // Legacy proximity trigger (practice mode): snap the ball into the flat cup.
-        const dx = ballPos.x - holePos.x;
-        const dz = ballPos.z - holePos.z;
-        const horizDist = Math.sqrt(dx * dx + dz * dz);
-        const nearGround = ballPos.y < CONFIG.PINS.HOLE_Y_OFFSET + 1.5;
-
-        if (
-          horizDist < CONFIG.PINS.HOLE_RADIUS * 0.85 &&
-          nearGround &&
-          ballSpeed < 6
-        ) {
-          this.golfBall.body.setLinearVelocity(BABYLON.Vector3.Zero());
-          this.golfBall.body.setAngularVelocity(BABYLON.Vector3.Zero());
-          this.golfBall.mesh.position.x = holePos.x;
-          this.golfBall.mesh.position.z = holePos.z;
-          this.golfBall.mesh.position.y = CONFIG.PINS.HOLE_Y_OFFSET - 0.25;
-          this.golfBall.landed = true;
-          pin.sunk = true;
-          this.eventManager.emit("pin:holesink", holePos);
-        }
+        this._sinkCavity(pin, ballPos, ballSpeed);
       }
     }
 

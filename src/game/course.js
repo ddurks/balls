@@ -1,4 +1,4 @@
-// course.js — COURSE_HOLES, SURFACE_PHYSICS, CourseManager.
+// course.js — COURSE_HOLES, PRACTICE_RANGE, SURFACE_PHYSICS, CourseManager.
 // Split out of game.js; loaded as a plain <script> before game.js (see game.html),
 // and require()-able in Node for unit tests. Cross-module refs resolve via globals.
 (function (global) {
@@ -11,45 +11,139 @@
       glb: "environments/course/holes/hole-01/scene.glb",
       par: 4,
       name: "Wet and Wild",
-      version: "greenfix1",
+      version: "greens6",
     },
     {
       id: 2,
       glb: "environments/course/holes/hole-02/scene.glb",
       par: 3,
       name: "Rock and Roll",
-      version: "greenfix1",
+      version: "greens6",
     },
     {
       id: 3,
       glb: "environments/course/holes/hole-03/scene.glb",
       par: 5,
       name: "On a Bender",
-      version: "greenfix1",
+      version: "greens6",
     },
   ];
 
-  // Physics + friction per surface type. Golf-ball-scale tuning: rough grabs, greens
-  // roll true, sand plugs, the desert rock face bounces balls back toward the green.
-  const SURFACE_PHYSICS = {
-    // Grass friction ordering: green fastest (least), fairway medium, rough grabbiest.
-    green: { friction: 0.9, restitution: 0.1 }, // least → true, fast roll
-    fairway: { friction: 1.8, restitution: 0.3 }, // middle
-    rough: { friction: 4.5, restitution: 0.2 }, // most → ball stops
-    sand: { friction: 10.0, restitution: 0.05, grab: 20 }, // plush bunker: plugs + brakes hard (grab = stop rate)
-    desert: { friction: 2.8, restitution: 0.35 }, // firm rocky hardpan
-    rock: { friction: 0.5, restitution: 0.6 }, // rock face: lucky bounces
+  // Practice mode plays this single hole-style layout: five target greens with a
+  // pin pool across them; each turn picks a random pin. No par, no advance.
+  const PRACTICE_RANGE = {
+    id: 0,
+    glb: "environments/course/range/scene.glb",
+    name: "Driving Range",
+    version: "range8",
   };
+
+  // Physics per surface type, used as-is by Havok (the ball's 1s MULTIPLY in):
+  //  friction    — sliding μ: landing skid/check, how fast a skid becomes a roll,
+  //    and the spinning friction that stops spin about the contact normal.
+  //  restitution — bounce.
+  //  rollingResistance — μr for GolfBallGuy.applyRollingResistance: a rolling ball
+  //    decelerates at 5/7·μr·g on the flat (stimp 1.83 m/s → 1.83² / (2·5/7·μr·g))
+  //    and keeps rolling on slopes steeper than asin(μr).
+  //  holdResistance — static μ (≥ μr, as turf's breakaway is): a stopped ball holds
+  //    slopes up to asin(holdResistance). Targets: the green holds 4° but not 6°
+  //    (arcade: stickier than a real green), fairway holds 6° but not 10°, rough
+  //    holds 10°, sand stops a 3 m/s roll in ~0.3 m.
+  //  impactLoss — pitch-mark loss: tangential m/s lost per m/s of landing speed
+  //    into the surface (GolfBallGuy.applyTurfImpact).
+  //  spinGrip — how much backspin the turf can turn into spin-back: the backward
+  //    rolling speed a landing can produce is capped at spinGrip·(1+e)·vn
+  //    (GolfBallGuy.applyTurfImpact). ~0 in rough and sand.
+  //  topspinGrip — likewise caps the forward rolling speed topspin can add.
+  //  turfDrag — 1/s of extra braking per m/s of rolling speed above turfDragSpeed:
+  //    fast balls hop and skid through grass. The green's threshold sits above a
+  //    full putt's rolling speed (5/7 of the putter's 7.1 m/s), so putts are pure μr.
+  //  Full-shot targets (flat, no spin): fairway roll-out driver ~38 m, 7 iron ~6 m;
+  //  green 7 iron ~5 m, lob wedge ~0; rough under half the fairway; sand plugs.
+  const SURFACE_PHYSICS = {
+    green: {
+      friction: 0.4,
+      restitution: 0.1,
+      rollingResistance: 0.085,
+      holdResistance: 0.09,
+      impactLoss: 0.18,
+      turfDrag: 2,
+      turfDragSpeed: 5.5,
+      spinGrip: 0.136,
+      topspinGrip: 0.005,
+    }, // holds 5.2°, rolls on above 4.9°, stimp 2.8 m
+    fairway: {
+      friction: 0.5,
+      restitution: 0.3,
+      rollingResistance: 0.13,
+      holdResistance: 0.15,
+      impactLoss: 0.16,
+      turfDrag: 3,
+      turfDragSpeed: 2.5,
+      spinGrip: 0.077,
+      topspinGrip: 0.03,
+    }, // holds 8.6°
+    rough: {
+      friction: 0.6,
+      restitution: 0.2,
+      rollingResistance: 0.22,
+      holdResistance: 0.25,
+      impactLoss: 1,
+      turfDrag: 4,
+      turfDragSpeed: 4,
+      spinGrip: 0.0125,
+      topspinGrip: 0.01,
+    }, // holds 14.5°
+    sand: {
+      friction: 0.9,
+      restitution: 0.05,
+      rollingResistance: 2,
+      holdResistance: 2,
+      impactLoss: 3,
+      turfDrag: 5,
+      turfDragSpeed: 4,
+      spinGrip: 0,
+      topspinGrip: 0,
+    }, // plush bunker: plugs
+    desert: {
+      friction: 0.6,
+      restitution: 0.35,
+      rollingResistance: 0.15,
+      holdResistance: 0.17,
+      impactLoss: 0.2,
+      turfDrag: 1,
+      turfDragSpeed: 4,
+      spinGrip: 0.037,
+      topspinGrip: 0.03,
+    }, // firm rocky hardpan
+    rock: {
+      friction: 0.5,
+      restitution: 0.6,
+      rollingResistance: 0.05,
+      holdResistance: 0.06,
+      impactLoss: 0.05,
+      turfDrag: 0.3,
+      turfDragSpeed: 4,
+      spinGrip: 0.03,
+      topspinGrip: 0.03,
+    }, // rock face: lucky bounces
+  };
+  // The practice range ground plays like fairway, as the original flat range did.
+  SURFACE_PHYSICS.range = SURFACE_PHYSICS.fairway;
 
   /**
    * Orchestrates the round: loads holes, builds physics/materials/decor, runs the
    * drone flyover, cycles player turns, detects water + hole-outs, tallies scores.
-   * Built for N players; starts with 1.
+   * Built for N players; starts with 1. In practice mode it runs PRACTICE_RANGE
+   * instead: no flyover or scoring, a cup on every green at once, and each
+   * hole-out re-rolls which pad on each green holds it.
    */
   class CourseManager {
     constructor(game) {
       this.game = game;
       this.scene = game.scene;
+      this.practice = game.mode !== "course";
+      this.holes = this.practice ? [PRACTICE_RANGE] : COURSE_HOLES;
       this.holeIndex = 0;
       this.currentPlayer = 0;
       this.players = [];
@@ -89,6 +183,33 @@
       // Holing out is handled by GolfGame.onHoleSink (shared cinematic), which
       // calls this.onHoleComplete() for the course-specific score + advance tail.
       this.scene.onBeforeRenderObservable.add(() => this.frame());
+      this.scene
+        .getPhysicsEngine()
+        .getPhysicsPlugin()
+        .onTriggerCollisionObservable.add((ev) => this.onCanopyTrigger(ev));
+    }
+
+    // Trees: when the ball enters a canopy (a trigger hull of the real foliage
+    // mesh, see addDecorCollider) it's deflected out ONCE — losing energy and
+    // kicking out in a random-but-forward-biased direction. A tree's foliage can
+    // be several overlapping hulls, so re-entering the same tree within half a
+    // second doesn't bounce it again.
+    onCanopyTrigger(ev) {
+      if (ev.type !== "TRIGGER_ENTERED") return;
+      const ball = this.game.golfBall;
+      const other =
+        ev.collider === ball.body
+          ? ev.collidedAgainst
+          : ev.collidedAgainst === ball.body
+            ? ev.collider
+            : null;
+      const tree = other?._canopyOf;
+      if (!tree) return;
+      const now = performance.now();
+      if (tree === this._lastCanopy && now - this._lastCanopyAt < 500) return;
+      this._lastCanopy = tree;
+      this._lastCanopyAt = now;
+      this.treeBounce(ball);
     }
 
     async start() {
@@ -120,34 +241,24 @@
       const nz = Math.ceil((maxZ - minZ) / cell) + 1;
       const height = new Float32Array(nx * nz);
       const playable = new Uint8Array(nx * nz);
-      const solid = new Uint8Array(nx * nz); // ray hit terrain (0 = void off the island)
-      // sample the ground below (exclude the water surface so height = the bed)
+      const solid = new Uint8Array(nx * nz); // terrain under the cell (0 = void off the island)
+      // Top-most ground per cell (exclude the water surface so height = the bed),
+      // rasterised straight from the triangles rather than a ray per cell.
       const solids = this.surfaceMeshes.filter(
         (m) => !m.name.toLowerCase().includes("water"),
       );
-      const down = new BABYLON.Vector3(0, -1, 0);
-      for (let i = 0; i < nx; i++) {
-        for (let j = 0; j < nz; j++) {
-          const x = minX + i * cell,
-            z = minZ + j * cell;
-          const ray = new BABYLON.Ray(
-            new BABYLON.Vector3(x, 300, z),
-            down,
-            600,
-          );
-          const hit = this.scene.pickWithRay(ray, (m) => solids.includes(m));
-          const idx = i * nz + j;
-          if (hit && hit.hit) {
-            solid[idx] = 1;
-            height[idx] = hit.pickedPoint.y;
-            const n = hit.pickedMesh.name.toLowerCase();
-            // Grass only on rough turf, and never on the submerged bed under water.
-            playable[idx] =
-              n.includes("rough") && hit.pickedPoint.y > this.waterlineY + 0.4
-                ? 1
-                : 0;
-          }
-        }
+      for (const m of solids) {
+        const rough = m.name.toLowerCase().includes("rough") ? 1 : 0;
+        Utils.rasterizeMeshY(m, minX, minZ, cell, nx, nz, (idx, y) => {
+          if (solid[idx] && y <= height[idx]) return;
+          solid[idx] = 1;
+          height[idx] = y;
+          playable[idx] = rough; // the waterline test needs the final top, below
+        });
+      }
+      // Grass only on rough turf, and never on the submerged bed under water.
+      for (let idx = 0; idx < nx * nz; idx++) {
+        if (height[idx] <= this.waterlineY + 0.4) playable[idx] = 0;
       }
       // Erode the playable mask by one cell so grass never straddles a boundary
       // (fairway / sand / water / hole edge). A cell survives only if it and all
@@ -229,7 +340,7 @@
       this.holeIndex = index;
       this.holeComplete = false;
       this.game.wind?.reset?.(); // fresh (non-editable) wind condition per hole
-      const cfg = COURSE_HOLES[index];
+      const cfg = this.holes[index];
 
       // Show the loading logo ON TOP for the whole load, every hole. Hole 0 arrives
       // from the clubhouse behind a black arrival cover, and later holes behind the
@@ -331,39 +442,36 @@
       this.tee = teeMarker.getAbsolutePosition().clone();
 
       // Pick this hole's pin from the flat-spot pool: random each round, unless the
-      // hole forces a specific spot via COURSE_HOLES[index].pinIndex (purposeful).
-      // Chosen once per hole load, so every hot-seat player plays the same pin.
+      // hole forces a specific spot via its pinIndex (purposeful). Chosen once per
+      // hole load, so every hot-seat player plays the same pin. The range instead
+      // gets a cup on every green (placePracticeCups).
       const pinIdx = (n) => {
         const m = /marker_pin_(\d+)/.exec(n);
         return m ? +m[1] : 0;
       };
       pinMarkers.sort((a, b) => pinIdx(a.name) - pinIdx(b.name));
-      const forced = COURSE_HOLES[index]?.pinIndex;
-      const chosen = Number.isInteger(forced)
-        ? pinMarkers[Shared.clamp(forced, 0, pinMarkers.length - 1)]
-        : pinMarkers[Math.floor(Math.random() * pinMarkers.length)];
-      chosen.computeWorldMatrix(true);
-      this.cup = chosen.getAbsolutePosition().clone();
-      // Anchor the cup to the EXACT green surface at the pin via a downward ray (the
-      // marker sits off the undulating surface, and the coarse height grid can be a
-      // couple cm off — the tee peg uses the same trick), so the cavity lines up with
-      // the turf. Fall back to the height grid if the ray misses.
-      const cupRay = new BABYLON.Ray(
-        new BABYLON.Vector3(this.cup.x, this.cup.y + 50, this.cup.z),
-        new BABYLON.Vector3(0, -1, 0),
-        100,
-      );
-      const cupHit = this.scene.pickWithRay(
-        cupRay,
-        (m) => m.name && m.name.startsWith("surf_"),
-      );
-      this.cup.y =
-        cupHit && cupHit.hit
-          ? cupHit.pickedPoint.y
-          : this.groundY(this.cup.x, this.cup.z);
+      this.pinPool = pinMarkers.map((pm) => {
+        pm.computeWorldMatrix(true);
+        return pm.getAbsolutePosition().clone();
+      });
+      if (this.practice) {
+        this.placePracticeCups();
+      } else {
+        const forced = cfg.pinIndex;
+        const chosen = Number.isInteger(forced)
+          ? Shared.clamp(forced, 0, this.pinPool.length - 1)
+          : Math.floor(Math.random() * this.pinPool.length);
+        this.cup = this.addCup(chosen);
+        // Point auto-aim at THIS hole's cup (otherwise it keeps aiming at the
+        // previous hole's now-disposed pin).
+        this.game.currentHolePin =
+          this.pinManager.pins[this.pinManager.pins.length - 1];
+      }
+      // The arrows grid every green regardless of where the cups are, so the
+      // range builds them once here rather than on each re-roll of its pads.
+      this.slopeArrows?.build((x, z) => this.groundY(x, z));
 
       // Trees + rocks (instanced from decor.glb)
-      this.treeZones = [];
       const authoredRocks = [];
       for (const dm of decorMarkers) {
         dm.computeWorldMatrix(true);
@@ -385,13 +493,6 @@
           const inst = this.decor.place(type, pos, yaw, s);
           if (inst) this.holeNodes.push(inst);
           this.addDecorCollider(type, true, pos, yaw, s);
-          this.treeZones.push({
-            x: pos.x,
-            z: pos.z,
-            r: 2.4 * s,
-            y0: pos.y - 0.5,
-            y1: pos.y + 7 * s,
-          });
         } else {
           this.placeRock(type, pos.clone(), yaw, s);
           authoredRocks.push({ type, groundPos: pos.clone(), scale: s });
@@ -403,21 +504,6 @@
       this.addExtraRocks(cfg.id, authoredRocks);
       teeMarker.dispose();
       for (const pm of pinMarkers) pm.dispose();
-
-      // Cup / flag / sink detection. Point auto-aim at THIS hole's cup (otherwise
-      // it keeps aiming at the previous hole's now-disposed pin).
-      // Green surface normal at the cup so the cavity mouth lies flush on slopes
-      // (a flat horizontal mouth floats over a tilted green → the visible gap).
-      const cupNormal =
-        (cupHit && cupHit.hit && cupHit.getNormal(true, true)) ||
-        new BABYLON.Vector3(0, 1, 0);
-      this.pinManager.addPin(this.cup.clone(), this.scene, {
-        cavity: true,
-        surfaceNormal: cupNormal,
-      });
-      this.slopeArrows?.build(this.cup, (x, z) => this.groundY(x, z));
-      this.game.currentHolePin =
-        this.pinManager.pins[this.pinManager.pins.length - 1];
 
       this.placeBallAtTee();
       this.hud.setHole(cfg.id, cfg.par, cfg.name);
@@ -444,12 +530,14 @@
         this.scene.whenReadyAsync(),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
-      const drone = new DroneCamera(this.scene);
-      const flyDone = drone.fly(
-        this.tee.clone(),
-        this.cup.clone(),
-        this.game.camera.camera,
-      );
+      // Practice skips the flyover: the range is the same every session.
+      const flyDone = this.practice
+        ? Promise.resolve()
+        : new DroneCamera(this.scene).fly(
+            this.tee.clone(),
+            this.cup.clone(),
+            this.game.camera.camera,
+          );
       // Let the first couple of frames render behind the logo so the shader-compile
       // hitch on the new hole's materials happens hidden, not during the reveal.
       await new Promise((r) =>
@@ -458,6 +546,82 @@
       reveal();
       await flyDone;
 
+      this.beginTurn();
+    }
+
+    // Put a cup + flag on pin `index` of the hole's pool; returns the cup position.
+    addCup(index) {
+      const cup = this.pinPool[index].clone();
+      // Anchor the cup to the EXACT green surface at the pin via a downward ray (the
+      // marker sits off the undulating surface, and the coarse height grid can be a
+      // couple cm off — the tee peg uses the same trick), so the cavity lines up with
+      // the turf. Fall back to the height grid if the ray misses.
+      const cupRay = new BABYLON.Ray(
+        new BABYLON.Vector3(cup.x, cup.y + 50, cup.z),
+        new BABYLON.Vector3(0, -1, 0),
+        100,
+      );
+      const cupHit = this.scene.pickWithRay(
+        cupRay,
+        (m) => m.name && m.name.startsWith("surf_"),
+      );
+      cup.y =
+        cupHit && cupHit.hit
+          ? cupHit.pickedPoint.y
+          : this.groundY(cup.x, cup.z);
+      // Green surface normal at the cup so the cavity mouth lies flush on slopes
+      // (a flat horizontal mouth floats over a tilted green → the visible gap).
+      const cupNormal =
+        (cupHit && cupHit.hit && cupHit.getNormal(true, true)) ||
+        new BABYLON.Vector3(0, 1, 0);
+      this.pinManager.addPin(cup.clone(), this.scene, {
+        surfaceNormal: cupNormal,
+      });
+      return cup;
+    }
+
+    // Practice: a cup on every green at once, as the original range had, any of
+    // which can be holed. The pool holds several pads per green, so group them by
+    // the nearest green and pick one at random from each.
+    placePracticeCups() {
+      const greens = this.surfaceMeshes.filter((m) =>
+        m.name.toLowerCase().startsWith("surf_green"),
+      );
+      const byGreen = new Map();
+      this.pinPool.forEach((p, i) => {
+        let green = null;
+        let best = Infinity;
+        for (const g of greens) {
+          const d = BABYLON.Vector3.DistanceSquared(
+            p,
+            g.getBoundingInfo().boundingBox.centerWorld,
+          );
+          if (d < best) {
+            best = d;
+            green = g;
+          }
+        }
+        if (!byGreen.has(green)) byGreen.set(green, []);
+        byGreen.get(green).push(i);
+      });
+      const cups = [...byGreen.values()].map((pads) =>
+        this.addCup(pads[Math.floor(Math.random() * pads.length)]),
+      );
+      // Open on the green nearest the tee (tee-shot club + camera bearing); null
+      // currentHolePin so aim auto-targets whichever pin the camera then faces.
+      this.cup = cups.reduce((a, b) =>
+        BABYLON.Vector3.DistanceSquared(a, this.tee) <=
+        BABYLON.Vector3.DistanceSquared(b, this.tee)
+          ? a
+          : b,
+      );
+      this.game.currentHolePin = null;
+    }
+
+    // Practice: after the hole-out review, re-roll the pad on every green.
+    nextPracticePin() {
+      this.disposePins();
+      this.placePracticeCups();
       this.beginTurn();
     }
 
@@ -476,8 +640,9 @@
     // can never end up visually inside a rock or tree trunk (the old
     // sphere/cylinder approximations under-covered the mesh, and trees had no
     // trunk collider at all). Built from a real clone of the decor source —
-    // rocks hull their whole (convex) mesh; trees hull ONLY the trunk (treewood
-    // submesh) so the leaf canopy stays pass-through (see treeZones slow-down).
+    // rocks hull their whole (convex) mesh; trees hull the trunk (treewood
+    // submesh) as a solid and each foliage submesh as a pass-through trigger
+    // that deflects the ball (see onCanopyTrigger).
     addDecorCollider(type, isTree, pos, yaw, scale) {
       const src = this.decor.sources[type];
       if (!src) return;
@@ -531,6 +696,21 @@
           this.scene,
         );
         this.holeAggregates.push(agg);
+      }
+      if (isTree) {
+        for (const m of meshes) {
+          if (!hasGeom(m) || parts.includes(m)) continue;
+          m.computeWorldMatrix(true);
+          const agg = new BABYLON.PhysicsAggregate(
+            m,
+            BABYLON.PhysicsShapeType.CONVEX_HULL,
+            { mass: 0 },
+            this.scene,
+          );
+          agg.shape.isTrigger = true;
+          agg.body._canopyOf = col;
+          this.holeAggregates.push(agg);
+        }
       }
       this.holeNodes.push(col);
     }
@@ -685,14 +865,19 @@
       const type = this.surfaces.forSurfaceName(mesh.name);
       mesh.material = this.surfaces.mats[type];
       mesh.isPickable = true; // used by surface ray + grass sampling
+      // Split big surfaces into ~1k-triangle submeshes behind an octree so each ray
+      // only tests nearby triangles: the runtime surface picks (cup, tee, isOnGreen,
+      // rock scatter) are ~10× faster than against the whole mesh (~0.4 vs ~3.7 ms
+      // each on the range). More, smaller chunks pick faster but each submesh is
+      // its own draw call.
+      mesh.subdivide(Math.ceil(mesh.getTotalIndices() / 3 / 1024));
+      mesh.createOrUpdateSubmeshesOctree(32, 4);
       mesh.receiveShadows = true;
       this.surfaceMeshes.push(mesh);
       if (type !== "water") {
         const phys = SURFACE_PHYSICS[type] || SURFACE_PHYSICS.rough;
-        // Stamp the surface restitution so the anti-tunnel bounce (character.js
-        // preventTunneling) reflects off sand vs rock correctly, not a global.
-        mesh._surfaceRestitution = phys.restitution;
-        mesh._surfaceGrab = phys.grab || 0; // sand grabs the ball to a fast stop
+        // The ball reads this off the body it touches (GolfBallGuy contact tracking).
+        mesh._surfacePhysics = phys;
         const agg = new BABYLON.PhysicsAggregate(
           mesh,
           BABYLON.PhysicsShapeType.MESH,
@@ -840,25 +1025,6 @@
         return;
       }
 
-      // Trees: when the ball enters a canopy it's deflected out ONCE — losing
-      // energy and kicking out in a random-but-forward-biased direction — instead
-      // of being continuously slowed (which used to freeze it inside the tree).
-      let zoneNow = null;
-      if (this.treeZones) {
-        for (const z of this.treeZones) {
-          if (bp.y < z.y1 && bp.y > z.y0) {
-            const dx = bp.x - z.x,
-              dz = bp.z - z.z;
-            if (dx * dx + dz * dz < z.r * z.r) {
-              zoneNow = z;
-              break;
-            }
-          }
-        }
-      }
-      if (zoneNow && zoneNow !== this._treeZone) this.treeBounce(ball);
-      this._treeZone = zoneNow;
-
       // Remove the tee peg once the ball has been struck off it. Compare in the
       // horizontal plane only (the tee marker can sit below the ball's rest height).
       if (
@@ -984,7 +1150,7 @@
     onHoleComplete(shotCount) {
       this.holeComplete = true;
       this.busy = true;
-      const par = COURSE_HOLES[this.holeIndex].par;
+      const par = this.holes[this.holeIndex].par;
       const strokes = Math.max(1, shotCount);
       this.players[this.currentPlayer].scores[this.holeIndex] = strokes;
       this.hud.flash(CourseUI.scoreName(strokes, par), 2600);
@@ -1011,7 +1177,7 @@
       }
       // Otherwise advance to the next hole
       this.currentPlayer = 0;
-      if (this.holeIndex < COURSE_HOLES.length - 1) {
+      if (this.holeIndex < this.holes.length - 1) {
         // Circle-wipe to black BEFORE tearing down the old hole so the swap (dispose
         // + load) is hidden; loadHole reopens the iris once the new hole is ready.
         this.busy = true;
@@ -1030,13 +1196,12 @@
         }
       } else {
         this.hud.hide();
-        Scoreboard.show(this.players, COURSE_HOLES);
+        Scoreboard.show(this.players, this.holes);
       }
     }
 
     disposeHole() {
       this.disposeTeePeg();
-      this.treeZones = [];
       this.slopeArrows?.clear();
       this.game.currentHolePin = null; // avoid auto-aiming at the old cup
       for (const agg of this.holeAggregates) {
@@ -1053,6 +1218,11 @@
       }
       this.holeNodes = [];
       this.surfaceMeshes = [];
+      this.disposePins();
+      this._pickCache = null;
+    }
+
+    disposePins() {
       if (this.pinManager?.pins) {
         for (const pin of this.pinManager.pins) {
           try {
@@ -1060,6 +1230,7 @@
             pin.mesh?.dispose();
             pin.flagMesh?.dispose();
             pin.flagPivot?.dispose();
+            pin.hole?.material?.dispose(); // own mouth material (see addPin)
             pin.hole?.dispose();
             pin.cupWallAgg?.dispose?.();
             pin.cupFloorAgg?.dispose?.();
@@ -1076,18 +1247,19 @@
         }
         this.pinManager.pins = [];
       }
-      this._pickCache = null;
     }
   }
 
   Object.assign(global, {
     COURSE_HOLES,
+    PRACTICE_RANGE,
     SURFACE_PHYSICS,
     CourseManager,
   });
   if (typeof module !== "undefined" && module.exports)
     module.exports = {
       COURSE_HOLES,
+      PRACTICE_RANGE,
       SURFACE_PHYSICS,
       CourseManager,
     };

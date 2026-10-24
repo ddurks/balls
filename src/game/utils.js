@@ -65,6 +65,67 @@
       });
     },
 
+    // Calls visit(i * nz + j, y) for every node (minX + i·cell, minZ + j·cell) of a
+    // regular XZ grid that one of `mesh`'s triangles covers, with the surface
+    // height there — what a downward pickWithRay per node would hit, but walking
+    // each triangle's own footprint is O(triangles + nodes) instead of a ray per
+    // node (a ray-per-node load took seconds on the range). Edges are inclusive so
+    // a node on a shared edge is never lost between two triangles; overlapping
+    // layers each call visit, so the caller keeps whichever it wants (e.g. top-most).
+    rasterizeMeshY(mesh, minX, minZ, cell, nx, nz, visit) {
+      const pos = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+      const ind = mesh.getIndices();
+      if (!pos || !ind) return;
+      const w = mesh.computeWorldMatrix(true).m; // row-vector: p' = p · W
+      const n = pos.length / 3;
+      const wx = new Float32Array(n);
+      const wy = new Float32Array(n);
+      const wz = new Float32Array(n);
+      for (let v = 0; v < n; v++) {
+        const x = pos[3 * v],
+          y = pos[3 * v + 1],
+          z = pos[3 * v + 2];
+        wx[v] = x * w[0] + y * w[4] + z * w[8] + w[12];
+        wy[v] = x * w[1] + y * w[5] + z * w[9] + w[13];
+        wz[v] = x * w[2] + y * w[6] + z * w[10] + w[14];
+      }
+      const EPS = -1e-6;
+      for (let t = 0; t < ind.length; t += 3) {
+        const a = ind[t],
+          b = ind[t + 1],
+          c = ind[t + 2];
+        const ax = wx[a],
+          az = wz[a],
+          bx = wx[b],
+          bz = wz[b],
+          cx = wx[c],
+          cz = wz[c];
+        const d = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+        if (Math.abs(d) < 1e-12) continue; // vertical sliver: no top to stand on
+        const i0 = Math.max(0, Math.ceil((Math.min(ax, bx, cx) - minX) / cell));
+        const i1 = Math.min(
+          nx - 1,
+          Math.floor((Math.max(ax, bx, cx) - minX) / cell),
+        );
+        const j0 = Math.max(0, Math.ceil((Math.min(az, bz, cz) - minZ) / cell));
+        const j1 = Math.min(
+          nz - 1,
+          Math.floor((Math.max(az, bz, cz) - minZ) / cell),
+        );
+        for (let i = i0; i <= i1; i++) {
+          const x = minX + i * cell;
+          for (let j = j0; j <= j1; j++) {
+            const z = minZ + j * cell;
+            const l1 = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / d;
+            const l2 = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / d;
+            const l3 = 1 - l1 - l2;
+            if (l1 < EPS || l2 < EPS || l3 < EPS) continue;
+            visit(i * nz + j, l1 * wy[a] + l2 * wy[b] + l3 * wy[c]);
+          }
+        }
+      }
+    },
+
     metersToYards(meters) {
       return Math.round(meters * UNITS.M_TO_YARDS);
     },

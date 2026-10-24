@@ -27,7 +27,7 @@
       this.queue = []; // slot indices awaiting (re)build, nearest-first
       this.center = null; // last center chunk {cx,cz}
       this.camPos = new BABYLON.Vector3(); // shared uCamPos ref; refreshed each update()
-      // Course-mode hooks (null in practice → flat disc at y=0).
+      // Terrain hooks, set by CourseManager.start() (null until then → no grass).
       // groundYAt(x,z) → terrain height for the blade; playableAt(x,z) → whether
       // grass is allowed there (fairway/rough only, not water/sand/off-hole).
       this.groundYAt = null;
@@ -158,8 +158,6 @@
       const exclSq =
         CONFIG.GRASS.GREEN_EXCLUSION_RADIUS *
         CONFIG.GRASS.GREEN_EXCLUSION_RADIUS;
-      const terrainRSq =
-        CONFIG.GRASS.TERRAIN_RADIUS * CONFIG.GRASS.TERRAIN_RADIUS;
       const nVar = this.grassMeshes.length;
       const rng = GrassSystem._rng(
         Math.imul(cx, 73856093) ^ Math.imul(cz, 19349663),
@@ -172,12 +170,8 @@
       for (let i = 0; i < density; i++) {
         const x = cx * S + rng() * S;
         const z = cz * S + rng() * S;
-        // Course mode: only grow on playable turf. Practice mode: the flat disc.
-        if (this.playableAt) {
-          if (!this.playableAt(x, z)) continue;
-        } else if (x * x + z * z > terrainRSq) {
-          continue;
-        }
+        // Only grow on playable turf.
+        if (!this.playableAt || !this.playableAt(x, z)) continue;
         let skip = false; // keep grass off greens
         for (const p of pinPositions) {
           const dx = x - p.x,
@@ -188,7 +182,7 @@
           }
         }
         if (skip) continue;
-        const y = this.groundYAt ? this.groundYAt(x, z) : 0;
+        const y = this.groundYAt(x, z);
         const sc = 0.8 + rng() * 0.6; // per-blade size variation
         scale.set(sc, sc, sc);
         BABYLON.Quaternion.RotationYawPitchRollToRef(
@@ -441,6 +435,15 @@
         new C(0.5, 0.82, 0.28),
         P.GREEN_NORMAL_MAP_PATH,
       );
+      // Practice range ground: the original range disc's look (same texture at its
+      // ~7.3 m tile and deeper tint) so practice reads as an open field, not a hole.
+      this.mats.range = this._std(
+        "courseRange",
+        T.TEXTURE_PATH,
+        7.32,
+        new C(0.25, 0.5, 0.15),
+        T.NORMAL_MAP_PATH,
+      );
       this.mats.sand = this._std(
         "courseSand",
         "assets/textures/course/sand-color.png",
@@ -458,6 +461,21 @@
       this.mats.rock = new BABYLON.StandardMaterial("courseRock", this.scene);
       this.mats.rock.diffuseColor = new C(0.46, 0.44, 0.41);
       this.mats.rock.specularColor = new C(0.05, 0.05, 0.05);
+      // The base ground runs under the patches, and the patches under the green and
+      // tee discs (see course_design/hole_gen.py), meeting them coplanar at the
+      // edge. Push the lower layers back in depth so the upper one always wins
+      // there; greens stay unbiased so the cup mouth and slope arrows on them are
+      // unaffected. Render-only: colliders are untouched.
+      // zOffset (slope-scaled) also covers the grazing angles of the low aim
+      // camera, where a constant units bias alone isn't enough.
+      for (const k of ["rough", "range"]) {
+        this.mats[k].zOffset = 2;
+        this.mats[k].zOffsetUnits = 4;
+      }
+      for (const k of ["fairway", "sand", "desert", "rock"]) {
+        this.mats[k].zOffset = 1;
+        this.mats[k].zOffsetUnits = 2;
+      }
 
       // Water: bright translucent like the distant water ring
       const water = new BABYLON.PBRMaterial("courseWater", this.scene);
@@ -493,6 +511,7 @@
       if (n.includes("desert")) return "desert";
       if (n.includes("sand")) return "sand";
       if (n.includes("rock")) return "rock"; // rock face backstop
+      if (n.includes("range")) return "range"; // practice range ground
       return "rough"; // rough + rough_underwater
     }
   }

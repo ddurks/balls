@@ -8,7 +8,7 @@
     constructor(canvas, options = {}) {
       this.canvas = canvas;
       this.options = options;
-      // "practice" = original random-pin sandbox, "course" = 3-hole match play
+      // "practice" = the driving range, "course" = 3-hole match play
       this.mode = options.mode || "practice";
       this.courseManager = null;
       this.engine = new BABYLON.Engine(canvas, true);
@@ -39,8 +39,6 @@
 
       this.swingCoordinator = null;
 
-      this.compassTransitionFrames = 0;
-      this.compassTransitionDuration = 3; // frames to blend rotation sources
       this.compassElements = null;
       this.lastCompassAngle = null;
       this.lastCompassRotate = null;
@@ -89,29 +87,22 @@
       if (BABYLON.PhysicsViewer) {
         this.physicsViewer = new BABYLON.PhysicsViewer(this.scene);
       }
-      const courseMode = this.mode === "course";
-      await SceneSetup.createEnvironment(this.scene, {
-        skipGround: courseMode,
-      });
+      await SceneSetup.createEnvironment(this.scene);
 
       await this.loadGolfBall();
       await this.loadCharacter();
 
-      if (courseMode) {
-        // Course mode: CourseManager owns pins/terrain per hole
-        this.courseManager = new CourseManager(this);
-        await this.courseManager.init();
-      } else {
-        // Setup pins after golfBall is loaded (practice sandbox)
-        this.setupPins();
-      }
+      // CourseManager owns pins/terrain in both modes (practice plays the range).
+      this.courseManager = new CourseManager(this);
+      await this.courseManager.init();
 
       // Holing out runs one handler for both modes (see GolfGame.onHoleSink);
-      // registered here, after either mode's PinManager exists, so practice and
-      // course share the exact same hole-entry cinematic.
-      this.eventManager.on("pin:holesink", (holePos) =>
-        this.onHoleSink(holePos),
-      );
+      // registered here, after the PinManager exists, so practice and course
+      // share the exact same hole-entry cinematic.
+      this.eventManager.on("pin:holesink", () => this.onHoleSink());
+      this.eventManager.on("game:showShotReview", (reviewData) => {
+        this.showShotReviewMessage(reviewData.holeNumber, reviewData.shotCount);
+      });
 
       this.grassSystem = new GrassSystem(this.scene);
       await this.grassSystem.initialize();
@@ -154,9 +145,7 @@
 
       this.setupRenderLoop();
 
-      if (this.courseManager) {
-        await this.courseManager.start();
-      }
+      await this.courseManager.start();
     }
 
     async loadGolfBall() {
@@ -189,6 +178,8 @@
         null,
         this.scene,
       );
+      // The ball applies wind itself, in its per-physics-step flight forces.
+      this.golfBall.wind = this.wind;
     }
 
     async loadCharacter() {
@@ -292,27 +283,14 @@
     }
 
     // Lowest Y the camera may occupy at (x,z): a hair above the terrain, and
-    // never beneath the water surface. Course mode reads the per-hole height
-    // grid (bed height under water, so the waterline is the binding limit
-    // there); practice models the flat range plus the greens' squashed-sphere
-    // bulge. CLEAR is small on purpose — the aim view legitimately hugs the
-    // ground at ball height.
+    // never beneath the water surface. Reads the hole's height grid (bed height
+    // under water, so the waterline is the binding limit there). CLEAR is small
+    // on purpose — the aim view legitimately hugs the ground at ball height.
     cameraFloorY(x, z) {
       const CLEAR = 0.06;
-      if (this.courseManager?.hg) {
-        const cm = this.courseManager;
-        return Math.max(cm.groundY(x, z), cm.waterlineY) + CLEAR;
-      }
-      let ground = 0; // practice range floor
-      for (const p of this.greenPositions || []) {
-        const dx = x - p.x;
-        const dz = z - p.z;
-        if (dx * dx + dz * dz < 144) {
-          // flat green pad, radius 12: top = 0.001 + radius/100 (see addGreen)
-          ground = Math.max(ground, 0.121);
-        }
-      }
-      return ground + CLEAR;
+      const cm = this.courseManager;
+      if (!cm?.hg) return CLEAR; // before the first hole is built
+      return Math.max(cm.groundY(x, z), cm.waterlineY) + CLEAR;
     }
 
     setupAimView() {
@@ -338,7 +316,6 @@
         this.camera.setShotStartPosition(this.golfBall.getPosition());
         this.camera.setCameraAngleImmediate(-this.aimedDirection);
         this.camera.setPlayView();
-        this.compassTransitionFrames = 0;
         setTimeout(() => {
           this.aimView.isActive = false;
         }, 0);
@@ -407,7 +384,7 @@
     // differs. Practice pops the "Continue" overlay; course scores + auto-advances
     // (its review camera shows during the advance delay). Keeping this in one
     // place means the two modes can't drift apart or double-fire.
-    onHoleSink(holePos) {
+    onHoleSink() {
       if (this.holeSinkProcessed) return; // ball still vibrating in the cup re-emits
       this.holeSinkProcessed = true;
 
@@ -421,15 +398,12 @@
       const shotCount = this.currentHoleShotCount;
 
       // ── mode-specific completion tail ──
-      if (this.courseManager) {
+      if (!this.courseManager.practice) {
         this.courseManager.onHoleComplete(shotCount);
       } else {
-        const holeNumber =
-          (this.scene.pinManager?.pins?.findIndex(
-            (pin) => BABYLON.Vector3.Distance(pin.holePosition, holePos) < 1,
-          ) ?? 0) + 1;
         this.eventManager.emit("game:showShotReview", {
-          holeNumber,
+          // The range has a cup on every green: report the one actually holed.
+          holeNumber: this.scene.pinManager.pins.findIndex((p) => p.sunk) + 1,
           shotCount,
         });
         this.currentHolePin = null;
@@ -492,13 +466,9 @@
         container.remove();
         this.enableControls();
         this.holeSinkProcessed = false; // allow the next pin to register a sink
-        this.scene.pinManager?.pins?.forEach((p) => {
-          p.sunk = false;
-          p.captured = false;
-          p.captureFrames = 0;
-          if (this.golfBall) this.golfBall._inCup = false;
-        });
+        this.golfBall._inCup = false;
         this.gameStateCoordinator.resetForNextHole();
+        this.courseManager.nextPracticePin();
       });
 
       container.appendChild(message);
@@ -512,8 +482,6 @@
 
       const bodies = [];
       if (this.golfBall?.body) bodies.push(this.golfBall.body);
-      if (this.scene.groundPhysicsBody)
-        bodies.push(this.scene.groundPhysicsBody);
       if (this.scene.pinManager?.pins) {
         for (const pin of this.scene.pinManager.pins) {
           if (pin.body?.body) bodies.push(pin.body.body);
@@ -543,72 +511,12 @@
       // Physics never pause - clubs are visual only
     }
 
-    setupPins() {
-      const pinManager = new PinManager(
-        this.scene,
-        this.golfBall,
-        this.eventManager,
-      );
-
-      // Generate random pin positions outside a 100-yard radius from player
-      const playerPos = this.ballStartPosition; // (0, 0, 150)
-      const minDistance = 91.44; // 100 yards in meters
-      const discRadius = 183; // Match ground disc radius
-      const numPins = 5;
-      const greenPositions = [];
-
-      while (greenPositions.length < numPins) {
-        const angle = Math.random() * Math.PI * 2;
-        const maxDistance = discRadius - 25; // 25m buffer from edge
-        const distance =
-          minDistance + Math.random() * (maxDistance - minDistance - 30); // Leave buffer for green radius
-
-        const x = Math.cos(angle) * distance;
-        const z = Math.sin(angle) * distance;
-        const pos = new BABYLON.Vector3(x, 0, z);
-
-        if (BABYLON.Vector3.Distance(pos, playerPos) < minDistance) {
-          continue;
-        }
-
-        // Check if far enough from all existing greens (60m minimum = 2 x green radius of 30)
-        const minGreenDistance = 60;
-        let tooClose = false;
-        for (const existingPin of greenPositions) {
-          if (BABYLON.Vector3.Distance(pos, existingPin) < minGreenDistance) {
-            tooClose = true;
-            break;
-          }
-        }
-
-        if (!tooClose) {
-          greenPositions.push(pos);
-        }
-      }
-
-      this.greenPositions = greenPositions;
-
-      for (const pos of greenPositions) {
-        const surfaceY = pinManager.addGreen(pos, 12, this.scene);
-        pos.y = 0.2;
-        pinManager.addPin(pos, this.scene, { surfaceY });
-      }
-
-      this.scene.pinManager = pinManager;
-      this.eventManager.on("pin:hit", (pinPos) => {});
-
-      // pin:holesink is handled by GolfGame.onHoleSink — one handler shared by
-      // both modes, registered once in initialize(). setupPins only wires the
-      // practice-only "Continue" review overlay below.
-
-      this.eventManager.on("game:showShotReview", (reviewData) => {
-        this.showShotReviewMessage(reviewData.holeNumber, reviewData.shotCount);
-      });
-    }
-
     updateBallState() {
       const landingState = this.golfBall.updateLandingState();
-      if (landingState === "fullLand") {
+      // A placed ball (tee, penalty drop) settling is not the end of a shot: it
+      // must not archive a trail or send a player already in PLAY back to AIM.
+      if (landingState === "fullLand" && this.golfBall.inShot) {
+        this.golfBall.inShot = false;
         this.ballTrail.stopTracing();
         this.ballTrail.setVisible(false);
         // Don't go to shot review here - only go when ball is sunk in hole
@@ -617,18 +525,12 @@
           "ball:landed",
           this.golfBall.getPosition().clone(),
         );
-        // Don't pop up aim yet — wait until the ball has fully stopped for 1s
-        // (it may still be trickling down an undulation).
+        // Keep a short pause between the completed shot and the aiming UI.
         this._settleTimer = 0;
         this._awaitingSettle = this.gameState !== GameState.LANDED;
       }
 
-      // Enter aim mode only once the ball has actually STOPPED — but NOT while a
-      // hole-out is being processed (holeSinkProcessed), so the make result +
-      // reset isn't interrupted by an auto re-aim. Rolling resistance now brings
-      // the ball to a genuine, complete rest (and its static component holds it on
-      // the slope), so we just wait for the real velocity to be ~zero and not
-      // spinning — no drift/speed clamps or guesses.
+      // Hole-out processing owns the transition while the ball drops into the cup.
       if (
         this._awaitingSettle &&
         this.gameState !== GameState.AIM &&
@@ -651,16 +553,17 @@
         }
       }
 
-      if (
-        !this.golfBall.isLanded() &&
-        this.golfBall.pendingSpinAmount > 0 &&
-        this.golfBall.hasSpinBone()
-      ) {
-        this.golfBall.animateSpin(
-          this.golfBall.pendingSpinAxis,
-          this.golfBall.pendingSpinAmount,
-        );
-      }
+      // Aim: face the aim camera every frame (it can orbit), turning smoothly
+      // toward it. cameraRotation is the ball→camera angle and is stable within
+      // the frame, unlike camera.position, which the follow-cam rewrites later.
+      const aiming = this.camera && this.gameState === GameState.AIM;
+      if (aiming && this.aimView)
+        this.golfBall.targetRotation = this.aimView.cameraRotation;
+      this.golfBall.updateVisualRotation(
+        this.engine.getDeltaTime() / 1000,
+        aiming,
+      );
+      this.golfBall.applyRenderOffset();
 
       this.updateCharacterFace();
     }
@@ -701,15 +604,6 @@
         this.golfBall.setFace("collision");
       } else if (!isMoving) {
         this.golfBall.setFace("default");
-      }
-
-      if (this.camera && this.gameState === GameState.AIM) {
-        // Face the aim camera every frame (it can orbit), then rotate smoothly toward
-        // it. cameraRotation is the ball→camera angle and is stable within the frame,
-        // unlike camera.position, which the follow-cam rewrites later in the frame.
-        if (this.aimView)
-          this.golfBall.targetRotation = this.aimView.cameraRotation;
-        this.golfBall.updateRotation(0.1);
       }
 
       this.golfBall.updateFaces(this.engine.getDeltaTime() / 1000);
@@ -865,9 +759,6 @@
     }
 
     updateCompass() {
-      // Skip compass updates during PLAY mode for performance
-      if (this.gameState === GameState.PLAY) return;
-
       if (!this.compassElements) {
         this.compassElements = {
           arrow: document.getElementById("windArrow"),
@@ -890,33 +781,17 @@
         this.lastCompassAngle = compassAngle;
       }
 
-      let cameraAngleDeg = 0;
-      const isTransitioning =
-        this.compassTransitionFrames < this.compassTransitionDuration;
-
-      if (isTransitioning) {
-        // Note: camera.cameraAngle is negated relative to aimView.cameraRotation
-        const aimDeg = this.aimView
-          ? ((this.aimView.cameraRotation * 180) / Math.PI) % 360
-          : 0;
-        const cameraDeg =
-          this.camera && Number.isFinite(this.camera.cameraAngle)
-            ? ((-this.camera.cameraAngle * 180) / Math.PI) % 360
-            : aimDeg;
-
-        // Blend factor: 0 at start (use aim), 1 at end (use camera)
-        const blendFactor =
-          this.compassTransitionFrames / this.compassTransitionDuration;
-        cameraAngleDeg = aimDeg + (cameraDeg - aimDeg) * blendFactor;
-        this.compassTransitionFrames++;
-      } else if (this.aimView && this.aimView.isActive) {
-        cameraAngleDeg = ((this.aimView.cameraRotation * 180) / Math.PI) % 360;
-      } else if (this.camera && Number.isFinite(this.camera.cameraAngle)) {
-        // In play view, negate camera angle to match compass convention
-        cameraAngleDeg = ((-this.camera.cameraAngle * 180) / Math.PI) % 360;
-      }
+      // Heading straight from the view just drawn (this runs after render, once
+      // every camera writer — follow, aim, review, flyover — has had its say). A
+      // camera looking along −(sin r, cos r) has heading r. The view matrix's
+      // second and third columns are the camera's world up and forward; summing
+      // their horizontal parts keeps the heading defined when looking straight
+      // down (forward vertical) or level (up vertical).
+      const v = this.scene.activeCamera.getViewMatrix().m;
+      const cameraAngleDeg =
+        (Math.atan2(-(v[1] + v[2]), -(v[9] + v[10])) * 180) / Math.PI;
       // Only update SVG rotation if compass angle changed
-      const compassRotate = `rotate(${-cameraAngleDeg}deg)`;
+      const compassRotate = `rotate(${(-cameraAngleDeg).toFixed(1)}deg)`;
       if (this.lastCompassRotate !== compassRotate) {
         compassSvg.style.transform = compassRotate;
         this.lastCompassRotate = compassRotate;
@@ -948,18 +823,6 @@
     setupRenderLoop() {
       this.scene.registerBeforeRender(() => {
         this.wind.update();
-        this.updateCompass();
-
-        if (this.golfBall.isAirborne() && !this.golfBall.isLanded()) {
-          const windForce = this.wind.getForceVector();
-          this.golfBall.body.applyForce(windForce, this.golfBall.getPosition());
-          this.golfBall.applyMagnus(); // spin curves/lifts the flight (Magnus)
-        }
-        // Keep the small, fast ball from tunneling through the thin terrain mesh.
-        this.golfBall.preventTunneling();
-        // Rolling resistance so the ball actually settles on undulations (and its
-        // low-speed "grab" holds it put on a grade instead of creeping).
-        this.golfBall.applyRollingResistance(this.engine.getDeltaTime() / 1000);
 
         this.updateBallState();
         // Pin collisions handled by Havok physics automatically
@@ -969,7 +832,7 @@
           this.engine.getDeltaTime() / 1000,
         );
         this.updateWater(this.engine.getDeltaTime() / 1000);
-        this.ballTrail.update(this.golfBall.getPosition());
+        this.ballTrail.update(this.golfBall.getRenderPosition());
         this.inputHandler?.updateSwipeOverlay(this.engine.getDeltaTime());
         this.uiManager.update();
         this.aimView?.isActive && this.aimView.update();
@@ -998,12 +861,22 @@
 
       // Update camera AFTER physics so it reads the ball's post-step position,
       // eliminating the one-frame lag that causes jitter during ball flight.
-      this.scene.onAfterPhysicsObservable.add(() => {
-        // Hold the camera still while the ball drops into the cup — following it
-        // down would drag the low PLAY-view camera under the green.
-        if (this.golfBall?._inCup) return;
-        this.camera.update(this.engine.getDeltaTime() / 1000);
-      });
+      // Before-render runs once per frame after physics; the after-physics
+      // observable fires once per fixed sub-step, so the frame-time smoothing
+      // there would run 0–4 times a frame depending on the frame rate. Inserted
+      // first so the rest of the frame sees the updated camera, as before.
+      this.scene.onBeforeRenderObservable.add(
+        () => {
+          // Hold the camera still while the ball drops into the cup — following
+          // it down would drag the low PLAY-view camera under the green.
+          if (this.golfBall?._inCup) return;
+          this.camera.update(this.engine.getDeltaTime() / 1000);
+        },
+        undefined,
+        true,
+      );
+
+      this.scene.onAfterRenderObservable.add(() => this.updateCompass());
 
       // Update eye gaze after animations are evaluated
       this.scene.onAfterAnimationsObservable.add(() => {
@@ -1016,12 +889,6 @@
       this.engine.runRenderLoop(() => {
         this.scene.render();
       });
-      // Practice reveals now; course defers the reveal to loadHole(0) so the first
-      // hole is fully loaded (no flash of just the ball + water) before the screen lifts.
-      if (!this.courseManager) {
-        Shared.roomFX.clearCovers(); // drop the arrival cover sitting behind the logo…
-        Shared.hideBoot(); //           …then fade the logo out to reveal the sandbox
-      }
 
       window.addEventListener("resize", () => {
         this.engine.resize();

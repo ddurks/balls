@@ -89,6 +89,13 @@
       }
 
       if (this.game.aimView) {
+        // The range has a pin per green: re-aim the next lie at the one this shot
+        // went for, not the one auto-targeted on the tee.
+        const target = this.game.scene.pinManager?.getTargetPin(
+          this.game.golfBall.getPosition(),
+          this.game.aimView.cameraRotation,
+        ).pin;
+        if (target) this.game.currentHolePin = target;
         this.game.aimView.removeOrbitControls();
         this.game.aimView.deactivate();
       }

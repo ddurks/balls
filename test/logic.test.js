@@ -63,10 +63,8 @@ const { Utils } = require("../src/game/utils.js");
 const { Wind } = require("../src/game/wind.js");
 const { ClubData, ClubSelector } = require("../src/game/clubs.js");
 const { CourseManager } = require("../src/game/course.js");
-
-test("gentle-slope rolling resistance is enabled", () => {
-  assert.strictEqual(CONFIG.PHYSICS.ROLL_RESISTANCE_ENABLED, true);
-});
+const { GameState } = require("../src/game/config.js");
+const { InputHandler } = require("../src/game/input.js");
 
 test("rotate2D rotates a unit vector by 90°", () => {
   const r = Utils.rotate2D(1, 0, Math.PI / 2);
@@ -286,11 +284,63 @@ test("cameraFloorY never goes below the water surface", () => {
   assert.ok(Math.abs(floorAt(self, 0, 0) - -0.94) < 1e-9);
 });
 
-test("cameraFloorY in practice rises over the green pads", () => {
-  const self = { greenPositions: [{ x: 0, z: 0 }] };
-  // on the pad (anywhere within its 12 m radius): pad top (0.121) + clearance
-  assert.ok(Math.abs(floorAt(self, 0, 0) - 0.181) < 1e-3);
-  assert.ok(Math.abs(floorAt(self, 8, 0) - 0.181) < 1e-3);
-  // off the green: flat range floor + clearance
-  assert.ok(Math.abs(floorAt(self, 50, 0) - 0.06) < 1e-9);
+// ---- shot end vs. a placed ball settling ----
+// Penalty drops, tee placement and hole resets put the ball down with AIM already
+// active; its later rest must not count as a finished shot.
+function ballStateGame(inShot) {
+  const emitted = [];
+  const ball = {
+    inShot,
+    updateLandingState: () => "fullLand",
+    getPosition: () => ({ clone: () => ({}) }),
+    isAirborne: () => false,
+    isLanded: () => true,
+    getSpeed: () => 0,
+    getAngularVelocity: () => ({ length: () => 0 }),
+    pendingSpinAmount: 0,
+    updateVisualRotation() {},
+    applyRenderOffset() {},
+  };
+  const game = {
+    golfBall: ball,
+    gameState: GameState.PLAY,
+    _awaitingSettle: false,
+    ballTrail: { stopTracing() {}, setVisible() {} },
+    archiveCurrentTrail() {},
+    eventManager: { emit: (name) => emitted.push(name) },
+    engine: { getDeltaTime: () => 16 },
+    updateCharacterFace() {},
+  };
+  require("../src/game/game.js").GolfGame.prototype.updateBallState.call(game);
+  return { game, emitted };
+}
+
+test("a placed ball coming to rest is not treated as the end of a shot", () => {
+  const { game, emitted } = ballStateGame(false);
+  assert.deepStrictEqual(emitted, []);
+  assert.strictEqual(game._awaitingSettle, false);
+  assert.strictEqual(game.gameState, GameState.PLAY);
+});
+
+test("a struck ball coming to rest ends the shot", () => {
+  const { game, emitted } = ballStateGame(true);
+  assert.deepStrictEqual(emitted, ["ball:landed"]);
+  assert.strictEqual(game.golfBall.inShot, false);
+  assert.strictEqual(game._awaitingSettle, true);
+});
+
+test("a swipe on a placed ball that is still settling strikes it", () => {
+  const ball = {
+    isLanded: () => false,
+    isAirborne: () => false,
+    inShot: false,
+  };
+  const game = { gameState: GameState.PLAY, justTransitioned: false };
+  const hits = [];
+  const input = new InputHandler({ addEventListener() {} }, ball, game, {
+    emit: (name) => hits.push(name),
+  });
+  input.handlePointerDown({ clientX: 100, clientY: 400 });
+  input.handlePointerUp({ clientX: 100, clientY: 300 });
+  assert.deepStrictEqual(hits, ["input:hit"]);
 });

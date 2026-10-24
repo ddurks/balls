@@ -42,18 +42,32 @@
       return this.game?.camera?.viewMode === CameraViewMode.SHOT_REVIEW;
     }
 
+    // A ball can be struck once its shot has come to rest, or while a placed
+    // ball (tee, penalty drop) is still settling on the ground — waiting for
+    // that rest would swallow the player's swipe.
+    canHit() {
+      const ball = this.golfBall;
+      return ball.isLanded() || (!ball.inShot && !ball.isAirborne());
+    }
+
     canShowIdealArrow() {
       return (
         this.game?.gameState === GameState.PLAY &&
-        this.golfBall.isLanded() &&
+        this.canHit() &&
         !this.isSpinning &&
         !this.game?.aimView?.isActive &&
         !this.isShotReviewMode()
       );
     }
 
+    getHitSwipeScale() {
+      // More finger travel gives short putts finer power and direction control.
+      const isPutter = this.game?.aimView?.currentClub === 0;
+      return CONFIG.SWIPE_OVERLAY.VISUAL_SCALE * (isPutter ? 2 : 1);
+    }
+
     getHitForceFromDistance(distance) {
-      const scale = CONFIG.SWIPE_OVERLAY.VISUAL_SCALE;
+      const scale = this.getHitSwipeScale();
       const maxForce = CONFIG.GOLF_BALL.MAX_HIT_STRENGTH * 100;
       return Math.min((distance / scale / 50) * 100, maxForce);
     }
@@ -146,6 +160,21 @@
     // of the power curve between 0 and full.
     predictLandingRangeForStrength(strength, dt, linearDamping, gAbs, club) {
       const powerRatio = strength / CONFIG.GOLF_BALL.MAX_HIT_STRENGTH;
+      if (club.angle === 0) {
+        // Flat-green putt under GolfBallGuy's rolling law, in closed form. The ball
+        // launches sliding without spin: kinetic friction μ brakes it and spins it
+        // up (spin gains 5/2 of what it brakes) while the law also brakes it by
+        // μr·g, until it rolls at v1; it then rolls out at 5/7·μr·g.
+        const { friction: mu, rollingResistance: mr } = SURFACE_PHYSICS.green;
+        const v0 = club.v0 * powerRatio;
+        const skid = v0 / ((3.5 * mu + mr) * gAbs);
+        const v1 = 2.5 * mu * gAbs * skid;
+        return (
+          v0 * skid -
+          0.5 * (mu + mr) * gAbs * skid * skid +
+          (0.7 * v1 * v1) / (mr * gAbs)
+        );
+      }
       const loftRad = (club.angle * Math.PI) / 180;
       const full = this.simFlightRange(
         club.v0,
@@ -154,8 +183,6 @@
         linearDamping,
         gAbs,
       );
-      // Putter (loft 0) rolls rather than flies — sim range is ~0; approximate linearly.
-      if (full <= 0.01) return club.maxDistance * powerRatio;
       const atPower = this.simFlightRange(
         club.v0 * powerRatio,
         loftRad,
@@ -183,12 +210,17 @@
         c.damping === linearDamping &&
         c.g === gAbs &&
         c.clubId === club.id &&
-        Math.abs(c.dist - worldDistance) < 0.5
+        c.v0 === club.v0 &&
+        Math.abs(c.dist - worldDistance) < (club.angle === 0 ? 0.001 : 0.5)
       ) {
         return c.strength;
       }
 
-      const minStrength = CONFIG.SWIPE_OVERLAY.MIN_FORWARD_FORCE / 100;
+      const minStrength =
+        club.angle === 0
+          ? this.getHitForceFromDistance(PhysicsConfig.MIN_SWIPE_DISTANCE + 1) /
+            100
+          : CONFIG.SWIPE_OVERLAY.MIN_FORWARD_FORCE / 100;
       const maxStrength = CONFIG.GOLF_BALL.MAX_HIT_STRENGTH;
       let low = minStrength;
       let high = maxStrength;
@@ -216,6 +248,7 @@
         damping: linearDamping,
         g: gAbs,
         clubId: club.id,
+        v0: club.v0,
         strength,
       };
       return strength;
@@ -229,6 +262,27 @@
 
       const local =
         best.local || Utils.rotate2D(best.dx, best.dz, -aimedDirection);
+      const club = ClubData.getClub(this.game?.aimView?.currentClub ?? 12);
+      if (club.angle === 0) {
+        const speed =
+          (club.v0 * swipeStrength) / CONFIG.GOLF_BALL.MAX_HIT_STRENGTH;
+        const lateralSpeed = (speed * local.x) / Math.max(0.001, -local.z);
+        const lateralPerUnit =
+          (CONFIG.GOLF_BALL.HIT_HORIZONTAL_DEVIATION_FACTOR *
+            CONFIG.SWIPE_OVERLAY.PHYSICS_STEP_SECONDS) /
+          CONFIG.BALL.MASS;
+        const deltaX = Shared.clamp(
+          -lateralSpeed / lateralPerUnit,
+          -baseLength,
+          baseLength,
+        );
+        // Preserve the solved power, including tap-ins; a display minimum must
+        // never lengthen the stroke the player is being asked to reproduce.
+        return {
+          deltaX,
+          deltaY: -Math.sqrt(Math.max(0, baseLength ** 2 - deltaX ** 2)),
+        };
+      }
       const depth = Math.max(1, -local.z);
       const desiredLateralRatio = Math.max(
         -CONFIG.SWIPE_OVERLAY.MAX_LATERAL_RATIO,
@@ -269,7 +323,7 @@
       const best = this.pickTargetCandidate(candidates);
       if (!best) return null;
 
-      const dt = CONFIG.SWIPE_OVERLAY.PHYSICS_STEP_SECONDS;
+      const dt = PhysicsConfig.STEP_SECONDS;
       const linearDamping = PhysicsConfig.BALL_LINEAR_DAMPING;
       const gAbs = Math.abs(PhysicsConfig.GRAVITY.y);
       // Assist is for the club the player will actually hit with.
@@ -287,7 +341,7 @@
         swipeStrength,
       );
 
-      const scale = CONFIG.SWIPE_OVERLAY.VISUAL_SCALE;
+      const scale = this.getHitSwipeScale();
       const start = this.swipeOverlay.getGuideStartPoint();
       return {
         start,
@@ -308,7 +362,67 @@
         this.swipeOverlay.clearIdealArrow();
       }
 
+      const push = this.computeMagnusArrow();
+      if (push) this.swipeOverlay.setMagnusArrow(push.start, push.end);
+      else this.swipeOverlay.clearMagnusArrow();
+
       this.swipeOverlay.update(deltaMs);
+    }
+
+    // While a spun ball flies, an arrow from the ball showing where Magnus is
+    // pushing it — the opposite of a sideways swipe, so the curve reads clearly.
+    computeMagnusArrow() {
+      const ball = this.golfBall;
+      if (ball.isLanded() || !ball.isAirborne() || ball.pendingSpinAmount <= 0)
+        return null;
+      // Length follows the push's strength, so cancelled or decayed spin fades.
+      const force = ball.magnusForceToRef(
+        this._magnusForce || (this._magnusForce = new BABYLON.Vector3()),
+      );
+      const strength = Math.min(
+        force.length() /
+          CONFIG.BALL.MASS /
+          CONFIG.SWIPE_OVERLAY.MAGNUS_ARROW_FULL_ACCEL,
+        1,
+      );
+      if (strength < 0.1) return null;
+      const dir = force.normalize();
+      const cam = this.game.camera.camera;
+      const dpr = window.devicePixelRatio || 1;
+      const canvas = this.swipeOverlay.overlayCanvas;
+      const viewport = cam.viewport.toGlobal(
+        canvas.width / dpr,
+        canvas.height / dpr,
+      );
+      // Anchored where the ball is drawn, not its raw physics step position.
+      const pos = ball.getRenderPosition();
+      // Offset in proportion to range so perspective doesn't shrink the arrow away.
+      const tip = pos.add(
+        dir.scale(0.05 * BABYLON.Vector3.Distance(pos, cam.position)),
+      );
+      // This frame's camera (already moved), not the scene's transform matrix,
+      // which still holds last frame's view until render.
+      const m = cam.getViewMatrix().multiply(cam.getProjectionMatrix());
+      const id = BABYLON.Matrix.IdentityReadOnly;
+      const a = BABYLON.Vector3.Project(pos, id, m, viewport);
+      const b = BABYLON.Vector3.Project(tip, id, m, viewport);
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len = Math.hypot(dx, dy);
+      // Foreshortened like the push itself: one along the view axis barely shows.
+      const across = Math.sqrt(
+        Math.max(
+          0,
+          1 - BABYLON.Vector3.Dot(dir, cam.getDirection(BABYLON.Axis.Z)) ** 2,
+        ),
+      );
+      if (len < 1 || strength * across < 0.1) return null;
+      const k =
+        (CONFIG.SWIPE_OVERLAY.MAGNUS_ARROW_LENGTH * strength * across) / len;
+      return {
+        start: { x: a.x, y: a.y },
+        end: { x: a.x + dx * k, y: a.y + dy * k },
+      };
     }
 
     setupListeners() {
@@ -342,7 +456,7 @@
         return;
       }
 
-      if (this.golfBall.isLanded()) {
+      if (this.canHit()) {
         this.isHitting = true;
       } else {
         this.isSpinning = true;
@@ -418,10 +532,10 @@
 
       if (
         this.isHitting &&
-        this.golfBall.isLanded() &&
+        this.canHit() &&
         distance > PhysicsConfig.MIN_SWIPE_DISTANCE
       ) {
-        const scale = CONFIG.SWIPE_OVERLAY.VISUAL_SCALE;
+        const scale = this.getHitSwipeScale();
         const force = this.getHitForceFromDistance(distance);
         const swipeDuration = Math.max(
           0.01,
@@ -446,37 +560,21 @@
         distance > PhysicsConfig.MIN_SWIPE_DISTANCE &&
         this.golfBall.isAirborne()
       ) {
-        const spinAmount = Math.min(distance / 50, 1.2);
-        const magnitude = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+        const spinAmount = Math.min(distance / 100, 1.2);
 
-        // Spin axis from the swipe. Vertical swipe → back/topspin (horizontal axis ⟂
-        // travel → lift/drop); horizontal swipe → sidespin (vertical axis → curve via
-        // Magnus). Controls map to the CURVE the ball takes, not the literal spin
-        // sense: a swipe curves the ball toward the swipe direction. The sidespin
-        // sign is derived from the live velocity + camera-right so that holds whatever
-        // the coordinate handedness. (The camera-Y rotation below leaves y invariant.)
-        const vel = this.golfBall.getVelocity();
-        const camX = this.game?.camera?.camera?.getDirection?.(BABYLON.Axis.X);
-        // Screen-right component of the Magnus curve produced by +Y spin (∝ ŷ × v):
-        const magRight = camX ? vel.z * camX.x - vel.x * camX.z : -1;
-        const sideSign = magRight >= 0 ? 1 : -1; // +Y spin curves screen-right iff >0
-        let spinAxis = new BABYLON.Vector3(
-          (deltaY / magnitude) * 0.1,
-          ((deltaX * sideSign) / magnitude) * 0.1,
-          0,
-        );
-
-        // During play mode, rotate axis by inverse camera angle so it tracks with camera
-        if (this.game?.gameState === GameState.PLAY) {
-          const cameraAngle = this.game?.camera?.cameraAngle || 0;
-          if (Math.abs(cameraAngle) > 0.01) {
-            const rotationMatrix = BABYLON.Matrix.RotationY(-cameraAngle);
-            spinAxis = BABYLON.Vector3.TransformCoordinates(
-              spinAxis,
-              rotationMatrix,
-            );
-          }
-        }
+        // The swipe drags the ball's camera-facing surface point (−forward·R)
+        // along swipeWorld, so ω × (−forward) ∝ swipeWorld ⇒ ω ∝ swipeWorld ×
+        // forward. Magnus (∝ ω × v) then pushes the ball AWAY from the swipe:
+        // behind the ball, swipe right curves left, swipe down is backspin (lift).
+        const cam = this.game.camera.camera;
+        const swipeWorld = cam
+          .getDirection(BABYLON.Axis.X)
+          .scale(deltaX)
+          .subtractInPlace(cam.getDirection(BABYLON.Axis.Y).scale(deltaY)); // screen y is down
+        const spinAxis = BABYLON.Vector3.Cross(
+          swipeWorld,
+          cam.getDirection(BABYLON.Axis.Z),
+        ).normalize();
 
         this.eventManager.emit("input:spin", {
           spinAxis,

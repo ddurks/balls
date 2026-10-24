@@ -36,59 +36,51 @@
       WIDTH: 2500,
       HEIGHT: 2500,
       SUBDIVISIONS: 50,
-      FRICTION: 0.4,
-      RESTITUTION: 0.3,
       TEXTURE_PATH: "assets/textures/course/ground-color.png",
       NORMAL_MAP_PATH: "assets/textures/course/ground-normal.ktx2",
     },
     BALL: {
       COLLIDER_DIAMETER: 0.0427, // real golf ball = 42.7 mm (1 unit = 1 m)
       MASS: 0.045,
-      // Havok combines friction by MINIMUM, so THIS value caps grip on every grass
-      // surface — green/fairway/rough are all set ≥0.9, so min() picks the ball's every
-      // time. 0.9 made shots bite/check instead of releasing into roll; ~0.4 is realistic
-      // turf µ. (A rolling ball doesn't slip, so friction doesn't set roll-out distance —
-      // ROLL_BRAKE_DECEL does; friction governs the landing skid/check and spin bite.)
-      FRICTION: 0.4,
-      RESTITUTION: 0.5, // soft-turf COR — bounces without being a superball (0.3 was dead, 0.6 = hard court)
-      LINEAR_DAMPING: 0.3, // air-drag model for flight carry (club distances are calibrated to this — do not retune for roll)
-      // Spin barely decays in flight on a real ball, and spin drives Magnus
-      // (curve/lift), so keep angular damping near zero.
-      ANGULAR_DAMPING: 0.1,
+      // Friction and restitution are 1 and combined by MULTIPLY (GolfBallGuy), so the
+      // struck surface's SURFACE_PHYSICS values are what Havok actually uses.
+      FRICTION: 1,
+      RESTITUTION: 1,
+      // Air drag for flight carry (club distances are calibrated to this). Applied
+      // only while airborne — on the ground the surface's rolling resistance rules.
+      LINEAR_DAMPING: 0.3,
+      // Spin barely decays in flight on a real ball (~3–4%/s), and spin drives
+      // Magnus (curve/lift) and the bite on landing. Also airborne-only.
+      ANGULAR_DAMPING: 0.035,
     },
     // Swing/hit + landing-detection tuning. Single home for these values; the
     // PhysicsConfig accessor class reads them from here so there's no second copy.
     PHYSICS: {
       HIT_FORWARD_FORCE: 100, // reduced for finesse gameplay
       HIT_UPWARD_FORCE: 60,
-      // Adds low-speed rolling resistance and holds a stopped ball against gravity
-      // on gentle slopes. The 0.6 m/s² resistance cap in GolfBallGuy lets the ball
-      // perch through roughly a 3.5° grade; steeper slopes still overcome it.
-      ROLL_RESISTANCE_ENABLED: true,
       // Strength of the player's spin-swipe (see applySpin) — the ONLY source of
-      // spin now (the clubface imparts none). Scaled so a firm swipe imparts
-      // bite-capable spin: swipe down = backspin (bite), up = topspin (runs out),
-      // sideways = curve. Total spin is clamped to STRIKE_SPIN_MAX.
-      SPIN_MULTIPLIER: 6000,
-      STRIKE_SPIN_MAX: 850, // clamp on total swipe-imparted spin (rad/s)
-      // Magnus: aerodynamic force F = MAGNUS_COEFF × (ω × v) applied while airborne.
-      // Backspin lifts (carry/float), topspin drops, sidespin curves (slice/hook).
-      // This adds lift → carry, so club v0s get recalibrated once this is dialed.
-      MAGNUS_COEFF: 0.000025,
-      SPIN_ANIMATION_SPEED: 0.3,
+      // spin now (the clubface imparts none): rad/s per unit of swipe spinAmount.
+      // A firm swipe (0.48) gives ~940 rad/s, a real wedge's spin, so backspin can
+      // bite and spin the ball back on landing. Swipe down = backspin, up =
+      // topspin, sideways = curve away from the swipe. STRIKE_SPIN_MAX caps the
+      // total at ~2.8 firm swipes, so a second swipe still adds.
+      SPIN_MULTIPLIER: 1950,
+      STRIKE_SPIN_MAX: 2600, // rad/s
+      // Magnus: F = MAGNUS_COEFF × (ω × v) while airborne. Backspin lifts, topspin
+      // drops, sidespin curves. The coefficient keeps a firm swipe's lift what it
+      // was when spin was capped at 100 rad/s (flight is tuned to that), so it is
+      // ~1/10 of a real ball's; MAGNUS_SIDE_GAIN then makes sidespin curve 2.6×
+      // as strongly as lift — an arcade choice so a swipe visibly bends the shot.
+      MAGNUS_COEFF: 0.00000212,
+      MAGNUS_SIDE_GAIN: 2.6,
+      // Fastest the ball is SHOWN turning (rad/s); physics keeps the real spin.
+      // ≈5 rev/s, a third of a 30 fps frame's π limit, and still exact for rolls
+      // up to ~0.7 m/s (0.7 / R).
+      VISUAL_SPIN_MAX: 33,
       MIN_SWIPE_DISTANCE: 3,
-      AIRBORNE_HEIGHT: 2,
-      GROUND_CONTACT_HEIGHT: 1.5,
-      // Speed below which a grounded ball is declared "landed" — which HARD-ZEROES
-      // its velocity. At 0.5 m/s (1.1 mph) that amputated the last ~0.2 m of every
-      // roll and made slow trickle-ins impossible. 0.15 lets the ball roll out; the
-      // rolling-resistance brake (ROLL_BRAKE_DECEL) does the actual settling at 0.06 m/s.
-      LANDED_SPEED_THRESHOLD: 0.15,
       // A manually-spun ball can momentarily have near-zero LINEAR speed while its
-      // spin is still converting to roll; don't declare it stopped (which zeroes the
-      // velocity and kills the roll-out) until its ANGULAR speed is also low. A ball
-      // rolling without slipping at the linear threshold spins at ~7 rad/s, so 15
-      // clears normal settling but blocks a fast manual spin.
+      // spin is still converting to roll; the aim transition waits until its ANGULAR
+      // speed is also low. 15 rad/s clears normal settling but blocks a fast spin.
       LANDED_ANGULAR_THRESHOLD: 15,
       // Spin aura: the player-applied spin amount (0..~1.2) that maxes the aura to
       // flaming red, and the glow sphere's diameter relative to the ball collider.
@@ -115,7 +107,6 @@
       BLADE_SIZE: 0.08, // crossed-quad blade ≈ 8 cm (matches the 42.7 mm ball scale)
       BUILD_BUDGET: 4, // max chunks (re)built + uploaded per frame — streams the ring's leading edge in without a spike
       GREEN_EXCLUSION_RADIUS: 31, // keep grass this far from each pin/green
-      TERRAIN_RADIUS: 183, // practice-mode flat-disc radius
     },
     LIGHTING: {
       AMBIENT_INTENSITY: 0.75,
@@ -164,9 +155,6 @@
     GOLF_BALL: {
       MAX_HIT_STRENGTH: 1.75,
       HIT_HORIZONTAL_DEVIATION_FACTOR: 0.1,
-      IMPACT_POINT_OFFSET_X: 0,
-      IMPACT_POINT_OFFSET_Y: -0.3,
-      IMPACT_POINT_OFFSET_Z: 0.3,
     },
     // Eyelid blink timings moved to balls.js (Balls.BLINK), shared with clubhouse.
     EYES: {
@@ -182,7 +170,6 @@
       CLUB_DISPLAY_SIZE: 120,
     },
     PINS: {
-      GREEN_RADIUS: 30,
       PIN_HEIGHT: 2.13, // real flagstick = 7 ft
       PIN_DIAMETER: 0.026, // 2× real flagstick (~1") so the pin reads at a distance
       PIN_Y_OFFSET: 1.065, // = PIN_HEIGHT / 2 so the base sits on the green
@@ -197,7 +184,6 @@
       FLAG_WIDTH: 0.36,
       FLAG_HEIGHT: 0.3,
       HOLE_RADIUS: 0.054, // real cup = 108 mm diameter
-      HOLE_Y_OFFSET: 0.35, // practice-mode fallback only; course cups are surface-relative
       FLAG_WIND_THRESHOLD: 2.235, // ~5 mph in m/s
       // Real cavity cup (course mode): the ball must roll over the mouth slowly, drop
       // in, and settle before the hole counts.
@@ -234,12 +220,18 @@
       IDEAL_COLOR: PALETTE.YELLOW,
       HIT_COLOR: PALETTE.YELLOW,
       SPIN_COLORS: ["#55d6ff", "#8cff66", "#ff8cf5", "#ff9966"],
+      MAGNUS_COLOR: "#ffffff",
+      MAGNUS_ARROW_LENGTH: 70, // px, from the ball along the Magnus push
+      MAGNUS_ARROW_FULL_ACCEL: 1.5, // m/s² of Magnus push drawn at full length (a firm swipe)
     },
     WIND: {
       MIN_SPEED: 0,
       MAX_SPEED: 10,
       CHANGE_FREQUENCY: 8000,
       FORCE_MULTIPLIER: 0.025,
+      // Ball airspeed (m/s) from which the wind's full force applies; below it the
+      // force scales with airspeed (GolfBallGuy.applyWind).
+      FULL_FORCE_SPEED: 25,
       COMPASS_SIZE: 140,
       COMPASS_TOP: 15,
       COMPASS_RIGHT: 15,

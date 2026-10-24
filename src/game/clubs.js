@@ -10,7 +10,7 @@
     //   maxDistance on the range with no wind. Regenerate after changing maxDistance
     //   (or ball physics) with: node scripts/club-calibrate.js
     static CLUBS = [
-      { id: 0, name: "Putter", angle: 0, maxDistance: 22, v0: 17 },
+      { id: 0, name: "Putter", angle: 0, maxDistance: 22, v0: 7.1 },
       { id: 1, name: "Lob Wedge", angle: 60, maxDistance: 55, v0: 40 },
       { id: 2, name: "Pitching Wedge", angle: 45, maxDistance: 66, v0: 37.7 },
       { id: 3, name: "9 Iron", angle: 42, maxDistance: 88, v0: 45.4 },
@@ -19,10 +19,10 @@
       { id: 6, name: "6 Iron", angle: 34, maxDistance: 153, v0: 66.4 },
       { id: 7, name: "5 Iron", angle: 31, maxDistance: 175, v0: 73 },
       { id: 8, name: "4 Iron", angle: 28, maxDistance: 197, v0: 80.2 },
-      { id: 9, name: "Hybrid", angle: 20, maxDistance: 241, v0: 93.3 },
-      { id: 10, name: "3 Wood", angle: 16, maxDistance: 263, v0: 102.1 },
-      { id: 11, name: "5 Wood", angle: 19, maxDistance: 252, v0: 96.9 },
-      { id: 12, name: "Driver", angle: 12, maxDistance: 306, v0: 117 },
+      { id: 9, name: "Hybrid", angle: 20, maxDistance: 241, v0: 96.1 },
+      { id: 10, name: "3 Wood", angle: 16, maxDistance: 263, v0: 106.7 },
+      { id: 11, name: "5 Wood", angle: 19, maxDistance: 252, v0: 100.2 },
+      { id: 12, name: "Driver", angle: 12, maxDistance: 306, v0: 127.2 },
     ];
 
     static getClub(id) {
