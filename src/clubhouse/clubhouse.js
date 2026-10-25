@@ -1621,7 +1621,11 @@
         0.35,
       );
       const root = new BABYLON.TransformNode("phone", scene);
-      root.position.set(-9, floorTopY + 2.4, -11.8); // local +z = out of the wall
+      // Built at 1x and scaled up; raised so the base's bottom stays at 1.95,
+      // just above the chair rail.
+      const PHONE_SCALE = 1.5;
+      root.scaling.setAll(PHONE_SCALE);
+      root.position.set(-9, floorTopY + 1.95 + 0.45 * PHONE_SCALE, -11.8); // local +z = out of the wall
       const part = (name, w, h, d, x, y, z, mat) => {
         const m = BABYLON.MeshBuilder.CreateBox(
           "phone_" + name,
