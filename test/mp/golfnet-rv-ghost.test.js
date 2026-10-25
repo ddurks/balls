@@ -82,7 +82,7 @@ function gameTab(key, gws, name) {
     },
     window: { crypto: crypto.webcrypto },
   });
-  delete require.cache[require.resolve("../src/game/golfnet.js")];
+  delete require.cache[require.resolve("../../src/game/golfnet.js")];
   require("../../src/game/golfnet.js").rvBoot(key);
   return { net: globalThis.golfNet, splash };
 }
