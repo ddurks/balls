@@ -15,8 +15,8 @@ const net = require("node:net");
 const crypto = require("node:crypto");
 const timers = require("node:timers");
 const { URL } = require("node:url");
-const Challenge = require("../src/shared/challenge.js");
-const { startGolfServer } = require("./mp/server.js");
+const Challenge = require("../../src/shared/challenge.js");
+const { startGolfServer } = require("./server.js");
 
 const mint = () =>
   `${Date.now().toString(36)}.${crypto.randomBytes(16).toString("base64url")}`;
@@ -83,7 +83,7 @@ function gameTab(key, gws, name) {
     window: { crypto: crypto.webcrypto },
   });
   delete require.cache[require.resolve("../src/game/golfnet.js")];
-  require("../src/game/golfnet.js").rvBoot(key);
+  require("../../src/game/golfnet.js").rvBoot(key);
   return { net: globalThis.golfNet, splash };
 }
 
