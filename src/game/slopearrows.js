@@ -206,6 +206,10 @@
     update(dt) {
       if (!this._visible || !this.meshes.length) return;
       this.time += dt;
+      // The wave is slow, so 30 Hz looks the same as per-frame while halving
+      // the O(n) sin pass + colour-buffer upload (n is thousands on the range).
+      if (this.time - (this._lastWaveT ?? -1) < 1 / 30) return;
+      this._lastWaveT = this.time;
       const n = this.phases.length;
       for (let k = 0; k < n; k++) {
         const w =

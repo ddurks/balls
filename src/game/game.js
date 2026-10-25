@@ -33,9 +33,9 @@
       this.swingCameraRestored = false;
       this.golfBallFacingCamera = false;
 
-      this.lastBallVelocity = new BABYLON.Vector3(0, 0, 0);
-      this.wasHit = false;
-      this.hitCooldown = 0;
+      this._faceHold = 0; // s the current expression has been showing
+      this._frownT = 0; // near-miss frown left (s)
+      this._wasMoving = false;
 
       this.swingCoordinator = null;
 
@@ -84,9 +84,6 @@
       this.scene.clearColor = new BABYLON.Color3(0.53, 0.81, 0.92); // Sky blue
 
       await PhysicsManager.initialize(this.scene);
-      if (BABYLON.PhysicsViewer) {
-        this.physicsViewer = new BABYLON.PhysicsViewer(this.scene);
-      }
       await SceneSetup.createEnvironment(this.scene);
 
       await this.loadGolfBall();
@@ -145,6 +142,7 @@
 
       this.setupRenderLoop();
 
+      if (this.options.match) this.match = new MatchCoordinator(this);
       await this.courseManager.start();
     }
 
@@ -218,6 +216,7 @@
         }
       });
       this.golfBall.characterRoot = characterRoot;
+      this.golfBall.initSquash();
 
       // Flat matte ball. Also damp the scene IBL on the ball: the environment
       // texture (scene.js) floods this near-white PBR ball with flat ambient and
@@ -316,6 +315,7 @@
         this.camera.setShotStartPosition(this.golfBall.getPosition());
         this.camera.setCameraAngleImmediate(-this.aimedDirection);
         this.camera.setPlayView();
+        this.camera.syncFromCamera(); // ease on from the aim pose, no jump
         setTimeout(() => {
           this.aimView.isActive = false;
         }, 0);
@@ -477,6 +477,10 @@
     }
 
     togglePhysicsDebug() {
+      // Created on first use: a PhysicsViewer's utility layer renders (and
+      // clears depth) every frame even when it shows nothing.
+      if (!this.physicsViewer && BABYLON.PhysicsViewer)
+        this.physicsViewer = new BABYLON.PhysicsViewer(this.scene);
       if (!this.physicsViewer) return;
       this.physicsDebugEnabled = !this.physicsDebugEnabled;
 
@@ -530,6 +534,25 @@
         this._awaitingSettle = this.gameState !== GameState.LANDED;
       }
 
+      // A shot that FLEW onto the green (not a putt: that starts on it, and the
+      // post-swing setPlayView would fight it) pulls the camera back so the
+      // run-out and the cup are in view. The next swing restores the PLAY view.
+      const ball = this.golfBall;
+      if (!ball.inShot) this._shotFlew = this._greenView = false;
+      else if (!this._greenView) {
+        if (!this._shotFlew && ball.getVelocity().y > 1.5)
+          this._shotFlew = true;
+        if (
+          this._shotFlew &&
+          !ball.isAirborne() &&
+          ball._contactPhysics === SURFACE_PHYSICS.green &&
+          this.camera?.viewMode === CameraViewMode.PLAY
+        ) {
+          this._greenView = true;
+          this.camera.setGreenView();
+        }
+      }
+
       // Hole-out processing owns the transition while the ball drops into the cup.
       if (
         this._awaitingSettle &&
@@ -563,54 +586,74 @@
         this.engine.getDeltaTime() / 1000,
         aiming,
       );
+      this.golfBall.updateSquash(this.engine.getDeltaTime() / 1000);
       this.golfBall.applyRenderOffset();
 
       this.updateCharacterFace();
     }
 
+    // The ball's expression, every frame: grimace on a hard strike, woah when
+    // rocketing or dropping, elated on the climb, an "o" rolling at the cup, a
+    // frown for a near miss, elated when it drops. Holds each face a moment so
+    // it doesn't flicker as the ball crosses a threshold.
     updateCharacterFace() {
-      if (!this.golfBall) return;
+      const ball = this.golfBall;
+      if (!ball) return;
+      const dt = this.engine.getDeltaTime() / 1000;
 
-      // Skip expensive face updates during PLAY mode (optimize for moving ball)
-      if (this.gameState === GameState.PLAY) {
-        this.golfBall.updateFaces(this.engine.getDeltaTime() / 1000);
-        this.golfBall.updateBlinking(this.engine.getDeltaTime() / 1000);
-        return;
+      const vel = ball.getVelocity();
+      const speed = vel.length();
+      const moving = speed > 0.2;
+      const pos = ball.getPosition();
+
+      // The hole that matters: the current hole's cup, else (range) the nearest.
+      const pins = this.scene.pinManager?.pins || [];
+      let hole = this.currentHolePin?.holePosition || null;
+      let sunk = false;
+      let best = Infinity;
+      for (const pin of pins) {
+        const hp = pin.holePosition;
+        if (!hp) continue;
+        const d = Math.hypot(hp.x - pos.x, hp.z - pos.z);
+        if (pin.sunk && d < 0.3) sunk = true;
+        if (!this.currentHolePin && d < best) {
+          best = d;
+          hole = hp;
+        }
+      }
+      const dx = hole ? hole.x - pos.x : 0;
+      const dz = hole ? hole.z - pos.z : 0;
+      const dHole = hole ? Math.hypot(dx, dz) : Infinity;
+
+      // Came to rest just short of / past the cup: a near-miss frown. (Inside
+      // the cup isn't a miss: it rests a frame before the sink check runs.)
+      const nearMiss = dHole < 2.5 && dHole > CONFIG.PINS.HOLE_RADIUS;
+      if (this._wasMoving && !moving && !sunk && nearMiss) this._frownT = 2.5;
+      this._wasMoving = moving;
+      this._frownT = Math.max(0, this._frownT - dt);
+
+      let face = "default";
+      if (sunk) face = "elated";
+      else if (ball._squashT < 0.25 && ball._squashAmp > 0.15) face = "grimace";
+      else if (moving) {
+        const towardHole = vel.x * dx + vel.z * dz > 0;
+        if (dHole < 3 && towardHole && speed < 8 && Math.abs(vel.y) < 1.5)
+          face = "o";
+        else if (speed > 45 || vel.y < -3) face = "woah";
+        else if (vel.y > 1) face = "elated";
+      } else if (this._frownT > 0) face = "frown";
+
+      this._faceHold += dt;
+      // A strike, a sink or coming to rest switch at once; the rest wait 0.25 s.
+      const instant =
+        face === "grimace" || (face === "elated" && sunk) || !moving;
+      if (face !== ball.currentFace && (instant || this._faceHold > 0.25)) {
+        ball.setFace(face);
+        this._faceHold = 0;
       }
 
-      const ballVel = this.golfBall.getVelocity();
-      const ballSpeed = ballVel.length();
-      const isMoving = ballSpeed > 0.2;
-
-      // Detect if ball was just hit (sudden velocity increase)
-      const velMagnitudePrev = this.lastBallVelocity.length();
-      const velMagnitudeCurr = ballSpeed;
-      const wasJustHit =
-        velMagnitudeCurr > velMagnitudePrev * 1.5 && velMagnitudeCurr > 5;
-
-      if (wasJustHit) {
-        this.wasHit = true;
-        this.hitCooldown = 0.1;
-      }
-
-      if (this.hitCooldown > 0) {
-        this.hitCooldown -= this.engine.getDeltaTime() / 1000;
-        this.golfBall.setFace("hit", this.golfBall.HIT_FACE_DURATION);
-      } else if (isMoving && ballVel.y > 1) {
-        this.golfBall.setFace("ascending");
-      } else if (isMoving && ballVel.y < -2) {
-        this.golfBall.setFace("descending");
-      } else if (isMoving && Math.abs(ballVel.x) > 3) {
-        this.golfBall.setFace("collision");
-      } else if (!isMoving) {
-        this.golfBall.setFace("default");
-      }
-
-      this.golfBall.updateFaces(this.engine.getDeltaTime() / 1000);
-
-      this.golfBall.updateBlinking(this.engine.getDeltaTime() / 1000);
-
-      this.lastBallVelocity.copyFrom(ballVel);
+      ball.updateFaces(dt);
+      ball.updateBlinking(dt);
     }
 
     archiveCurrentTrail() {
@@ -869,7 +912,12 @@
         () => {
           // Hold the camera still while the ball drops into the cup — following
           // it down would drag the low PLAY-view camera under the green.
-          if (this.golfBall?._inCup) return;
+          // (A match spectator's camera follows the opponent's ghost instead.)
+          if (
+            this.golfBall?._inCup &&
+            this.camera.golfBallGuy === this.golfBall
+          )
+            return;
           this.camera.update(this.engine.getDeltaTime() / 1000);
         },
         undefined,
@@ -920,7 +968,14 @@
     // Lift the logo above the clubhouse-arrival cover so it (not plain black) shows
     // for the whole boot + first-hole load; the reveal fades it out (see loadHole).
     Shared.showBoot();
-    startGame({ mode: urlMode === "course" ? "course" : "practice" });
+    const p = new URLSearchParams(location.search);
+    startGame({
+      mode: urlMode === "course" ? "course" : "practice",
+      // Opened into a networked match (see golfnet.js's entries).
+      match:
+        urlMode === "course" &&
+        (p.has("rv") || p.has("join") || p.get("host") === "1"),
+    });
   }
 
   Object.assign(global, { GolfGame, startGame });

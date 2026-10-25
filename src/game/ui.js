@@ -2,6 +2,17 @@
 // Split out of game.js; loaded as a plain <script> before game.js (see game.html),
 // and require()-able in Node for unit tests. Cross-module refs resolve via globals.
 (function (global) {
+  // Skip-if-unchanged DOM writes for per-frame HUD updates. Compares against
+  // the last value WE wrote (the browser normalises style strings, e.g. rgb()
+  // spacing, so reading them back would never match).
+  function setText(el, v) {
+    if (el._hudText !== v) el.textContent = el._hudText = v;
+  }
+  function setStyle(el, prop, v) {
+    const k = "_hud_" + prop;
+    if (el[k] !== v) el.style[prop] = el[k] = v;
+  }
+
   // ─── UNIFIED CIRCLE UI MANAGER ──────────────────────────────────────────────
 
   class CircleUIManager {
@@ -171,16 +182,18 @@
       pinNumber,
       par = null,
     ) {
-      const yardageEl = document.getElementById("circleYardage");
-      if (yardageEl) yardageEl.textContent = distance.toFixed(0);
+      // Called every frame: write only on change, so an idle HUD costs no
+      // style/layout work.
+      this._yardageEl ??= document.getElementById("circleYardage");
+      if (this._yardageEl) setText(this._yardageEl, distance.toFixed(0));
 
       // Course mode: par sits between the flag and the distance; hidden in practice.
       if (this._statsPar) {
         if (par != null) {
-          this._statsPar.textContent = "PAR " + par;
-          this._statsPar.style.display = "block";
+          setText(this._statsPar, "PAR " + par);
+          setStyle(this._statsPar, "display", "block");
         } else {
-          this._statsPar.style.display = "none";
+          setStyle(this._statsPar, "display", "none");
         }
       }
 
@@ -196,7 +209,7 @@
       }
 
       if (this._statsPinNumber && pinNumber !== undefined) {
-        this._statsPinNumber.textContent = pinNumber;
+        setText(this._statsPinNumber, String(pinNumber));
       }
     }
 
@@ -564,7 +577,7 @@
         shotStart &&
         this.golfBall.inShot;
       if (!inFlight) {
-        if (m.style.display !== "none") m.style.display = "none";
+        setStyle(m, "display", "none");
         this._shotLineDir = null; // reset the launch-line capture for the next shot
         return;
       }
@@ -582,9 +595,9 @@
         }
       }
       if (!this._shotLineDir) {
-        m.style.display = "block";
-        this._devNeedle.style.left = "50%";
-        this._devLabel.textContent = "straight";
+        setStyle(m, "display", "block");
+        setStyle(this._devNeedle, "left", "50%");
+        setText(this._devLabel, "straight");
         return;
       }
       let rx = -this._shotLineDir.z;
@@ -604,13 +617,19 @@
       const yards = lateral * UNITS.M_TO_YARDS;
       const FULL = 25; // metres of deviation = full-scale needle deflection
       const t = Math.max(-1, Math.min(1, lateral / FULL));
-      m.style.display = "block";
-      this._devNeedle.style.left = 50 + t * 48 + "%";
-      const mag = Math.min(Math.abs(t), 1);
-      this._devNeedle.style.background = `rgb(${Math.round(140 + 115 * mag)},${Math.round(255 * (1 - mag * 0.8))},${Math.round(102 * (1 - mag))})`;
+      setStyle(m, "display", "block");
+      setStyle(this._devNeedle, "left", (50 + t * 48).toFixed(1) + "%");
+      const mag = Math.round(Math.min(Math.abs(t), 1) * 50) / 50;
+      setStyle(
+        this._devNeedle,
+        "background",
+        `rgb(${Math.round(140 + 115 * mag)},${Math.round(255 * (1 - mag * 0.8))},${Math.round(102 * (1 - mag))})`,
+      );
       const yAbs = Math.abs(Math.round(yards));
-      this._devLabel.textContent =
-        yAbs < 1 ? "straight" : `${yAbs} yd ${yards > 0 ? "R" : "L"}`;
+      setText(
+        this._devLabel,
+        yAbs < 1 ? "straight" : `${yAbs} yd ${yards > 0 ? "R" : "L"}`,
+      );
     }
 
     getDistanceToNearestPin() {
@@ -1084,12 +1103,10 @@
         return { pin: null, index: -1, distance: 0 };
       }
 
-      // Convert aim direction to vector (opposite camera direction since ball faces away from camera)
-      const aimVec = new BABYLON.Vector3(
-        Math.sin(aimDirection + Math.PI),
-        0,
-        Math.cos(aimDirection + Math.PI),
-      );
+      // Aim is opposite the camera direction (the ball faces away from it).
+      // Scalar math: this runs several times per frame while aiming.
+      const ax = Math.sin(aimDirection + Math.PI);
+      const az = Math.cos(aimDirection + Math.PI);
 
       let bestPin = null;
       let bestIndex = -1;
@@ -1097,16 +1114,12 @@
 
       for (let i = 0; i < this.pins.length; i++) {
         const pin = this.pins[i];
-        const pinPos = pin.mesh.position;
-        const toPin = pinPos.subtract(ballPos);
-        const toPinFlat = toPin.clone();
-        toPinFlat.y = 0;
+        const dx = pin.mesh.position.x - ballPos.x;
+        const dz = pin.mesh.position.z - ballPos.z;
+        const len = Math.hypot(dx, dz);
+        if (len === 0) continue;
 
-        if (toPinFlat.length() === 0) continue;
-
-        toPinFlat.normalize();
-
-        const dotProd = BABYLON.Vector3.Dot(aimVec, toPinFlat);
+        const dotProd = (ax * dx + az * dz) / len;
         const angle = Math.acos(Shared.clamp(dotProd, -1, 1));
 
         if (angle < smallestAngle) {

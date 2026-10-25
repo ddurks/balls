@@ -432,6 +432,17 @@
       return null;
     }
     const mat = mesh._origBallMat.clone("ballSkin_" + idx);
+    // clone() copied the original albedo too; free it (mat.dispose only frees
+    // what's attached when it runs, so the copy would orphan here).
+    const orig = mesh._origBallMat;
+    const copied =
+      "albedoTexture" in mat ? mat.albedoTexture : mat.diffuseTexture;
+    if (
+      copied &&
+      copied !== orig.albedoTexture &&
+      copied !== orig.diffuseTexture
+    )
+      copied.dispose();
     if ("albedoTexture" in mat) mat.albedoTexture = tex;
     else mat.diffuseTexture = tex;
     if ("metallic" in mat) mat.metallic = 0;
@@ -448,11 +459,14 @@
 
   // The custom drawn face as a texture — same recipe as Balls.faceTexture
   // (alpha + trilinear, invertY=false), sourced from a dataURL.
+  let customFaceSeq = 0;
   function faceTextureFromDataURL(scene, dataURL) {
     if (!dataURL) return null;
+    // Unique name: Babylon caches textures by url ("data:" + name), so a shared
+    // name made every live custom face resolve to whichever loaded first.
     const t = BABYLON.Texture.CreateFromBase64String(
       dataURL,
-      "customFace",
+      "customFace_" + ++customFaceSeq,
       scene,
       false,
       false,

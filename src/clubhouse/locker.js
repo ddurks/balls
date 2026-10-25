@@ -308,8 +308,7 @@
     bob.parent = wrapper;
     for (const m of result.meshes) if (!m.parent) m.parent = bob;
     for (const m of result.meshes)
-      if (m.getTotalVertices && m.getTotalVertices() > 0)
-        shadow.addShadowCaster(m);
+      if (Balls.castsShadow(m)) shadow.addShadowCaster(m);
     wrapper.position.y = 0.84; // gball model half-height — ball rests on the mat
 
     let faceMesh = null;
@@ -323,6 +322,7 @@
     if (faceMesh) {
       faceMat = faceMesh.material.clone("faceMat");
       faceMesh.material = faceMat;
+      Balls.liftFace(faceMesh);
       faceOrigTex = faceMat.albedoTexture || faceMat.diffuseTexture || null;
     }
     const setFaceTex = (tex) => {

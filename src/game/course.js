@@ -217,7 +217,9 @@
         this.game.grassSystem.groundYAt = (x, z) => this.groundY(x, z);
         this.game.grassSystem.playableAt = (x, z) => this.grassAllowed(x, z);
       }
-      await this.loadHole(0);
+      // A networked match loads each hole when the server says (match.js).
+      if (this.game.match) this.game.match.start();
+      else await this.loadHole(0);
     }
 
     // ---- terrain height field (sampled once per hole via rays, then O(1) lookups) ----
@@ -335,11 +337,13 @@
     }
 
     // ---- hole lifecycle ----
-    async loadHole(index) {
+    // pinIndex / windSeed: the match's shared conditions (else random).
+    async loadHole(index, pinIndex = null, windSeed = null) {
       this.busy = true;
       this.holeIndex = index;
       this.holeComplete = false;
-      this.game.wind?.reset?.(); // fresh (non-editable) wind condition per hole
+      if (windSeed !== null) this.game.wind?.setFromSeed(windSeed);
+      else this.game.wind?.reset?.(); // fresh (non-editable) wind condition per hole
       const cfg = this.holes[index];
 
       // Show the loading logo ON TOP for the whole load, every hole. Hole 0 arrives
@@ -457,7 +461,7 @@
       if (this.practice) {
         this.placePracticeCups();
       } else {
-        const forced = cfg.pinIndex;
+        const forced = pinIndex ?? cfg.pinIndex;
         const chosen = Number.isInteger(forced)
           ? Shared.clamp(forced, 0, this.pinPool.length - 1)
           : Math.floor(Math.random() * this.pinPool.length);
@@ -546,7 +550,8 @@
       reveal();
       await flyDone;
 
-      this.beginTurn();
+      if (this.game.match) this.game.match.holeLoaded();
+      else this.beginTurn();
     }
 
     // Put a cup + flag on pin `index` of the hole's pool; returns the cup position.
@@ -718,14 +723,12 @@
     // Extra rocks beyond the authored markers (see the loadHole call site):
     //   hole 1 → double, distributed ALONG the water line (not paired on top of
     //            the originals),
-    //   hole 2 → triple, scattered randomly on the rough around the originals,
+    //   hole 2 → none: it has no rough (desert/rockface), so the rough scatter
+    //            only burned ~480 ray picks per load without placing a rock,
     //   hole 3 → a random scatter across the rough.
     addExtraRocks(holeId, authored) {
       if (holeId === 1) {
         this.distributeRocksAlong(authored, authored.length); // +1× along the water
-      } else if (holeId === 2) {
-        const box = this._rockBBox(authored, 10);
-        this.scatterRoughRocks(authored.length * 2, box, authored); // +2× → triple
       } else if (holeId === 3) {
         this.scatterRoughRocks(24, null, authored);
       }
@@ -794,28 +797,6 @@
         const scale = a.scale * (0.8 + Math.random() * 0.5);
         this.placeRock(a.type, gp, Math.random() * Math.PI * 2, scale);
       }
-    }
-
-    // Padded XZ bounding box of a set of authored rocks (fallback: whole hole).
-    _rockBBox(authored, pad) {
-      if (!authored || authored.length === 0) return null;
-      let minX = Infinity,
-        maxX = -Infinity,
-        minZ = Infinity,
-        maxZ = -Infinity;
-      for (const r of authored) {
-        const p = r.groundPos;
-        minX = Math.min(minX, p.x);
-        maxX = Math.max(maxX, p.x);
-        minZ = Math.min(minZ, p.z);
-        maxZ = Math.max(maxZ, p.z);
-      }
-      return {
-        minX: minX - pad,
-        maxX: maxX + pad,
-        minZ: minZ - pad,
-        maxZ: maxZ + pad,
-      };
     }
 
     // Randomly spatter `count` rocks on the ROUGH within `box` (defaults to the
@@ -912,34 +893,53 @@
       return hit && hit.hit ? hit.pickedPoint.y : this.tee.y;
     }
 
-    // Real-size wooden tee peg (~5 cm) for driver tee shots on the longer holes.
+    // Real-size wooden tee for driver tee shots on the longer holes: a 70 mm
+    // (2¾") driver tee pushed half into the turf, lathed from a real profile —
+    // pointed tip, ~5 mm shank, flared neck, ~11.5 mm cupped head — so it sits
+    // right against the 42.7 mm ball. Origin at turf level.
     makeTeePeg(pos, pegH) {
-      const peg = BABYLON.MeshBuilder.CreateCylinder(
+      // [radius, height] in metres, tip → rim → cup centre (closes the solid).
+      const profile = [
+        [0, -0.035],
+        [0.0012, -0.031],
+        [0.0022, -0.02],
+        [0.0025, 0],
+        [0.0027, pegH - 0.013],
+        [0.0036, pegH - 0.007],
+        [0.0049, pegH - 0.003],
+        [0.0057, pegH - 0.0005],
+        [0.0058, pegH],
+        [0.005, pegH + 0.0002],
+        [0.003, pegH - 0.0012],
+        [0, pegH - 0.0016],
+      ].map(([r, y]) => new BABYLON.Vector3(r, y, 0));
+      const peg = BABYLON.MeshBuilder.CreateLathe(
         "teePeg",
-        {
-          height: pegH,
-          diameterTop: 0.05,
-          diameterBottom: 0.012,
-          tessellation: 10,
-        },
+        { shape: profile, tessellation: 16 },
         this.scene,
       );
-      peg.position = new BABYLON.Vector3(
-        pos.x,
-        this.teeSurfaceY() + pegH / 2,
-        pos.z,
-      );
+      peg.position = new BABYLON.Vector3(pos.x, this.teeSurfaceY(), pos.z);
       const mat = new BABYLON.StandardMaterial("teePegMat", this.scene);
       mat.diffuseColor = new BABYLON.Color3(0.95, 0.9, 0.82);
       mat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+      mat.backFaceCulling = false; // lathe winding faces in from some angles
       peg.material = mat;
       peg.isPickable = false;
       peg.receiveShadows = true;
-      // Collider so the ball rests teed-up until struck.
+      // Collider so the ball rests teed-up until struck. A touch wider than the
+      // 11.5 mm head (hidden under the ball) so the ball can't topple off a
+      // knife-edge rim; its top is the rim, so the ball rests where it's drawn.
       this.teePegAgg = new BABYLON.PhysicsAggregate(
         peg,
         BABYLON.PhysicsShapeType.CYLINDER,
-        { mass: 0, friction: 0.6, restitution: 0.1 },
+        {
+          mass: 0,
+          friction: 0.6,
+          restitution: 0.1,
+          pointA: new BABYLON.Vector3(0, 0, 0),
+          pointB: new BABYLON.Vector3(0, pegH, 0),
+          radius: 0.009,
+        },
         this.scene,
       );
       return peg;
@@ -953,7 +953,7 @@
         this.teePegAgg = null;
       }
       if (this.teePeg) {
-        this.teePeg.dispose();
+        this.teePeg.dispose(false, true); // its own teePegMat (see makeTeePeg)
         this.teePeg = null;
       }
     }
@@ -972,8 +972,9 @@
         this.game.aimView?.clubSelector?.findBestClubForDistance(distToPin) ??
         0;
       const useTee = bestClub >= 10; // 3 Wood / 5 Wood / Driver
-      const pegH = 0.05; // visible tee height ≈ 5 cm
-      this.placeBallAtTee(useTee ? pegH + 0.03 : 0.05);
+      const pegH = 0.035; // tee head height above the turf (half a 70 mm tee)
+      // Ball (r 21.35 mm) rests on the collider top; spawn 1 mm above it.
+      this.placeBallAtTee(useTee ? pegH + 0.0224 : 0.05);
       if (useTee) this.teePeg = this.makeTeePeg(this.tee, pegH);
 
       // Aim the camera down the hole toward the pin (behind-ball view).
@@ -1081,6 +1082,10 @@
       this.game.currentHoleShotCount += 1; // penalty stroke
       this.hud.flash(msg, 1800);
       const drop = (dropPos || this.lastLie || this.tee).clone();
+      // The drop is the new lie: a ball settling there never lands "in a
+      // shot", so nothing else records it, and a later out-of-bounds would
+      // replay from the lie before the hazard (the tee, after a water drop).
+      this.lastLie = drop.clone();
       drop.y += 0.5;
       this.game.golfBall.startPosition = drop.clone();
       this.game.golfBall.reset();
@@ -1154,6 +1159,7 @@
       const strokes = Math.max(1, shotCount);
       this.players[this.currentPlayer].scores[this.holeIndex] = strokes;
       this.hud.flash(CourseUI.scoreName(strokes, par), 2600);
+      if (this.game.match) return; // the server moves the match on
       // Show the make result, then advance to the next hole (no shot overview for
       // now). clearArchivedTrails releases this hole's trails before the teardown.
       setTimeout(() => {
@@ -1218,6 +1224,11 @@
       }
       this.holeNodes = [];
       this.surfaceMeshes = [];
+      // The hole glbs carry no materials, so the loader makes a default one per
+      // load; setupSurface swaps it out, and node.dispose() never frees it.
+      for (const m of this.scene.materials.slice())
+        if (m.name === "__GLTFLoader._default" && !m.getBindedMeshes().length)
+          m.dispose();
       this.disposePins();
       this._pickCache = null;
     }

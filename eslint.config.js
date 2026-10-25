@@ -35,6 +35,9 @@ const browserGlobals = {
   Textures: "readonly", // window.Textures from textures.js (loaded first)
   Lighting: "readonly", // window.Lighting from lighting.js (loaded first)
   BallsStyle: "readonly", // window.BallsStyle from style.js (loaded first)
+  Splash: "readonly", // window.Splash from splash.js (loaded first)
+  Challenge: "readonly", // window.Challenge from challenge.js (loaded first)
+  ClubChallenges: "readonly", // window.ClubChallenges from clubhouse/challenges.js
   ImageData: "readonly",
   Uint8ClampedArray: "readonly",
   Uint8Array: "readonly",
@@ -98,6 +101,11 @@ const gameGlobals = {
   COURSE_HOLES: "readonly",
   SURFACE_PHYSICS: "readonly",
   CourseManager: "readonly",
+  PathSampler: "readonly",
+  PathPlayer: "readonly",
+  MatchCoordinator: "readonly",
+  MatchUI: "readonly",
+  matchStatus: "readonly",
   GolfGame: "readonly",
   startGame: "readonly",
 };

@@ -480,7 +480,7 @@
       // Water: bright translucent like the distant water ring
       const water = new BABYLON.PBRMaterial("courseWater", this.scene);
       water.albedoTexture = this._tex(
-        "assets/textures/course/water-color.png",
+        "assets/textures/course/water-color.jpg",
         10,
       );
       water.bumpTexture = this._tex(

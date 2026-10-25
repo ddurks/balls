@@ -186,6 +186,7 @@ function swipeSpin(world, follow, dx, dy) {
 
 module.exports = {
   B,
+  havok,
   GolfBallGuy,
   ClubData,
   R,

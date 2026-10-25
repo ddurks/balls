@@ -83,11 +83,10 @@
     }
 
     autoSelectClubIfNeeded(distance, onGreen = false) {
-      if (!this.manuallySelectedClub) {
-        this.currentClub = this.suggestClub(distance, onGreen);
-        return true;
-      }
-      return false;
+      if (this.manuallySelectedClub) return false;
+      const prev = this.currentClub;
+      this.currentClub = this.suggestClub(distance, onGreen);
+      return this.currentClub !== prev; // callers repaint the carousel on change
     }
 
     selectClub(clubId) {

@@ -299,6 +299,7 @@ function ballStateGame(inShot) {
     getAngularVelocity: () => ({ length: () => 0 }),
     pendingSpinAmount: 0,
     updateVisualRotation() {},
+    updateSquash() {},
     applyRenderOffset() {},
   };
   const game = {

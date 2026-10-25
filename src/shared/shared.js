@@ -25,7 +25,7 @@
   // /assets is served immutable in production, so a texture/model URL must change
   // for a redeploy to reach returning users. This is the single source of truth —
   // bump it on any asset rebuild. v(path) appends it; loadModel() takes `version`.
-  const ASSET_V = "16";
+  const ASSET_V = "17";
   const v = (path) => path + (path.includes("?") ? "&" : "?") + "v=" + ASSET_V;
 
   // Point Babylon's KTX2 transcoder at the self-hosted decoder + WASM (vendored
@@ -214,9 +214,34 @@
         document.documentElement.appendChild(cover);
         setTimeout(() => fx.enter(), 4000); // safety: never stay black
       }
+      // Back from the next page can restore this one from the back/forward
+      // cache as it was left: irised shut, its sockets closed. Load it afresh.
+      addEventListener("pageshow", (e) => {
+        if (e.persisted && leaving) location.reload();
+      });
     }
     return fx;
   })();
+
+  // ---- player name -----------------------------------------------------------
+  // The name shown in the clubhouse, on a challenge link and on the course.
+  // Until the player picks one (ballsName), a guest name is made up once and
+  // kept: rolled per page, the challenger in the feed or a link turned out to
+  // be someone else on the course.
+  let guestName = null; // storage blocked: at least one name per page
+  function playerName() {
+    try {
+      const chosen = (localStorage.getItem("ballsName") || "").trim();
+      if (chosen) return chosen;
+      const kept = localStorage.getItem("ballsGuestName");
+      if (kept) return kept;
+    } catch {}
+    if (!guestName) guestName = "Guest" + Math.floor(100 + Math.random() * 900);
+    try {
+      localStorage.setItem("ballsGuestName", guestName);
+    } catch {}
+    return guestName;
+  }
 
   function hideBoot() {
     const el =
@@ -251,6 +276,7 @@
     v,
     loadModel,
     roomFX,
+    playerName,
     hideBoot,
     showBoot,
   };

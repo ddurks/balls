@@ -29,6 +29,9 @@
     // applyRollingResistance), so a crawl near the hold angle ends instead of
     // inching on for tens of seconds.
     static STATIC_CATCH_SPEED = 0.02;
+    // A ball on the ground crawling slower than that this long is at rest,
+    // held or not (see updateGroundContact).
+    static STILL_SECONDS = 2;
     // Turf's grip radius for spin about the contact normal (twistDecel). Grass
     // blades grip well beyond the ball's geometric contact patch; this is sized
     // so a capped sidespin dies within ~2 s of landing rather than pirouetting.
@@ -56,6 +59,7 @@
       );
       this._supportCount = 0;
       this._restSteps = 0;
+      this._crawlSteps = 0;
       this._grip = 0; // see applyTurfImpact
       this._topGrip = 0;
       this._shotDir = new BABYLON.Vector3(); // horizontal launch line (applyHit)
@@ -102,6 +106,15 @@
           // While held, keep the support the ball came to rest on (static
           // friction persists); Havok's normals at rest can wander off it.
           if (!this._heldThisStep) this.addSupportNormal(e.normal);
+        } else if (
+          e.point &&
+          !this._heldThisStep &&
+          this.getSpeed() < GolfBallGuy.HAVOK_SLOW_CONTACT_SPEED
+        ) {
+          // A rock, trunk or flagstick the ball has come to lean on supports
+          // it too: wedged against one on a slope the turf alone can't hold,
+          // it is at rest. It still rolls by the turf's plane and law.
+          this.addSupportNormal(e.normal, e.point);
         }
       });
       // The single per-physics-step hook: forces and the rolling law run at the fixed
@@ -146,9 +159,6 @@
       this.faceTransitionTimer = 0;
       this.nextFace = null;
 
-      this.HIT_FACE_DURATION = 0.3;
-      this.COLLISION_FACE_DURATION = 0.4;
-
       this.spinTransitionActive = false;
       this.spinTransitionTimer = 0;
       this.spinTransitionDuration = 0.4;
@@ -167,6 +177,13 @@
       this._visualTmp = new BABYLON.Quaternion();
       this._visualW = new BABYLON.Vector3();
       this.characterRoot = null;
+      // Strike squash (see initSquash/updateSquash). t ≥ DURATION = at rest.
+      this._squashOuter = null;
+      this._squashInner = null;
+      this._squashT = Infinity;
+      this._squashAmp = 0;
+      this._squashDir = new BABYLON.Vector3(0, 1, 0);
+      this._squashQ = new BABYLON.Quaternion();
 
       // Blinking system — the state machine lives in balls.js; this.blink and
       // this.blinkMorphIdx are set up in initializeEyelids once the model loads.
@@ -228,7 +245,7 @@
       );
       this.mesh.rotationQuaternion.conjugateToRef(this._renderQ);
       off.rotateByQuaternionToRef(this._renderQ, off);
-      this.characterRoot?.position.copyFrom(off);
+      (this._squashOuter || this.characterRoot)?.position.copyFrom(off);
       this.spinAura?.position.copyFrom(off);
     }
 
@@ -375,10 +392,20 @@
       this.spinAura.scaling.setAll(1 + 0.14 * t);
     }
 
-    addSupportNormal(normal) {
+    // `point` marks an obstacle's contact: a support, but not the plane the
+    // ball rolls on.
+    addSupportNormal(normal, point) {
       const n =
         this._supportNormals[this._supportCount++ % GolfBallGuy.SUPPORT_STEPS];
       n.copyFrom(normal);
+      if (point) {
+        // Turned toward the ball: a trunk's normal is level, so its y can't say.
+        const c = this.mesh.position;
+        const out =
+          n.x * (c.x - point.x) + n.y * (c.y - point.y) + n.z * (c.z - point.z);
+        if (out < 0) n.scaleInPlace(-1);
+        return;
+      }
       // The event normal's sign depends on which body Havok lists first.
       if (n.y < 0) n.scaleInPlace(-1);
       this._contactNormal.copyFrom(n);
@@ -461,6 +488,23 @@
         speed < GolfBallGuy.REST_SPEED &&
         this._restSpin.length() < GolfBallGuy.REST_SPIN;
       this._restSteps = resting ? this._restSteps + 1 : 0;
+      // The rolling law holds a crawl this slow wherever the turf can hold
+      // the slope, so a ball that keeps crawling, or sits spinning, is held by
+      // something it doesn't model (caught between two surface meshes where
+      // a fairway's edge overlaps the rough, say) and would never be called
+      // at rest. After STILL_SECONDS it is, where it lies, spin and all.
+      this._crawlSteps =
+        onGround && !this.landed && speed < GolfBallGuy.STATIC_CATCH_SPEED
+          ? this._crawlSteps + 1
+          : 0;
+      if (
+        this._crawlSteps * PhysicsConfig.STEP_SECONDS >=
+        GolfBallGuy.STILL_SECONDS
+      ) {
+        this.body.setLinearVelocity(BABYLON.Vector3.Zero());
+        this.body.setAngularVelocity(BABYLON.Vector3.Zero());
+        this._restSteps = GolfBallGuy.REST_STEPS;
+      }
     }
 
     /**
@@ -486,7 +530,7 @@
       v.y += g.y * dt;
       v.z += g.z * dt;
       this._slowRollExpected = false;
-      const vn = BABYLON.Vector3.Dot(v, n);
+      let vn = BABYLON.Vector3.Dot(v, n);
       // No surface law to apply, or the ball is leaving the surface (struck, or
       // bouncing off): gravity only.
       if (!phys || vn > 0) {
@@ -551,10 +595,22 @@
         tx = ty = tz = 0;
         // Stopped: end the leftover roll too — at these speeds Havok's friction
         // no longer turns it back into motion — but keep real spin (a backspin
-        // bite) for friction to act on.
-        if (w.length() * r <= GolfBallGuy.HAVOK_SLOW_CONTACT_SPEED) {
+        // bite) for friction to act on. Not on turf that never bites (spinGrip
+        // 0): sand holds a ball plugged at any tilt, even in a bunker's
+        // vertical lip, where nothing presses it on for friction to act and
+        // the spin would last forever.
+        if (
+          w.length() * r <= GolfBallGuy.HAVOK_SLOW_CONTACT_SPEED ||
+          !phys.spinGrip
+        ) {
           this.body.setAngularVelocity(w.setAll(0));
           this._heldThisStep = true;
+          // At rest it no longer presses into its support either: that is the
+          // contact normal it came to rest on, kept while held (see the
+          // collision observer), and where it differs from the face the ball
+          // touches now, the push runs partly along that face and rolls the
+          // ball on at a couple of cm/s for good.
+          vn = 0;
         }
       }
       v.set(tx + n.x * vn, ty + n.y * vn, tz + n.z * vn);
@@ -892,6 +948,7 @@
         launchVel.scale(CONFIG.BALL.MASS),
         this.getPosition(),
       );
+      this.startSquash(launchVel);
 
       // The clubface imparts NO spin — the ball launches spin-free and the
       // player's swipe is the only source of spin (see applySpin / applyMagnus).
@@ -962,13 +1019,17 @@
       }
 
       this.faceMaterial = this.faceMesh.material;
+      Balls.liftFace(this.faceMesh);
 
+      // Picked per frame by Game.updateCharacterFace from speed, climb/drop and
+      // distance to the hole.
       const textureMap = {
         default: null,
-        hit: "grimace.png",
-        ascending: "elated.png",
-        descending: "woah.png",
-        collision: "o.png",
+        grimace: "grimace.png",
+        elated: "elated.png",
+        woah: "woah.png",
+        o: "o.png",
+        frown: "frown.png",
       };
 
       for (const [name, filename] of Object.entries(textureMap)) {
@@ -987,7 +1048,7 @@
           this.faceTextures["default"] = this.faceMaterial.diffuseTexture;
         }
         // Locker-room drawn face replaces the resting smile as "default", so the
-        // flight expressions (grimace/elated/woah/o) still override + restore it.
+        // expressions (grimace/elated/woah/o/frown) still override + restore it.
         const styleFace = BallsStyle.loadStyle().face;
         if (styleFace) {
           const t = BallsStyle.faceTextureFromDataURL(this.scene, styleFace);
@@ -1090,8 +1151,9 @@
       if (!this.eyeL || !this.eyeR) return;
       if (!this.eyeLRest || !this.eyeRRest) return;
 
-      const charPos = this.getPosition();
-      const dirToCamera = cameraPosition.subtract(charPos);
+      // Per frame: scratch objects instead of ~4 fresh ones each call.
+      const dirToCamera = (this._gazeDir ??= new BABYLON.Vector3());
+      cameraPosition.subtractToRef(this.getPosition(), dirToCamera);
       dirToCamera.normalize();
 
       let targetYaw = Math.atan2(dirToCamera.x, dirToCamera.z);
@@ -1110,18 +1172,18 @@
       this.eyeYaw += (targetYaw - this.eyeYaw) * f;
       this.eyePitch += (targetPitch - this.eyePitch) * f;
 
-      const gazeQ = BABYLON.Quaternion.FromEulerAngles(
+      const gazeQ = (this._gazeQ ??= new BABYLON.Quaternion());
+      BABYLON.Quaternion.FromEulerAnglesToRef(
         this.eyePitch,
         this.eyeYaw,
         0,
+        gazeQ,
       );
 
-      if (this.eyeL && this.eyeLRest) {
-        this.eyeL.rotationQuaternion = gazeQ.multiply(this.eyeLRest);
-      }
-      if (this.eyeR && this.eyeRRest) {
-        this.eyeR.rotationQuaternion = gazeQ.multiply(this.eyeRRest);
-      }
+      this.eyeL.rotationQuaternion ??= new BABYLON.Quaternion();
+      this.eyeR.rotationQuaternion ??= new BABYLON.Quaternion();
+      gazeQ.multiplyToRef(this.eyeLRest, this.eyeL.rotationQuaternion);
+      gazeQ.multiplyToRef(this.eyeRRest, this.eyeR.rotationQuaternion);
     }
 
     updateBlinking(dt) {
@@ -1237,6 +1299,73 @@
       this._visualTmp.multiplyToRef(q, root.rotationQuaternion);
     }
 
+    // Hang the visual characterRoot under two nodes that squash it along an
+    // arbitrary WORLD direction d, about the ball's centre: outer = R_d·S in the
+    // body's frame, inner = R_d⁻¹ back, so the root still shows _visualQ and the
+    // squash axis stays on the launch line however the body spins.
+    initSquash() {
+      if (!this.characterRoot || this._squashOuter) return;
+      this._squashOuter = new BABYLON.TransformNode("ballSquash", this.scene);
+      this._squashOuter.rotationQuaternion = new BABYLON.Quaternion();
+      this._squashOuter.parent = this.mesh;
+      this._squashInner = new BABYLON.TransformNode("ballUnsquash", this.scene);
+      this._squashInner.rotationQuaternion = new BABYLON.Quaternion();
+      this._squashInner.parent = this._squashOuter;
+      this.characterRoot.parent = this._squashInner;
+    }
+
+    startSquash(launchVel) {
+      const speed = launchVel.length();
+      if (speed < 0.5) return;
+      const S = CONFIG.GOLF_BALL.SQUASH;
+      this._squashAmp =
+        S.MAX * Math.pow(Math.min(speed / S.FULL_SPEED, 1), 0.6);
+      launchVel.scaleToRef(1 / speed, this._squashDir);
+      this._squashT = 0;
+    }
+
+    // Once per rendered frame (after updateVisualRotation): flattened along the
+    // launch line on contact, overshooting into a stretch, then settling round.
+    updateSquash(dt) {
+      const outer = this._squashOuter;
+      if (!outer || this._squashT === Infinity) return;
+      const S = CONFIG.GOLF_BALL.SQUASH;
+      // Sample, then advance: the strike frame itself shows the full squash.
+      // Capped step, as in updateVisualRotation: the strike frame often hitches,
+      // and a skipped squash is the whole effect.
+      const t = this._squashT;
+      this._squashT += Math.min(dt, 1 / 30);
+      if (t >= S.DURATION) {
+        this._squashT = Infinity;
+        outer.rotationQuaternion.set(0, 0, 0, 1);
+        outer.scaling.setAll(1);
+        this._squashInner.rotationQuaternion.set(0, 0, 0, 1);
+        return;
+      }
+      const s =
+        this._squashAmp *
+        Math.exp(-t / S.DECAY) *
+        Math.cos(2 * Math.PI * S.FREQ * t);
+      const axial = 1 - s;
+      const perp = 1 / Math.sqrt(axial); // keep the volume
+      // R_d: the node's local +Y onto the world launch direction.
+      const qd = this._squashQ;
+      BABYLON.Quaternion.FromUnitVectorsToRef(
+        BABYLON.Axis.Y,
+        this._squashDir,
+        qd,
+      );
+      const bodyQ = this.mesh.rotationQuaternion;
+      bodyQ.conjugateToRef(this._visualTmp);
+      this._visualTmp.multiplyToRef(qd, outer.rotationQuaternion); // bodyQ⁻¹·R_d
+      outer.scaling.set(perp, axial, perp);
+      qd.conjugateToRef(this._visualTmp);
+      this._visualTmp.multiplyToRef(
+        bodyQ,
+        this._squashInner.rotationQuaternion,
+      ); // R_d⁻¹·bodyQ
+    }
+
     // === GENERAL METHODS ===
     // A moved ball starts from fresh contact: the old support (e.g. a crease's
     // two faces) must not hold it wherever it lands.
@@ -1261,6 +1390,10 @@
       if (this.characterRoot?.rotationQuaternion)
         this.characterRoot.rotationQuaternion.set(0, 0, 0, 1);
       this._visualQ.set(0, 0, 0, 1);
+      if (this._squashT !== Infinity) {
+        this._squashT = CONFIG.GOLF_BALL.SQUASH.DURATION; // snap round next frame
+        this.updateSquash(0);
+      }
       this.body.setLinearVelocity(BABYLON.Vector3.Zero());
       this.body.setAngularVelocity(BABYLON.Vector3.Zero());
       // Teleport the physics body to the new spot: let it read the mesh transform

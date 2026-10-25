@@ -48,6 +48,29 @@
       this.generateNewWind();
       this.nextChangeTime = Date.now() + CONFIG.WIND.CHANGE_FREQUENCY;
     }
+
+    // Match play: the server sends a per-hole windSeed and every client must
+    // derive the identical wind from it, so this is integer-only mulberry32
+    // (Math.imul, >>>), the same on every JS engine, drawn over the same
+    // ranges as generateNewWind.
+    static fromSeed(seed) {
+      let a = seed >>> 0;
+      const next = () => {
+        a = (a + 0x6d2b79f5) >>> 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      const direction = next() * Math.PI * 2;
+      const speed =
+        CONFIG.WIND.MIN_SPEED +
+        next() * (CONFIG.WIND.MAX_SPEED - CONFIG.WIND.MIN_SPEED);
+      return { direction, speed };
+    }
+
+    setFromSeed(seed) {
+      Object.assign(this, Wind.fromSeed(seed));
+    }
   }
 
   Object.assign(global, { Wind });

@@ -113,6 +113,37 @@
       );
     }
 
+    // Hand-off from a camera something else was driving (the aim view): start
+    // the follow smoothing from where that camera actually is and looks, and
+    // put the offsets straight on their targets. Otherwise the first frame
+    // jumps to wherever the offsets last were (the constructor's old
+    // large-ball framing on the first shot, or a green/review pull-back) and
+    // eases in from there.
+    syncFromCamera() {
+      this.offsetX = this.targetOffsetX;
+      this.offsetY = this.targetOffsetY;
+      this.offsetZ = this.targetOffsetZ;
+      this.lookOffsetY = this.targetLookOffsetY;
+      this.lookOffsetZ = this.targetLookOffsetZ;
+      this.cameraAngle = this.targetCameraAngle;
+      this.lastPosition.copyFrom(this.camera.position);
+      this._camLook = this.camera.getTarget().clone();
+      this._prevPosGoal = null; // re-seeded from the next goal (no stale velocity)
+      this._prevLookGoal = null;
+    }
+
+    // Still PLAY (same tight tracking), just pulled back: see GREEN_VIEW_*.
+    setGreenView() {
+      this.viewMode = CameraViewMode.PLAY;
+      this.setOffsets(
+        0,
+        CONFIG.FOLLOW_CAMERA.GREEN_VIEW_OFFSET_Y,
+        CONFIG.FOLLOW_CAMERA.GREEN_VIEW_OFFSET_Z,
+        CONFIG.FOLLOW_CAMERA.GREEN_VIEW_LOOK_OFFSET_Y,
+        CONFIG.FOLLOW_CAMERA.GREEN_VIEW_LOOK_OFFSET_Z,
+      );
+    }
+
     setCameraAngle(angle) {
       // Normalize angle to [-π, π] range to avoid 360 spin
       let normalizedAngle = angle;

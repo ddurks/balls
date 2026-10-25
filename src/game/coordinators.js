@@ -24,7 +24,8 @@
 
       // Zoom camera out for swing view (scaled to the 42.7 mm ball; old values
       // 0,14,20,7,0 were for the ~0.4 m ball → framed way too far/high now).
-      this.camera.setOffsets(0, 1.5, 2.1, 0.75, 0);
+      // Half the earlier 1.5/2.1/0.75 pull-back: same angle, half the distance.
+      this.camera.setOffsets(0, 0.75, 1.05, 0.375, 0);
 
       // Trigger club swing animation (visual only, no physics pause)
       if (this.clubSystem && this.clubSystem.isLoaded) {

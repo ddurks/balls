@@ -22,6 +22,32 @@
     BLINK.MIN_INTERVAL +
     Math.random() * (BLINK.MAX_INTERVAL - BLINK.MIN_INTERVAL);
 
+  // The face decal is a shell at r ≈ 21.7–22.7 mm, but the ball body under it
+  // is a 125-vertex sphere whose vertices bulge out to 22.0 mm, so the body
+  // pokes through the face between them (true intersection, not depth
+  // precision). Scale the shell out about the ball centre (the node origin) to
+  // clear the bulges, and bias it toward the camera for far views, where one
+  // depth step outgrows that margin. Call once per face NODE, after any
+  // scaling is set, and on the material the face will actually render with.
+  const FACE_LIFT = 1.03; // min radius 21.69 → 22.34 mm, clear of 22.0
+  function liftFace(faceMesh) {
+    if (!faceMesh || faceMesh._faceLifted) return;
+    faceMesh._faceLifted = true;
+    faceMesh.scaling.scaleInPlace(FACE_LIFT);
+    const m = faceMesh.material;
+    if (m) {
+      m.zOffset = -1;
+      m.zOffsetUnits = -4;
+    }
+  }
+
+  // The gball parts worth a shadow-map draw: the body and the two eyeballs make
+  // the silhouette. The face decal, eyelids and pupils sit on or inside them
+  // and only add draws (every caster re-renders every frame, per avatar).
+  function castsShadow(mesh) {
+    return /^gball$|^eye\.[lr]_primitive0$/.test(mesh.name || "");
+  }
+
   // A face texture from assets/sprites/faces/<file> with the shared alpha + trilinear
   // recipe both modes use.
   function faceTexture(scene, file, version) {
@@ -122,6 +148,8 @@
     newBlinkState,
     initBlink,
     updateBlink,
+    liftFace,
+    castsShadow,
   };
   global.Balls = Balls;
   if (typeof module !== "undefined" && module.exports) module.exports = Balls;

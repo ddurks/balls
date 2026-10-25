@@ -27,6 +27,9 @@ declare const Materials: any;
 declare const Textures: any;
 declare const Lighting: any;
 declare const BallsStyle: any;
+declare const Splash: any;
+declare const Challenge: any;
+declare const ClubChallenges: any;
 
 // Game modules (src/game/*)
 declare const GameState: any;

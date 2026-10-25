@@ -143,6 +143,12 @@
       PLAY_VIEW_OFFSET_Z: 0.25,
       PLAY_VIEW_LOOK_OFFSET_Y: 0.05,
       PLAY_VIEW_LOOK_OFFSET_Z: 0,
+      // A shot that flies onto the green pulls back to this (from the tight
+      // PLAY view) so the run-out and the cup are both in frame.
+      GREEN_VIEW_OFFSET_Y: 0.6,
+      GREEN_VIEW_OFFSET_Z: 1.6,
+      GREEN_VIEW_LOOK_OFFSET_Y: 0,
+      GREEN_VIEW_LOOK_OFFSET_Z: -1.0,
       FULL_SHOT_VIEW_MIN_HEIGHT: 0.8,
       FULL_SHOT_VIEW_MIN_Z: 1.5,
       FULL_SHOT_VIEW_LOOK_Z: -3,
@@ -155,6 +161,18 @@
     GOLF_BALL: {
       MAX_HIT_STRENGTH: 1.75,
       HIT_HORIZONTAL_DEVIATION_FACTOR: 0.1,
+      // Cartoon squash-and-rebound on the strike (visual only): flattened along
+      // the launch line, then a damped wobble. Depth grows with launch speed,
+      // reaching MAX at FULL_SPEED (≈ a 3-wood), so a putt is a subtle squish.
+      SQUASH: {
+        MAX: 0.42, // peak flattening (fraction of the diameter)
+        FULL_SPEED: 110, // m/s
+        // Cartoon-slow on purpose: a real ball rebounds in ~0.5 ms, and even
+        // 6 Hz has crossed back to round before the second rendered frame.
+        FREQ: 3, // wobble Hz
+        DECAY: 0.16, // s (exponential time constant)
+        DURATION: 0.7, // s, then snapped back to round
+      },
     },
     // Eyelid blink timings moved to balls.js (Balls.BLINK), shared with clubhouse.
     EYES: {

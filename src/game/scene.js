@@ -223,7 +223,9 @@
       const waterMat = new BABYLON.PBRMaterial("sonicWater", scene);
 
       const diffuseTex = new BABYLON.Texture(
-        Shared.v("./assets/textures/course/water-color.png"),
+        // Same URL string as CourseSurfaces' water (terrain.js): Babylon's
+        // texture cache matches exact strings, and a "./" made it upload twice.
+        Shared.v("assets/textures/course/water-color.jpg"),
         scene,
       );
       diffuseTex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
@@ -233,7 +235,7 @@
       waterMat.albedoTexture = diffuseTex;
 
       const normalTex = new BABYLON.Texture(
-        Shared.v("./assets/textures/course/water-normal.ktx2"),
+        Shared.v("assets/textures/course/water-normal.ktx2"),
         scene,
       );
       normalTex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;

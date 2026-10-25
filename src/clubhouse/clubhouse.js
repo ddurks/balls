@@ -6,7 +6,8 @@
  * other in real time. Two doors lead out to the Course and the Range.
  *
  * Deliberately separate from the golf game (game.js): no Havok, no swing
- * mechanics. Multiplayer is presence + chat only, served by the drawvidverse
+ * mechanics. Multiplayer is presence + chat (+ head-to-head challenges that
+ * hand both players off to the course), served by the drawvidverse
  * worldserver (GAME_KEY=clubhouse, port 7779). Works single-player if the
  * server is unreachable.
  * ========================================================================== */
@@ -28,10 +29,11 @@
   const isLocal =
     location.hostname === "localhost" || location.hostname === "127.0.0.1";
   const WS_URL =
-    params.get("ws") ||
+    Challenge.serverOverride(location, "ws") ||
     (isLocal ? "ws://localhost:7779" : "wss://balls-world.drawvid.com");
 
   const ASSET_V = Shared.ASSET_V; // single source of truth: src/shared/shared.js
+  const TAP_SLOP_PX = 12; // a press that moves further than this is a drag, not a tap
   const AV_SCALE = 0.8; // gball model radius ~1 -> ~1.6 dia avatar
   const MOVE_SPEED = 6.0;
   const SEND_HZ = 10;
@@ -62,9 +64,7 @@
   }[ROOM];
   const MY_AREA = ROOM_CFG.area;
 
-  const MY_NAME =
-    (localStorage.getItem("ballsName") || "").trim() ||
-    "Guest" + Math.floor(100 + Math.random() * 900);
+  const MY_NAME = Shared.playerName();
 
   // ---- boot ------------------------------------------------------------------
   function whenReady() {
@@ -164,10 +164,10 @@
     if (document.fonts?.load)
       await document.fonts.load('bold 40px "DrawvidHand"').catch(() => {});
     const canvas = document.getElementById("renderCanvas");
-    const engine = new BABYLON.Engine(canvas, true, {
-      preserveDrawingBuffer: true,
-      stencil: true,
-    });
+    // No preserveDrawingBuffer/stencil: nothing here reads the canvas back or
+    // draws outlines, and a preserved buffer defeats the buffer-swap fast path
+    // on tiled mobile GPUs.
+    const engine = new BABYLON.Engine(canvas, true);
     const scene = new BABYLON.Scene(engine);
     scene.clearColor = new BABYLON.Color4(0, 0, 0, 1); // black void — the room floats
     scene.ambientColor = new BABYLON.Color3(1, 1, 1);
@@ -875,7 +875,7 @@
       for (const root of inst.rootNodes) {
         root.parent = bob;
         for (const cm of root.getChildMeshes(false)) {
-          shadow.addShadowCaster(cm);
+          if (Balls.castsShadow(cm)) shadow.addShadowCaster(cm);
           cm.receiveShadows = true;
           if (cm.name && /face/i.test(cm.name)) faceMesh = cm;
           if (cm.name && /gball/i.test(cm.name) && cm.material) gballMesh = cm;
@@ -895,10 +895,12 @@
       if (faceMesh && faceMesh.material) {
         av.faceMat = faceMesh.material.clone("faceMat"); // own material -> per-avatar expressions
         faceMesh.material = av.faceMat;
+        Balls.liftFace(faceMesh);
         av.faceDefault = av.faceMat.albedoTexture || null;
         av.faceOrigDefault = av.faceDefault; // kept: a custom face replaces faceDefault
       }
       av.gballMesh = gballMesh; // the ball body (for locker-room skin swaps)
+      av.inst = inst; // its cloned skeleton/animation groups, freed in disposeAvatar
       av.curFace = "none";
       setupBlink(av, inst);
       return av;
@@ -912,7 +914,9 @@
         meshes.push(rn);
         for (const c of rn.getChildMeshes(false)) meshes.push(c);
       }
-      const b = Balls.initBlink(meshes, { cloneManager: true });
+      // instantiateModelsToScene already gives each clone its own morph manager,
+      // so cloning again would just orphan that one.
+      const b = Balls.initBlink(meshes);
       if (!b) return;
       av.blinkMgr = b.mgr;
       av.blinkIdx = b.idx;
@@ -997,8 +1001,8 @@
     // ---- locker-room customization (hat / ball skin / drawn face) ----------
     // Applied to self (from localStorage) and remotes (from snapshot + face
     // broadcasts). Hats and skin materials/textures are built fresh PER AVATAR:
-    // the remote cull path disposes them with the wrapper, so nothing here may
-    // be shared or cached across avatars.
+    // the remote cull path (disposeAvatar) frees them, so nothing here may be
+    // shared or cached across avatars.
     function applyAvatarStyle(av, style) {
       const st = BallsStyle.normalizeStyle(style);
       if (av.styleHat !== st.hat) {
@@ -1032,6 +1036,25 @@
         av.faceDefault = av.customFaceTex || av.faceOrigDefault || null;
         setFace(av, av.curFace); // refresh unless a sip/drag face is showing
       }
+    }
+
+    // Free only what this avatar owns. The ball body's material (and its dimple
+    // texture) is shared with every gball via the container, and the face may be
+    // showing the shared sip/drag textures, so wrapper.dispose(false, true)
+    // would blank every other ball in the room.
+    function disposeAvatar(av) {
+      if (av.hatNode) av.hatNode.dispose(false, true);
+      if (av.gballMesh && av.gballMesh._ballsSkin)
+        av.gballMesh._ballsSkin.mat.dispose(true, true);
+      if (av.faceMat) {
+        av.faceMat.albedoTexture = av.faceOrigDefault;
+        av.faceMat.dispose(false, true); // its own clone + cloned textures
+      }
+      av.wrapper.dispose();
+      // not freed by the mesh dispose (it only drops its references)
+      av.blinkMgr?.dispose();
+      for (const sk of av.inst.skeletons) sk.dispose();
+      for (const g of av.inst.animationGroups) g.dispose();
     }
 
     // Movers list for the smoke waft: refreshed each frame by the render loop
@@ -1154,6 +1177,7 @@
       fluid.material = beerMat;
       const ctl = {
         root,
+        inst,
         fluid,
         cx,
         cz,
@@ -1251,6 +1275,7 @@
       anyCig++;
       return {
         root,
+        inst,
         ember,
         ps,
         burnGrp,
@@ -1268,10 +1293,21 @@
           anyCig--;
           av.item.ps.stop();
           const s = av.item.ps;
-          setTimeout(() => s.dispose(), 12000);
+          // Pin the emitter to the ember's last spot first: disposing an emitter
+          // mesh disposes its particle systems WITH their texture (the shared
+          // smokeTex), which killed every later cig's smoke.
+          s.emitter = av.item.ember.getAbsolutePosition().clone();
+          setTimeout(() => s.dispose(false), 12000); // keep the shared smokeTex
         }
         if (av.item.ember) av.item.ember.dispose(); // bone-parented, not under root
-        if (av.item.root) av.item.root.dispose(false, true);
+        // NOT dispose(false, true): instantiateModelsToScene(_, false) shares the
+        // container's materials with every glass/cig in the room (and the fluid
+        // uses the shared beerMat), so freeing them blanks all the others.
+        if (av.item.root) av.item.root.dispose();
+        // root.dispose() frees neither: the clones' groups stay in the scene
+        // (the paused cig burn keeps being animated every frame) otherwise.
+        for (const g of av.item.inst.animationGroups) g.dispose();
+        for (const sk of av.item.inst.skeletons) sk.dispose();
         av.item = null;
       }
       av.holdType = type;
@@ -1559,6 +1595,111 @@
       });
     }
 
+    // ---- 80s wall phone: tap it to text a friend a challenge link ----------
+    // Cherry-red, handset hanging on the left of the base, keypad on the right,
+    // curly cord looping down between them. Mounted in the open north-west
+    // corner (the -Z wall, x=-9): clear of the COURSE door's west window
+    // (x -5.3..-2.2), the x=-6 sconce, and above the 1.9 chair rail. Every
+    // part is named phone_* so a tap anywhere on it reaches tapPhone().
+    function buildWallPhone() {
+      const red = colorMat(
+        "phoneRed",
+        scene,
+        new BABYLON.Color3(0.8, 0.1, 0.09),
+        0.3,
+      );
+      const handsetRed = colorMat(
+        "phoneHandset",
+        scene,
+        new BABYLON.Color3(0.62, 0.06, 0.06),
+        0.3,
+      );
+      const cream = colorMat(
+        "phoneCream",
+        scene,
+        new BABYLON.Color3(0.96, 0.92, 0.8),
+        0.35,
+      );
+      const root = new BABYLON.TransformNode("phone", scene);
+      root.position.set(-9, floorTopY + 2.4, -11.8); // local +z = out of the wall
+      const part = (name, w, h, d, x, y, z, mat) => {
+        const m = BABYLON.MeshBuilder.CreateBox(
+          "phone_" + name,
+          { width: w, height: h, depth: d },
+          scene,
+        );
+        m.material = mat;
+        m.parent = root;
+        m.position.set(x, y, z);
+        m.receiveShadows = true;
+        shadow.addShadowCaster(m);
+        return m;
+      };
+      part("base", 0.62, 0.9, 0.12, 0, 0, 0.06, red);
+      part("hook", 0.26, 0.08, 0.1, 0.15, 0.43, 0.13, red);
+      part("keypad", 0.26, 0.36, 0.02, -0.14, -0.06, 0.125, darkMat);
+      for (let r = 0; r < 4; r++)
+        for (let c = 0; c < 3; c++)
+          part(
+            "key",
+            0.055,
+            0.05,
+            0.03,
+            -0.22 + c * 0.08,
+            0.07 - r * 0.085,
+            0.14,
+            cream,
+          );
+      part("ear", 0.2, 0.2, 0.12, 0.15, 0.3, 0.19, handsetRed);
+      part("grip", 0.1, 0.46, 0.08, 0.15, 0, 0.24, handsetRed);
+      part("mouth", 0.2, 0.2, 0.12, 0.15, -0.3, 0.19, handsetRed);
+
+      // Cord: a sagging U from the mouthpiece to the base, wound into a coil.
+      const S = new BABYLON.Vector3(0.15, -0.4, 0.19);
+      const E = new BABYLON.Vector3(-0.04, -0.45, 0.06);
+      const along = (t) =>
+        new BABYLON.Vector3(
+          S.x + (E.x - S.x) * t,
+          S.y + (E.y - S.y) * t - 0.62 * Math.sin(Math.PI * t),
+          S.z + (E.z - S.z) * t + 0.2 * Math.sin(Math.PI * t), // bow clear of the chair rail
+        );
+      const N = 360,
+        TURNS = 26,
+        COIL_R = 0.032;
+      const path = [];
+      for (let i = 0; i <= N; i++) {
+        const t = i / N;
+        const p = along(t);
+        const tan = along(Math.min(1, t + 1e-3))
+          .subtract(along(Math.max(0, t - 1e-3)))
+          .normalize();
+        const nrm = BABYLON.Vector3.Cross(tan, BABYLON.Axis.Z).normalize();
+        const bin = BABYLON.Vector3.Cross(tan, nrm);
+        const a = 2 * Math.PI * TURNS * t;
+        // taper the coil at the ends so it plugs into the handset / base
+        const r = COIL_R * Math.min(1, t * 12, (1 - t) * 12);
+        path.push(
+          p.add(nrm.scale(Math.cos(a) * r)).add(bin.scale(Math.sin(a) * r)),
+        );
+      }
+      const cord = BABYLON.MeshBuilder.CreateTube(
+        "phone_cord",
+        { path, radius: 0.011, tessellation: 6, cap: BABYLON.Mesh.CAP_ALL },
+        scene,
+      );
+      cord.material = red;
+      cord.parent = root;
+      shadow.addShadowCaster(cord);
+      return {
+        root,
+        floorPos: new BABYLON.Vector3(
+          root.position.x,
+          0,
+          root.position.z + 1.6,
+        ),
+      };
+    }
+
     // grab an item from a dispenser (no put-down; grabbing the other one swaps)
     function grabFromDispenser(kind) {
       if (me.holdType === kind) return;
@@ -1740,9 +1881,11 @@
     // float through the walls. The VIP lounge is "bring your own": you carry items
     // in through the door (hold is persisted across the room-switch page load).
     // Sconces run in every room, sized to that room's walls (see buildSconces).
+    let phone = null; // {root, floorPos} — the wall phone (main room only)
     if (ROOM === "main") {
       buildShelfGlasses();
       buildDispensers();
+      phone = buildWallPhone();
     }
     buildSconces();
     // sconces push the room past Babylon's default 4-lights-per-mesh cap
@@ -1761,11 +1904,36 @@
       keys[e.key.toLowerCase()] = false;
     });
 
+    // A tap on a player counts by where it went DOWN. POINTERPICK needs the
+    // same mesh under the press and the release, and an avatar is a handful
+    // of meshes (ball, face, eyes, lids, hat) that bob and walk off under the
+    // finger: most taps on a moving player used to come to nothing.
+    let pressOn = null; // {pointerId, x, y, id}: a press that began on a player
+    const releasedOnTap = (press, e) =>
+      !!press &&
+      press.pointerId === e.pointerId &&
+      Math.hypot(e.clientX - press.x, e.clientY - press.y) <= TAP_SLOP_PX;
     scene.onPointerObservable.add((pi) => {
-      if (pi.type !== BABYLON.PointerEventTypes.POINTERPICK) return;
-      const p = pi.pickInfo;
+      const T = BABYLON.PointerEventTypes;
+      if (pi.type === T.POINTERDOWN) {
+        const p = pi.pickInfo;
+        const id = p && p.hit && p.pickedMesh && remoteIdOf(p.pickedMesh);
+        const e = pi.event;
+        pressOn = id
+          ? { pointerId: e.pointerId, x: e.clientX, y: e.clientY, id }
+          : null;
+      } else if (pi.type === T.POINTERUP) {
+        const press = pressOn;
+        pressOn = null;
+        if (releasedOnTap(press, pi.event)) challenges.tapPlayer(press.id);
+      } else if (pi.type === T.POINTERPICK) tapScene(pi.pickInfo);
+    });
+
+    function tapScene(p) {
       if (!p || !p.hit || !p.pickedMesh) return;
+      if (remoteIdOf(p.pickedMesh)) return; // decided on the press (above)
       const nm = p.pickedMesh.name || "";
+      if (nm.startsWith("phone_")) return challenges.tapPhone();
       const door = doors.find(
         (d) => nm.startsWith("door_" + d.kind) || p.pickedMesh === d.mesh,
       );
@@ -1788,7 +1956,7 @@
         }
       }
       moveTarget = p.pickedPoint.clone();
-    });
+    }
 
     // -- networking --
     const net = new ClubhouseNet(WS_URL, MY_NAME, MY_AREA);
@@ -1801,11 +1969,13 @@
       net.sendSkin(myStyle.skin);
       net.sendFace(myStyle.face || "");
       net.sendSkinImg(myStyle.skinImg || "");
+      challenges.connected();
     };
     const remotes = new Map(); // id -> { av, x,z,ry, tx,tz,try, moving, seen }
     const faceStore = new Map(); // id -> {v, data} drawn-face blobs (from broadcasts)
     const skinImgStore = new Map(); // id -> {v, data} ball-wrap image blobs
     net.onSnapshot = (playersArr, broadcasts) => {
+      challenges.snapshot();
       const nowSeen = Date.now();
       for (const p of playersArr) {
         if (p.id === net.playerId) continue;
@@ -1849,6 +2019,7 @@
       }
       for (const b of broadcasts || []) {
         if (b.type === "feed") pushFeed(b.data);
+        else if (challenges.onMessage(b)) continue;
         else if (
           b.type === "face" &&
           b.data &&
@@ -1877,7 +2048,7 @@
             shadow.removeShadowCaster(m);
           equipHold(r.av, "none"); // decrements anyCig + disposes held item/smoke
           if (r.av.customFaceTex) r.av.customFaceTex.dispose();
-          r.av.wrapper.dispose(false, true);
+          disposeAvatar(r.av);
           faceStore.delete(id); // these per-player blob caches grow unbounded otherwise
           skinImgStore.delete(id);
           removeTag(id);
@@ -1895,15 +2066,205 @@
     };
     net.connect();
 
+    // -- portraits: the challenge splash shows a player as they look right now
+    // (skin, drawn face, hat, whatever they're holding): their meshes rendered
+    // alone into an off-screen target by a camera in front of their face.
+    // Orthographic, so the target's square aspect can't stretch it.
+    const PORTRAIT_PX = 256;
+    const PORTRAIT_LAYER = 0x10000000; // outside the main camera's default mask
+    async function renderPortrait(meshes, center, facing, half) {
+      const cam = new BABYLON.FreeCamera(
+        "portraitCam",
+        center.add(facing.scale(6)),
+        scene,
+        false,
+      );
+      cam.setTarget(center);
+      cam.mode = BABYLON.Camera.ORTHOGRAPHIC_CAMERA;
+      cam.orthoTop = cam.orthoRight = half;
+      cam.orthoBottom = cam.orthoLeft = -half;
+      cam.minZ = 0.1;
+      cam.maxZ = 20;
+      cam.layerMask = 0xffffffff;
+      const rtt = new BABYLON.RenderTargetTexture(
+        "portraitRT",
+        { width: PORTRAIT_PX, height: PORTRAIT_PX },
+        scene,
+        false,
+      );
+      rtt.activeCamera = cam;
+      rtt.renderList = meshes;
+      rtt.clearColor = new BABYLON.Color4(0, 0, 0, 0);
+      rtt.samples = 4;
+      try {
+        // A render target is its own render pass with its own compiled
+        // effects, so readiness is the target's, not the meshes' (which only
+        // covers the main pass): rendering early silently skips meshes.
+        for (let i = 0; i < 120 && !rtt.isReadyForRendering(); i++)
+          await new Promise((r) => requestAnimationFrame(r));
+        // The ball body and face are skinned, and the main render only poses
+        // skeletons of on-screen meshes: an avatar off-screen (or on the hidden
+        // portrait layer) would render collapsed, eyes and hat floating alone.
+        for (const m of meshes) {
+          m.computeWorldMatrix(true);
+          if (m.skeleton) m.skeleton.prepare(true);
+        }
+        rtt.render();
+        const px = await rtt.readPixels();
+        if (!px) return null;
+        const src = new Uint8Array(px.buffer, px.byteOffset, px.byteLength);
+        const c = document.createElement("canvas");
+        c.width = c.height = PORTRAIT_PX;
+        const ctx = c.getContext("2d");
+        const img = ctx.createImageData(PORTRAIT_PX, PORTRAIT_PX);
+        const row = PORTRAIT_PX * 4; // GL rows come bottom-up: flip them
+        for (let y = 0; y < PORTRAIT_PX; y++)
+          img.data.set(
+            src.subarray((PORTRAIT_PX - 1 - y) * row, (PORTRAIT_PX - y) * row),
+            y * row,
+          );
+        ctx.putImageData(img, 0, 0);
+        return c.toDataURL("image/png");
+      } catch (e) {
+        console.warn("clubhouse: portrait failed", e);
+        return null;
+      } finally {
+        rtt.dispose();
+        cam.dispose();
+      }
+    }
+    const PORTRAIT_LIFT = new BABYLON.Vector3(0, 0.3, 0); // frame the hat too
+    const PORTRAIT_HALF = 1.25;
+    const PORTRAIT_TILT = 0.35; // look down a little, like the room camera
+    function avatarPortrait(av) {
+      const w = av.wrapper;
+      const facing = new BABYLON.Vector3(
+        Math.sin(w.rotation.y) * Math.cos(PORTRAIT_TILT),
+        Math.sin(PORTRAIT_TILT),
+        Math.cos(w.rotation.y) * Math.cos(PORTRAIT_TILT),
+      );
+      return renderPortrait(
+        w.getChildMeshes(false),
+        w.position.add(PORTRAIT_LIFT),
+        facing,
+        PORTRAIT_HALF,
+      );
+    }
+    // A link challenger isn't in the room: show a plain gball, spawned on a
+    // layer the main camera never draws, at the evenly lit room centre.
+    async function defaultPortrait() {
+      const av = spawnAvatar();
+      for (const m of av.wrapper.getChildMeshes(false)) {
+        shadow.removeShadowCaster(m);
+        m.layerMask = PORTRAIT_LAYER;
+        m.isPickable = false;
+      }
+      av.wrapper.position.set(0, avatarY, 0);
+      try {
+        return await avatarPortrait(av);
+      } finally {
+        disposeAvatar(av);
+      }
+    }
+    function remotePortrait(id) {
+      const r = remotes.get(id);
+      return r ? avatarPortrait(r.av) : defaultPortrait();
+    }
+    function phonePortrait() {
+      const c = phone.root.position.add(new BABYLON.Vector3(0, -0.3, 0.1));
+      return renderPortrait(
+        phone.root.getChildMeshes(false),
+        c,
+        new BABYLON.Vector3(0, 0, 1),
+        0.82,
+      );
+    }
+
+    // -- head-to-head challenges (src/clubhouse/challenges.js) --
+    const challenges = ClubChallenges.create({
+      net,
+      token: tabToken(),
+      splash: Splash,
+      hint: flashHint,
+      nameOf: (id) => (remotes.get(id) || {}).name,
+      portraits: {
+        player: remotePortrait,
+        link: defaultPortrait,
+        phone: phonePortrait,
+      },
+      myName: MY_NAME,
+      goToCourse(url) {
+        localStorage.setItem("ballsHold", me.holdType); // carried like a door walk
+        net.close();
+        Shared.roomFX.leave(url, { from: ROOM });
+      },
+      storage: localStorage,
+      location,
+      history: window.history,
+      navigator,
+    });
+
+    function remoteIdOf(mesh) {
+      for (const [id, r] of remotes)
+        if (mesh.isDescendantOf(r.av.wrapper)) return id;
+      return null;
+    }
+
     // -- chat + overlay UI --
     const ui = buildChatUI();
+    // The chat feed lies over the top-left of the room (on a phone, a good
+    // share of it) but is only text: a tap on it lands in the room beneath,
+    // on a player, the phone, a door or the floor. A drag still scrolls it.
+    let feedPress = null;
+    ui.feed.addEventListener("pointerdown", (e) => {
+      const r = canvas.getBoundingClientRect();
+      feedPress = {
+        pointerId: e.pointerId,
+        x: e.clientX,
+        y: e.clientY,
+        scroll: ui.feed.scrollTop,
+        pick: scene.pick(e.clientX - r.left, e.clientY - r.top),
+      };
+    });
+    ui.feed.addEventListener("pointercancel", () => (feedPress = null));
+    ui.feed.addEventListener("pointerup", (e) => {
+      const press = feedPress;
+      feedPress = null;
+      if (!releasedOnTap(press, e) || ui.feed.scrollTop !== press.scroll)
+        return;
+      const p = press.pick;
+      const id = p && p.hit && p.pickedMesh && remoteIdOf(p.pickedMesh);
+      if (id) challenges.tapPlayer(id);
+      else tapScene(p);
+    });
+    // A name tag is the most visible part of a player, and it's DOM over the
+    // canvas, not in the scene: a tap on it is a tap on them.
+    let tagPress = null;
+    const overlayEl = document.getElementById("overlay");
+    overlayEl.addEventListener("pointerdown", (e) => {
+      const tag = /** @type {HTMLElement} */ (e.target);
+      const id = tag.dataset && tag.dataset.tagFor;
+      tagPress = null;
+      if (!id || !remotes.has(id)) return;
+      tag.setPointerCapture(e.pointerId);
+      tagPress = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, id };
+    });
+    overlayEl.addEventListener("pointercancel", () => (tagPress = null));
+    overlayEl.addEventListener("pointerup", (e) => {
+      const press = tagPress;
+      tagPress = null;
+      if (releasedOnTap(press, e)) challenges.tapPlayer(press.id);
+    });
     ui.input.addEventListener("focus", () => (typing = true));
-    ui.input.addEventListener("blur", () => {
+    ui.input.addEventListener("blur", (e) => {
       typing = false;
       // Safari's ✓/Done accessory button only closes the keyboard — treat any
       // dismissal with text still typed as a send, so every keyboard button
       // that ends typing submits the message (Escape clears first to cancel).
-      sendChatNow();
+      // Not focus going to a challenge splash that popped up mid-sentence:
+      // answering it mustn't post the half-typed line to the room.
+      const to = /** @type {Element | null} */ (e.relatedTarget);
+      if (!(to && to.closest && to.closest(".splash-backdrop"))) sendChatNow();
       // iOS pans the page when the keyboard covers an input; snap it back so
       // the fixed-canvas layout can't end up stuck half-scrolled.
       window.scrollTo(0, 0);
@@ -2090,6 +2451,7 @@
     });
 
     const prompt = document.createElement("div");
+    let lastHint; // the per-frame hint check writes the DOM only on change
     Object.assign(prompt.style, {
       position: "absolute",
       bottom: "84px",
@@ -2282,11 +2644,16 @@
               d.kind === "beer" ? "▸ tap to grab a 🍺" : "▸ tap to grab a 🚬";
         }
       }
-      if (hint) {
-        prompt.style.display = "block";
-        prompt.textContent = hint;
-      } else {
-        prompt.style.display = "none";
+      if (!hint && phone) {
+        const dx = phone.floorPos.x - me.wrapper.position.x;
+        const dz = phone.floorPos.z - me.wrapper.position.z;
+        if (dx * dx + dz * dz < DOOR_RADIUS * DOOR_RADIUS)
+          hint = "▸ tap the ☎️ to challenge a friend";
+      }
+      if (hint !== lastHint) {
+        lastHint = hint;
+        prompt.style.display = hint ? "block" : "none";
+        if (hint) prompt.textContent = hint;
       }
 
       for (const r of remotes.values()) {
@@ -2383,10 +2750,11 @@
     addEventListener("resize", () => engine.resize());
     Shared.hideBoot();
     Shared.roomFX.enter(); // iris open now the room is built (no-op on cold loads)
+    challenges.start(); // opened from a friend's challenge link?
 
     function goToDoor(kind) {
       const d = doors.find((dd) => dd.kind === kind);
-      if (!d || !d.url) return;
+      if (!d || !d.url || challenges.leaving) return;
       // Carry whatever you're holding through the door. Rooms are separate page
       // loads, so stash the current hold and re-equip it on the next room's load.
       localStorage.setItem("ballsHold", me.holdType);
@@ -2423,6 +2791,22 @@
     }
   }
 
+  // This tab's own random number, kept across its page loads: the server
+  // re-sends a challenge's go to it after a reconnect (see challenges.js).
+  function tabToken() {
+    const k = "ballsClubToken";
+    try {
+      const t = Number(sessionStorage.getItem(k));
+      if (Number.isSafeInteger(t) && t > 0) return t;
+    } catch {}
+    const r = window.crypto.getRandomValues(new Uint32Array(2));
+    const t = (r[0] & 0x1fffff) * 2 ** 32 + r[1] + 1; // 53 bits, never 0
+    try {
+      sessionStorage.setItem(k, String(t));
+    } catch {}
+    return t;
+  }
+
   // ---- networking module -----------------------------------------------------
   function ClubhouseNet(url, name, area) {
     this.url = url;
@@ -2432,6 +2816,7 @@
     this.playerId = null;
     this.offline = false;
     this.seq = 0;
+    this.clockSkew = null; // server clock minus ours, once a snapshot says
     this.onSnapshot = null;
     this.onChat = null;
     this.onReady = null; // fired after join is acknowledged (and on every reconnect)
@@ -2471,6 +2856,7 @@
           this.sendArea(this.area);
           if (this.onReady) this.onReady();
         } else if (m.t === "gameSnapshot") {
+          if (typeof m.now === "number") this.clockSkew = m.now - Date.now();
           if (this.onSnapshot)
             this.onSnapshot(m.players || [], m.broadcasts || []);
         } else if (m.t === "chat") {
@@ -2550,6 +2936,47 @@
 
   ClubhouseNet.prototype.sendHold = function (code) {
     this._send({ t: "action", action: "hold", direction: code });
+  };
+
+  // Head-to-head challenges. Replies come back as per-player snapshot
+  // broadcasts (challenge / challengeSent / challengeGo / challengeEnd /
+  // challengeLink), never to the rest of the room.
+  // `req` tags the request; the server echoes it on the answer.
+  ClubhouseNet.prototype.sendChallenge = function (targetId, req) {
+    this._send({
+      t: "action",
+      action: "challenge",
+      message: String(targetId),
+      direction: req,
+    });
+  };
+  // answer: true (accept), false (decline) or "busy" (never shown: we're in
+  // the middle of a link offer or the wall phone)
+  ClubhouseNet.prototype.replyChallenge = function (id, answer) {
+    this._send({
+      t: "action",
+      action: "challengeReply",
+      message: String(id),
+      direction: answer === "busy" ? 2 : answer ? 1 : 0,
+    });
+  };
+  ClubhouseNet.prototype.setChallengeBusy = function (busy) {
+    this._send({
+      t: "action",
+      action: "challengeBusy",
+      direction: busy ? 1 : 0,
+    });
+  };
+  // Sent on every welcome: names this tab, so a go lost with a dropped socket
+  // comes again on the next one.
+  ClubhouseNet.prototype.resume = function (token) {
+    this._send({ t: "action", action: "resume", direction: token });
+  };
+  ClubhouseNet.prototype.cancelChallenge = function (id) {
+    this._send({ t: "action", action: "challengeCancel", message: String(id) });
+  };
+  ClubhouseNet.prototype.requestChallengeLink = function (req) {
+    this._send({ t: "action", action: "challengeLink", direction: req });
   };
   ClubhouseNet.prototype.close = function () {
     this._intentionalClose = true;
@@ -2660,7 +3087,7 @@
     wrap.appendChild(toggle);
     wrap.appendChild(feedEl);
     document.body.appendChild(wrap);
-    return { input, form };
+    return { input, form, feed: feedEl };
   }
 
   function pushFeed(text) {
@@ -2695,8 +3122,13 @@
       fontFamily: "DrawvidHand, Comic Sans MS, cursive, sans-serif",
       textShadow: "1px 1px 0 rgba(0,0,0,0.9), 0 0 4px rgba(0,0,0,0.9)",
       whiteSpace: "nowrap",
-      pointerEvents: "none",
+      pointerEvents: "auto", // tap to challenge (see tagPress)
+      cursor: "pointer",
+      touchAction: "none",
+      userSelect: "none",
+      webkitUserSelect: "none",
     });
+    d.dataset.tagFor = id;
     document.getElementById("overlay").appendChild(d);
     tags.set(id, d);
   }
@@ -2807,40 +3239,49 @@
     bubbles.delete(id);
   }
 
-  function projectToScreen(scene, engine, camera, worldPos) {
-    const v = BABYLON.Vector3.Project(
-      worldPos,
-      BABYLON.Matrix.Identity(),
-      scene.getTransformMatrix(),
-      camera.viewport.toGlobal(
-        engine.getRenderWidth(),
-        engine.getRenderHeight(),
-      ),
-    );
-    // behind camera?
-    const toPt = worldPos.subtract(camera.position);
-    if (BABYLON.Vector3.Dot(toPt, camera.getForwardRay().direction) < 0)
-      return null;
-    return v;
-  }
+  // Per-frame scratch for the tag/bubble projection (one per remote per frame).
+  const TAG_IDENTITY = BABYLON.Matrix.Identity();
+  const tagHead = new BABYLON.Vector3();
+  const tagScreen = new BABYLON.Vector3();
+  const tagForward = new BABYLON.Vector3();
 
   function updateTags(scene, engine, camera, me, remotes, _myId) {
-    const dpr = engine.getHardwareScalingLevel ? 1 : 1;
     const now = Date.now();
+    const transform = scene.getTransformMatrix();
+    const viewport = camera.viewport.toGlobal(
+      engine.getRenderWidth(),
+      engine.getRenderHeight(),
+    );
+    camera.getDirectionToRef(BABYLON.Axis.Z, tagForward);
+    const cam = camera.position;
     function place(map, id, wrapper, extraY) {
-      const head = wrapper.position.clone();
-      head.y += extraY;
-      const p = projectToScreen(scene, engine, camera, head);
       const el = map.get(id);
       if (!el) return;
       const node = el.el || el;
-      if (!p) {
-        node.style.display = "none";
-        return;
-      }
-      node.style.display = "block";
-      node.style.left = p.x / dpr + "px";
-      node.style.top = p.y / dpr + "px";
+      tagHead.copyFrom(wrapper.position);
+      tagHead.y += extraY;
+      // behind camera?
+      const behind =
+        (tagHead.x - cam.x) * tagForward.x +
+          (tagHead.y - cam.y) * tagForward.y +
+          (tagHead.z - cam.z) * tagForward.z <
+        0;
+      // Write only on change: these run every frame for every tag.
+      const display = behind ? "none" : "block";
+      if (node._tagDisplay !== display)
+        node.style.display = node._tagDisplay = display;
+      if (behind) return;
+      BABYLON.Vector3.ProjectToRef(
+        tagHead,
+        TAG_IDENTITY,
+        transform,
+        viewport,
+        tagScreen,
+      );
+      const left = Math.round(tagScreen.x) + "px";
+      const top = Math.round(tagScreen.y) + "px";
+      if (node._tagLeft !== left) node.style.left = node._tagLeft = left;
+      if (node._tagTop !== top) node.style.top = node._tagTop = top;
     }
     // Project at the player's feet (~floor) so the name sits UNDER them on the
     // ground; the tag is top-anchored so it hangs just below this point.

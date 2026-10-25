@@ -10,14 +10,12 @@
       this.ballPos = ballPos;
       this.arrow = null;
       this.arrowTemplate = null;
-      this.lastArrowAngle = -1;
       this.isLoaded = false;
       this.currentColor = new BABYLON.Color3(
         0xe1 / 255,
         0xe4 / 255,
         0x4e / 255,
       );
-      this.pendingColor = null;
       this.loadArrowModel();
     }
 
@@ -43,58 +41,45 @@
       }
     }
 
-    create(clubAngle = 12) {
+    // Clone the template once and keep it: re-cloning per activation/club change
+    // left a fresh StandardMaterial behind every time. Pitch is set per frame in
+    // update(), so the clone never needs rebuilding.
+    create() {
       if (!this.isLoaded || !this.arrowTemplate) return;
 
-      if (this.arrow) {
-        if (this.scene.shadowGenerator) {
-          const meshes = [this.arrow, ...this.arrow.getChildMeshes()];
-          meshes.forEach((mesh) => {
-            if (mesh) {
-              this.scene.shadowGenerator.removeShadowCaster(mesh, true);
-            }
-          });
-        }
-        this.arrow.dispose();
-      }
+      if (!this.arrow) {
+        this.arrow = this.arrowTemplate.clone("trajectoryArrow_instance");
+        this.arrow.scaling.scaleInPlace(0.107); // Phase 1: match real golf-ball scale
+        this.arrow.rotation = new BABYLON.Vector3(0, 0, 0);
+        this.arrow.rotationQuaternion = null;
 
-      this.arrow = this.arrowTemplate.clone("trajectoryArrow_instance");
-      this.arrow.scaling.scaleInPlace(0.107); // Phase 1: match real golf-ball scale
-      this.arrow.setEnabled(true);
-
-      this.arrow.rotation = new BABYLON.Vector3(0, 0, 0);
-      this.arrow.rotationQuaternion = null;
-
-      this.arrow.getChildMeshes().forEach((mesh) => {
-        mesh.setEnabled(true);
-      });
-
-      if (this.pendingColor) {
-        this.currentColor = this.pendingColor;
-        this.pendingColor = null;
+        // ─── CEL SHADING ──────────────────────────────────────────────
+        this.mat = new BABYLON.StandardMaterial("arrowMat", this.scene);
+        this.mat.specularColor = new BABYLON.Color3(0, 0, 0);
+        this.mat.ambientColor = new BABYLON.Color3(0.6, 0.6, 0.6);
+        this.mat.backFaceCulling = false; // Needed for outline rendering
         this.applyColor();
-      }
 
-      if (this.scene.shadowGenerator) {
         const meshes = [this.arrow, ...this.arrow.getChildMeshes()];
-        meshes.forEach((mesh) => {
-          if (mesh) {
-            this.scene.shadowGenerator.addShadowCaster(mesh, true);
-          }
-        });
+        for (const mesh of meshes) {
+          if (mesh.getTotalVertices && mesh.getTotalVertices() > 0)
+            mesh.material = this.mat;
+          // ─── OUTLINE ──────────────────────────────────────────────────
+          mesh.outlineWidth = 0.15;
+          mesh.outlineColor = new BABYLON.Color3(0, 0, 0);
+          this.scene.shadowGenerator?.addShadowCaster(mesh, true);
+        }
       }
 
-      this.lastArrowAngle = clubAngle;
+      this.arrow.setEnabled(true);
+      for (const mesh of this.arrow.getChildMeshes()) mesh.setEnabled(true);
     }
 
     update(ballPos, clubAngle, cameraRotation) {
-      if (!this.arrow || this.lastArrowAngle !== clubAngle) {
-        this.create(clubAngle);
-      }
-
+      if (!this.arrow) this.create();
       if (!this.arrow) return;
 
-      this.arrow.position = ballPos.clone();
+      this.arrow.position.copyFrom(ballPos);
       this.arrow.position.y += CONFIG.TRAJECTORY.ARROW_Y_OFFSET;
 
       const angleDeg = Shared.clamp(clubAngle || 12, 0, 60);
@@ -107,62 +92,27 @@
       this.arrow.rotation.z = 0;
     }
 
+    // Hidden, not disposed, between aims (see create()).
     dispose() {
-      if (this.arrow) {
-        this.arrow.dispose();
-        this.arrow = null;
-      }
-      // Keep arrowTemplate for reuse across multiple activations
+      if (this.arrow) this.arrow.setEnabled(false);
     }
 
     setArrowColor(color) {
-      this.currentColor = color;
-
-      if (!this.arrow) {
-        this.pendingColor = color;
-        return;
-      }
-
+      if (this.currentColor.equals(color)) return;
+      this.currentColor.copyFrom(color);
       this.applyColor();
     }
 
     applyColor() {
-      if (!this.arrow) {
-        return;
-      }
-
-      try {
-        const meshes = [this.arrow, ...this.arrow.getChildMeshes()];
-        const color = this.currentColor.clone();
-
-        meshes.forEach((mesh) => {
-          if (!mesh) return;
-
-          let mat = mesh.material;
-          if (!mat || !(mat instanceof BABYLON.StandardMaterial)) {
-            mat = new BABYLON.StandardMaterial(
-              "arrowMat_" + Math.random(),
-              this.scene,
-            );
-            mesh.material = mat;
-          }
-
-          // ─── CEL SHADING ──────────────────────────────────────────────
-          mat.diffuseColor = color;
-          mat.specularColor = new BABYLON.Color3(0, 0, 0);
-          mat.ambientColor = new BABYLON.Color3(0.6, 0.6, 0.6);
-          mat.emissiveColor = color.scale(0.3);
-
-          // ─── OUTLINE ──────────────────────────────────────────────────
-          mesh.outlineWidth = 0.15;
-          mesh.outlineColor = new BABYLON.Color3(0, 0, 0);
-          mat.backFaceCulling = false; // Needed for outline rendering
-        });
-      } catch (error) {
-        console.warn("Error applying arrow color:", error);
-      }
+      if (!this.mat) return;
+      this.mat.diffuseColor.copyFrom(this.currentColor);
+      this.currentColor.scaleToRef(0.3, this.mat.emissiveColor);
     }
   }
+
+  // Shared, read-only (setArrowColor copies them). Built on first use: this
+  // module is require()d by Node tests before BABYLON is stubbed in.
+  let ARROW_COLORS = null;
 
   // ─── AIM VIEW ──────────────────────────────────────────────────────────────
 
@@ -178,6 +128,8 @@
       circleUIManager = null,
     ) {
       this.camera = camera;
+      this._target = new BABYLON.Vector3();
+      this._greenCache = null;
       this.ballMesh = ballMesh;
       this.golfBallGuy = golfBallGuy;
       this.scene = scene;
@@ -334,7 +286,10 @@
     }
 
     activate() {
+      // In a match the ball is only ours to aim on our turn.
+      if (this.game?.match && !this.game.match.canAim()) return;
       this.isActive = true;
+      this._greenCache = null; // new lie (or a new hole's surfaces)
       this.clubSelector.reset();
       this.camera.fov = CONFIG.CAMERA.FOV_AIM;
 
@@ -412,8 +367,9 @@
       if (this.game?.cameraFloorY) {
         cameraY = Math.max(cameraY, this.game.cameraFloorY(cameraX, cameraZ));
       }
-      this.camera.position = new BABYLON.Vector3(cameraX, cameraY, cameraZ);
-      this.camera.setTarget(ballPos.add(new BABYLON.Vector3(0, 0.05, 0)));
+      this.camera.position.set(cameraX, cameraY, cameraZ);
+      this._target.copyFrom(ballPos).y += 0.05;
+      this.camera.setTarget(this._target);
 
       const club = ClubData.getClub(this.clubSelector.currentClub);
 
@@ -426,11 +382,10 @@
           const distanceToPin = this.getDistanceToNearestPin(ballPos);
 
           // Only default to the putter when the ball is actually on the green;
-          // off the green the suggestion is at least a wedge. (Compute onGreen
-          // only when auto-selecting, so the surface ray doesn't run every frame
-          // once the player has picked a club.)
+          // off the green the suggestion is at least a wedge. The ball is at
+          // rest while aiming, so the surface ray runs once per ball position.
           if (!this.clubSelector.manuallySelectedClub) {
-            const onGreen = !!this.game?.courseManager?.isOnGreen(ballPos);
+            const onGreen = this.isBallOnGreen(ballPos);
             if (
               this.clubSelector.autoSelectClubIfNeeded(distanceToPin, onGreen)
             )
@@ -455,6 +410,15 @@
       }
 
       this.trajectoryArrow.update(ballPos, club.angle, this.cameraRotation);
+    }
+
+    isBallOnGreen(ballPos) {
+      const c = this._greenCache;
+      if (c && BABYLON.Vector3.DistanceSquared(c.pos, ballPos) < 1e-6)
+        return c.onGreen;
+      const onGreen = !!this.game?.courseManager?.isOnGreen(ballPos);
+      this._greenCache = { pos: ballPos.clone(), onGreen };
+      return onGreen;
     }
 
     getDistanceToNearestPin(ballPos) {
@@ -487,13 +451,13 @@
       const tolerance = 10; // ±10m tolerance for "on target"
       const difference = predictedDistance - distanceToPin;
 
-      if (Math.abs(difference) <= tolerance) {
-        return new BABYLON.Color3(0x68 / 255, 0x8d / 255, 0x46 / 255); // #688D46
-      } else if (difference < -tolerance) {
-        return new BABYLON.Color3(1, 1, 0);
-      } else {
-        return new BABYLON.Color3(1, 0, 0);
-      }
+      const c = (ARROW_COLORS ??= {
+        onTarget: new BABYLON.Color3(0x68 / 255, 0x8d / 255, 0x46 / 255), // #688D46
+        short: new BABYLON.Color3(1, 1, 0),
+        long: new BABYLON.Color3(1, 0, 0),
+      });
+      if (Math.abs(difference) <= tolerance) return c.onTarget;
+      return difference < -tolerance ? c.short : c.long;
     }
 
     updateUI() {
