@@ -19,7 +19,10 @@
   //   at rest / hazard:  for (const s of sampler.end(pose)) send(s);
   class PathSampler {
     constructor({ tol = 0.05, maxGap = 0.25, rate = 10, burst = 10 } = {}) {
-      Object.assign(this, { tol, maxGap, rate, burst });
+      this.tol = tol;
+      this.maxGap = maxGap;
+      this.rate = rate;
+      this.burst = burst;
       this.anchor = null; // the last pose streamed
       this.pending = []; // frames since, oldest first
       this.tokens = burst;
@@ -176,4 +179,4 @@
   Object.assign(global, { PathSampler, PathPlayer });
   if (typeof module !== "undefined" && module.exports)
     module.exports = { PathSampler, PathPlayer };
-})(typeof globalThis !== "undefined" ? globalThis : this);
+})(/** @type {any} */ (typeof globalThis !== "undefined" ? globalThis : this));

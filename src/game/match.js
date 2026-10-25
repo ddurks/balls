@@ -327,7 +327,9 @@
       const c = this.banner?.children[1];
       if (!c) return;
       c.textContent = text;
-      c.style.display = text ? "inline-block" : "none";
+      /** @type {HTMLElement} */ (c).style.display = text
+        ? "inline-block"
+        : "none";
     }
 
     makeBanner() {
@@ -617,4 +619,4 @@
   Object.assign(global, { MatchCoordinator });
   if (typeof module !== "undefined" && module.exports)
     module.exports = { MatchCoordinator };
-})(typeof globalThis !== "undefined" ? globalThis : this);
+})(/** @type {any} */ (typeof globalThis !== "undefined" ? globalThis : this));

@@ -78,3 +78,8 @@ declare const GolfGame: any;
 declare const startGame: any;
 declare var golfNet: any; // dev handle exposed by golfnet.js (M0 console driving)
 declare const GolfNet: any;
+declare const MatchCoordinator: any;
+declare const MatchUI: any;
+declare const matchStatus: any;
+declare const PathSampler: any;
+declare const PathPlayer: any;

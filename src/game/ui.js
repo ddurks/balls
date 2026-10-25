@@ -75,6 +75,7 @@
 
     constructor(modeToggleCallback = null) {
       this.modeToggleCallback = modeToggleCallback;
+      this._yardageEl = null;
 
       CircleUIManager.ensureFlagAssetsLoaded().catch((error) => {
         console.warn(error.message);

@@ -42,6 +42,8 @@
     static HAVOK_SLOW_CONTACT_DECEL = 0.3;
 
     constructor(mesh, physicsBody, skeleton, scene) {
+      this._gazeDir = null; // scratch for the eye gaze, made on first use
+      this._gazeQ = null;
       this.mesh = mesh;
       this.body = physicsBody;
       this.startPosition = mesh.position.clone();

@@ -110,7 +110,10 @@
       for (const t of ["keydown", "keyup"])
         input.addEventListener(t, (e) => {
           e.stopPropagation();
-          if (t === "keydown" && e.key === "Escape") {
+          if (
+            t === "keydown" &&
+            /** @type {KeyboardEvent} */ (e).key === "Escape"
+          ) {
             input.value = "";
             input.blur();
           }
@@ -303,4 +306,4 @@
   Object.assign(global, { MatchUI, matchStatus });
   if (typeof module !== "undefined" && module.exports)
     module.exports = { MatchUI, matchStatus };
-})(typeof globalThis !== "undefined" ? globalThis : this);
+})(/** @type {any} */ (typeof globalThis !== "undefined" ? globalThis : this));

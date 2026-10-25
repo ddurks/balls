@@ -419,4 +419,4 @@
   Object.assign(global, { GolfNet });
   if (typeof module !== "undefined" && module.exports)
     module.exports = { GolfNet, rvBoot, ARRIVE_MS };
-})(typeof globalThis !== "undefined" ? globalThis : this);
+})(/** @type {any} */ (typeof globalThis !== "undefined" ? globalThis : this));
