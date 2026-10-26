@@ -249,7 +249,7 @@ async function runMatch(i, srv, rand) {
     const done = (x, k) => latched.has(k) || (isDone(x, k) && latched.add(k));
     const isDone = (x, k) =>
       x.closed ||
-      x.you?.phase === "finished" ||
+      C.settled(x.match) ||
       (out.cut &&
         out.cut.how === "halfopen" &&
         (k === victimIx || out.cut.why === "both")) ||
@@ -327,7 +327,7 @@ test(
       for (const b of alive) {
         const m = lastView(b);
         if (r.lobbyError && !m) continue;
-        if (!m || m.phase !== "finished" || !m.result)
+        if (!C.settled(m))
           v.push(
             `${tag}: ${b.name} alive but view phase ${m?.phase} result ${JSON.stringify(m?.result)}`,
           );

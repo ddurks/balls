@@ -233,7 +233,7 @@ async function runMatch(i, srv, rand) {
           .until(
             (x) =>
               x.closed ||
-              x.you?.phase === "finished" ||
+              C.settled(x.match) ||
               (kind === "leave-action" &&
                 x === bots[victimIx] &&
                 x.sent.some((m) => m.msg?.action === "leave") &&
@@ -288,7 +288,7 @@ test(
       for (const b of alive) {
         const m = lastView(b);
         if (r.lobbyError && !m) continue; // cut in the lobby: no match to finish
-        if (!m || m.phase !== "finished" || !m.result)
+        if (!C.settled(m))
           v.push(
             `${tag}: ${b.name} alive but view phase ${m?.phase} result ${JSON.stringify(m?.result)}`,
           );

@@ -1,12 +1,12 @@
 // Async play in the real game page: headless Chrome (puppeteer driving the
 // installed Chrome, CHROME_PATH to override) against a private golf server,
-// the opponent a protocol bot. A match link opened in a fresh browser whose
-// token holds a seat, on its turn: the page takes the seat back (hello,
-// resume), watches the opponent's hole (the review, with its Skip button),
-// skips it, and gets the ball. The same link in a browser without the token
+// the opponent a protocol bot. The seat link the opponent would text, opened
+// in a fresh browser on its turn: the page takes the seat (resume with the
+// link's key), watches the opponent's hole (the review, with its Skip
+// button), skips it, and gets the ball. The match id without the seat key
 // is told whose match it is. Screenshots go to a temp dir (logged).
 // Run: node --test test/mp/async-browser.test.js
-/* global window, document, localStorage, location -- page.evaluate bodies run in the page */
+/* global window, document, location -- page.evaluate bodies run in the page */
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -22,7 +22,6 @@ const CHROME =
   process.env.CHROME_PATH ||
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const ROOT = path.join(__dirname, "..", "..");
-const TOKEN = { dave: "dave-0123456789abcdef", sam: "sam-0123456789abcdef" };
 // The page's readiness is waited for below; a cold headless Chrome can take
 // longer than goto's 30 s default to fire load.
 const GOTO = { waitUntil: "domcontentloaded", timeout: 120000 };
@@ -54,12 +53,13 @@ test(
     });
 
     // Dave and Sam tee off; Sam leaves; Dave finishes the hole: Sam's turn.
-    const dave = new Bot(srv.url, "Dave", { token: TOKEN.dave });
-    const sam = new Bot(srv.url, "Sam", { token: TOKEN.sam });
+    const dave = new Bot(srv.url, "Dave");
+    const sam = new Bot(srv.url, "Sam");
     bots.push(dave, sam);
     await Promise.all([dave.connect(), sam.connect()]);
     await lobby([dave, sam]);
     const id = dave.match.id;
+    const samSeat = dave.match.seats[sam.playerId];
     const shot = async (b, opts) => {
       await b.untilMyTurn();
       const seq = b.match.turnSeq;
@@ -72,16 +72,12 @@ test(
     await dave.untilMyTurn();
     while (dave.isMyTurn()) await shot(dave, { fraction: 0.6, frames: 12 });
 
-    const link =
+    const base =
       `http://localhost:${web.address().port}/game.html?mode=course` +
-      `&match=${id}&gws=${encodeURIComponent(srv.url)}`;
+      `&gws=${encodeURIComponent(srv.url)}&match=${id}`;
     const page = await browser.newPage();
     await page.setViewport({ width: 800, height: 600 });
-    await page.evaluateOnNewDocument((token) => {
-      localStorage.setItem("ballsPlayerToken", token);
-      localStorage.setItem("ballsName", "Sam");
-    }, TOKEN.sam);
-    await page.goto(link, GOTO);
+    await page.goto(`${base}&seat=${samSeat}`, GOTO);
     await page.waitForFunction(() => window.golfNet?.you?.matchCode, {
       timeout: 60000,
     });
@@ -120,14 +116,14 @@ test(
     );
     assert.match(
       await page.evaluate(() => location.search),
-      new RegExp(`match=${id}`),
+      new RegExp(`match=${id}.*seat=${samSeat}`),
     );
     await page.screenshot({ path: path.join(shots, "2-our-turn.png") });
 
-    // Someone else's browser, same link.
+    // The match without a seat key.
     const other = await browser.createBrowserContext();
     const page2 = await other.newPage();
-    await page2.goto(link, GOTO);
+    await page2.goto(base, GOTO);
     await page2.waitForFunction(
       () =>
         document.querySelector(".splash-title")?.textContent ===

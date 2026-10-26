@@ -14,8 +14,8 @@
 //   under when its speaker's " 2" goes on a rejoin (checkChat used to judge
 //   every line by the speaker's last name);
 // - a finished match's log is freed at dissolve and never resurfaces;
-// - a reload mid-match restores the log: the player's token takes their
-//   seat back (resume), and the whole log comes again.
+// - a reload mid-match restores the log: the seat key in the address bar
+//   takes the seat back (resume), and the whole log comes again.
 // Run: node --test test/mp/chat-persistence.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -349,23 +349,24 @@ test("match chat persistence (contract 9)", { timeout: 300000 }, async (t) => {
   );
 
   await t.test("a reload mid-match restores the match chat log", async () => {
-    const tokenBot = async (name) => {
-      const b = new Bot(srv.url, name, { token: `${name}-0123456789abcdef` });
+    const newBot = async (name) => {
+      const b = new Bot(srv.url, name);
       all.push(b);
       await b.connect();
       return b;
     };
-    const dave = await tokenBot("Dave2");
-    const sam = await tokenBot("Sam2");
+    const dave = await newBot("Dave2");
+    const sam = await newBot("Sam2");
     const code = await lobby([dave, sam]);
     const id = dave.match.id;
+    const samSeat = sam.match.seats[sam.playerId]; // in his address bar
     dave.mchat("before the reload rl1");
     sam.mchat("me too rl2");
     await dave.untilChat(/rl2/);
     // Sam's tab reloads: same person, new connection.
     sam.terminate();
-    const sam2 = await tokenBot("Sam2");
-    sam2.resume(id);
+    const sam2 = await newBot("Sam2");
+    sam2.resume(id, samSeat);
     await sam2.until((b) => b.code || b.notices.length, {
       label: "rejoin outcome",
     });

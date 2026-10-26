@@ -53,7 +53,7 @@ async function setup(t, { env, links, seeds, sim = {} }) {
 }
 
 const finished = (s, timeout = 10 * 60 * 1000) =>
-  s.until((b) => b.you?.phase === "finished" || b.closed, {
+  s.until((b) => C.resting(b) || b.closed, {
     timeout,
     allowClosed: true,
     label: `${s.name} finished`,

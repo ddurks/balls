@@ -142,18 +142,18 @@ live head-to-head.
   store (`world/storage/ddbWorldStore.ts`); prod runs `WORLD_STORE_MODE=memory`.
   A match is small: pin + wind per hole, scores, and stored shot paths (a few
   KB per shot, kept for the replay).
-- **Stable identity** — a per-browser player token (localStorage) + the match
-  link, so you can return days later; a stable name instead of the per-load
-  Guest re-roll. Losing browser data loses the match (accounts are separate).
+- **Seat links** — each seat has its own link (decided 2026-10-26, replacing
+  a per-browser token, which lost matches across devices, browsers and
+  cleared data): whoever opens a seat's link plays that seat, so the text
+  itself carries the turn. An honor system: each player holds the other's
+  link to send it.
 - **Path recording** — S4's streamed paths are also stored per shot, so live
   spectating and async replay share one format and one player.
-- **"Your matches" list** — open matches and whose turn it is, from the wall
-  phone or a clubhouse board.
 - **Turn deadline** (later) — e.g. 3 days, then a nudge, then the hole is
   conceded, so a match can't hang forever.
 
 **Order:** finish live S3–S5 (built with recording in mind) → async layer
-(durable matches, tokens, hole turns, replay, text-back, matches list) → Web
+(durable matches, seat links, hole turns, replay, text-back) → Web
 Push and deadlines.
 
 **Built (2026-10-25).**
@@ -161,34 +161,32 @@ Push and deadlines.
 - _Store_ — `games/golf/matchStore.ts`: `MATCH_STORE_MODE=memory` (default;
   newest 500 matches) or `ddb` (`DDB_TABLE`, `AWS_REGION`, `DDB_ENDPOINT` for
   DynamoDB Local; `ddbMatchStore.ts`). Items: `MATCH#id / DATA` (the match as
-  JSON) and `PLAYER#tokenHash / MATCH#id` (a summary for the match list). A
+  JSON), looked up by id only. A
   started match is saved whenever `phase:turnSeq:chatSeq` moves (an open shot
   isn't kept), evicted from memory once nobody is in it, flushed on shutdown.
   Stored shots: the current and previous hole, each thinned to 100 samples, so
   a match stays well under DynamoDB's 400 KB item.
-- _Identity_ — `Shared.playerToken()` (localStorage `ballsPlayerToken`, random
-  128 bits); every golf connection sends it first (`hello`); the server keeps
-  only its sha256, per seat. The stable name was already `ballsGuestName`.
-- _Presence_ — a seat with a token survives its player dropping (a ping
-  timeout too): they're away, not out. Seats are keyed by the connection
-  holding them; `resume` re-keys the seat to the new connection everywhere
-  (lies, turn, chat `from`, stored shots). A seat without a token (an old
-  client, the protocol bots) can't come back, so a drop still forfeits it;
-  `leave` in play is resigning. Mid-hole, with one away, whoever is here plays
+- _Identity_ — a random 96-bit key per seat (`play.seats`), made when the
+  match starts; both players' views carry both (`match.seats`), since each
+  texts the other theirs. A rendezvous side redialing before its page saw the
+  start (so has no key yet) is vouched for by its rv side token.
+- _Presence_ — a seat survives its player dropping (a ping timeout too):
+  they're away, not out; a drop never forfeits. Seats are keyed by the
+  connection holding them; `resume` re-keys the seat to the new connection
+  everywhere (lies, turn, chat `from`, stored shots). `leave` in play is
+  resigning. Mid-hole, with one away, whoever is here plays
   on (finishes their own hole); the tee still goes by honors. The 90 s turn
   clock runs only while both are here (the deadline seam: `repick`/`setTurn`).
 - _Replay_ — on taking the seat back on your turn, `you.replay` carries the
   opponent's stored shots since your own last one, grouped by hole with that
   hole's pin and wind. The client watches them (loading the previous hole if
   that's where they were), skippable, then plays.
-- _Links_ — the match link is `game.html?mode=course&match=ID` (12-char
-  random id). It replaces the address bar once a match starts (a reload goes
-  back in), is what the text-back shares ("Your move on hole N ⛳" via
-  `navigator.share`, else the clipboard, else a field), and is what the
-  clubhouse match list opens. Without the seat's token: "This match is between
-  X and Y". The page redials for as long as it's open.
-- _Match list_ — the wall phone's Matches button; `GolfNet.myMatches()` asks
-  the golf server (`matches`) on a short-lived socket.
+- _Links_ — a seat link is `game.html?mode=course&match=ID&seat=KEY` (12-char
+  random id). Your own replaces the address bar once a match starts (a reload
+  goes back in); the opponent's is what the text-back shares ("Your move on
+  hole N ⛳" via `navigator.share` (Messages, email, anything), else the
+  clipboard, else a field). Without a seat key: "This match is between X and
+  Y". The page redials for as long as it's open.
 - _Not yet_ — an async _start_ (a texted challenge still meets live through
   the rendezvous, 15 min key), turn deadlines, Web Push.
 
@@ -336,12 +334,10 @@ holed}}, holeResults[], status }`. Sent **only when it changed** since that play
   could send ~170k tiny frames a second (pings, actions, junk), each
   parsed, validated and often answered on the loop every match shares, and
   stalled every match's snapshots and timers 2–4 s at a time.
-- Async play (above) adds: `hello {message: token}` (first, on connect),
-  `resume {message: matchId}` (back to your seat; the whole chat log comes
-  again, and `replay` if it's your turn), `matches` (answered as
-  `you.matches: [{id, vs, myTurn, hole, status, finished}]` while in no
-  match). A resume of a match not in memory and a list each spend a join try
-  (each is a store read). Contract 9's reload case is covered by `resume`.
+- Async play (above) adds: `resume {message: matchId, data: {seat}}` (into
+  the seat with that key; the whole chat log comes again, and `replay` if
+  it's your turn) and `match.seats` on the view. A resume of a match not in
+  memory spends a join try (it's a store read). Contract 9's reload case is covered by `resume`.
 
 **Client.** A `MatchCoordinator` drives `CourseManager` from server state:
 `loadHole(index, pinIndex)` (no local pin randomising), wind from `windSeed`,

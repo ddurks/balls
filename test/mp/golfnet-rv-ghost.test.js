@@ -78,7 +78,6 @@ function gameTab(key, gws, name) {
     Shared: {
       roomFX: { leave() {} },
       playerName: () => name,
-      playerToken: () => `${name}-token-0123456789`,
     },
     sessionStorage: {
       getItem: (k) => (session.has(k) ? session.get(k) : null),

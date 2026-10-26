@@ -2,25 +2,19 @@
 // kept in a (fake) DynamoDB, as the real ddb match store keeps them:
 // - a live match where one player closes the tab: the other finishes their
 //   own hole, the turn then waits on the one who left (untimed), who opens
-//   the match "the next day" on a fresh connection with the same token,
-//   gets a replay of the opponent's hole, plays theirs, and the turn passes
-//   back (the first player's replay is then of the previous hole);
-// - each player's match list says whose turn it is;
+//   the match "the next day" on a fresh connection with their seat's key
+//   (from the link the opponent texted), gets a replay of the opponent's
+//   hole, plays theirs, and the turn passes back (the first player's replay
+//   is then of the previous hole);
 // - a reload mid-live-match takes the same seat with the chat log intact;
 // - a server restart keeps the match, chat and all;
-// - a link opened by anyone else is refused a seat, politely.
+// - the match id without a seat key is refused a seat, politely.
 // Run: node --test test/mp/async-play.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startGolfServer } = require("./server.js");
 const { startDdbFake } = require("./ddb-fake.js");
 const { Bot, lobby, fakeShot } = require("./bot.js");
-
-const TOKEN = {
-  dave: "dave-0123456789abcdef",
-  sam: "sam-0123456789abcdef",
-  eve: "eve-0123456789abcdef",
-};
 
 test(
   "async play (live server, ddb match store)",
@@ -35,8 +29,8 @@ test(
       await srv.stop();
       await ddb.stop();
     });
-    const bot = async (name, token) => {
-      const b = new Bot(srv.url, name, { token });
+    const bot = async (name) => {
+      const b = new Bot(srv.url, name);
       all.push(b);
       await b.connect();
       return b;
@@ -54,17 +48,24 @@ test(
       );
     };
     const startPair = async () => {
-      const dave = await bot("Dave", TOKEN.dave);
-      const sam = await bot("Sam", TOKEN.sam);
+      const dave = await bot("Dave");
+      const sam = await bot("Sam");
       await lobby([dave, sam]);
-      return { dave, sam, id: dave.match.id };
+      const seats = dave.match.seats; // each seat's key, as in its match link
+      return {
+        dave,
+        sam,
+        id: dave.match.id,
+        seat: { dave: seats[dave.playerId], sam: seats[sam.playerId] },
+      };
     };
 
     await t.test(
       "live, then async: the one left finishes, the one back watches and plays, the turn goes back",
       async () => {
-        const { dave, sam, id } = await startPair();
+        const { dave, sam, id, seat } = await startPair();
         assert.match(id, /^[A-Za-z0-9_-]{12}$/);
+        assert.deepEqual(sam.match.seats, dave.match.seats);
         await dave.untilMyTurn();
         await shot(dave, { fraction: 0.5 });
         await shot(sam, { fraction: 0.2 });
@@ -83,9 +84,9 @@ test(
         assert.equal(dave.match.phase, "playing");
         dave.close();
 
-        // The next day: a fresh page, the same browser.
-        const sam2 = await bot("Sam", TOKEN.sam);
-        sam2.resume(id);
+        // The next day: Dave's text, opened on any device.
+        const sam2 = await bot("Sam");
+        sam2.resume(id, seat.sam);
         await sam2.untilMyTurn();
         const replay =
           sam2.you.replay ?? sam2.snaps.find((s) => s.you?.replay)?.you.replay;
@@ -111,33 +112,9 @@ test(
         assert.equal(sam2.match.turn, daveSeat, "the turn went back to Dave");
         assert.equal(sam2.match.holeResults[0].winner, daveSeat);
 
-        // Each one's list says so.
-        const sam3 = await bot("Sam", TOKEN.sam);
-        sam3.listMatches();
-        const samList = await sam3.until((x) => x.you?.matches, {
-          label: "Sam's matches",
-        });
-        const daveList = await (async () => {
-          const d = await bot("Dave", TOKEN.dave);
-          d.listMatches();
-          return d.until((x) => x.you?.matches, { label: "Dave's matches" });
-        })();
-        assert.deepEqual(
-          samList.find((m) => m.id === id),
-          {
-            id,
-            vs: "Dave",
-            myTurn: false,
-            hole: 2,
-            status: "Dave 1 UP",
-            finished: false,
-          },
-        );
-        assert.equal(daveList.find((m) => m.id === id).myTurn, true);
-
-        // Dave, back, watches Sam's hole 1 (the previous hole) before teeing off.
-        const dave2 = await bot("Dave", TOKEN.dave);
-        dave2.resume(id);
+        // Dave, back on Sam's text, watches Sam's hole 1 (the previous hole) before teeing off.
+        const dave2 = await bot("Dave");
+        dave2.resume(id, seat.dave);
         await dave2.untilMyTurn();
         const dReplay = dave2.snaps.find((s) => s.you?.replay)?.you.replay;
         assert.deepEqual(
@@ -150,14 +127,14 @@ test(
           [sam2.playerId]: true,
         });
         assert.ok(dave2.match.turnEndsIn > 0, "both here: live, on the clock");
-        [sam2, sam3, dave2].forEach((b) => b.close());
+        [sam2, dave2].forEach((b) => b.close());
       },
     );
 
     await t.test(
       "a reload mid-live-match takes the same seat, chat log intact",
       async () => {
-        const { dave, sam, id } = await startPair();
+        const { dave, sam, id, seat } = await startPair();
         dave.mchat("hi Sam");
         sam.mchat("hi Dave");
         await dave.untilChat(/hi Dave/);
@@ -165,8 +142,8 @@ test(
         await dave.untilMyTurn();
         await shot(dave, { fraction: 0.5 });
         sam.close(); // the reload
-        const sam2 = await bot("Sam", TOKEN.sam);
-        sam2.resume(id);
+        const sam2 = await bot("Sam");
+        sam2.resume(id, seat.sam);
         await sam2.untilMatch();
         await sam2.untilChat(/is back$/);
         const after = sam2.chatLog().map((l) => [l.seq, l.text]);
@@ -189,11 +166,11 @@ test(
     );
 
     await t.test(
-      "anyone else with the link is told whose match it is",
+      "the match id without a seat key is told whose match it is",
       async () => {
         const { dave, sam, id } = await startPair();
-        const eve = await bot("Eve", TOKEN.eve);
-        eve.resume(id);
+        const eve = await bot("Eve");
+        eve.resume(id, "a-guessed-seat-key");
         assert.equal(
           await eve.untilNotice(/./),
           "This match is between Dave and Sam",
@@ -210,7 +187,7 @@ test(
     );
 
     await t.test("a server restart keeps the match, chat and all", async () => {
-      const { dave, sam, id } = await startPair();
+      const { dave, sam, id, seat } = await startPair();
       await dave.untilMyTurn();
       await shot(dave, { fraction: 0.5 });
       sam.mchat("before the restart");
@@ -219,10 +196,10 @@ test(
       const hole = dave.match.hole;
       await srv.stop();
       srv = await startGolfServer({ env });
-      const dave2 = await bot("Dave", TOKEN.dave);
-      const sam2 = await bot("Sam", TOKEN.sam);
-      dave2.resume(id);
-      sam2.resume(id);
+      const dave2 = await bot("Dave");
+      const sam2 = await bot("Sam");
+      dave2.resume(id, seat.dave);
+      sam2.resume(id, seat.sam);
       await Promise.all([dave2.untilMatch(), sam2.untilMatch()]);
       await sam2.untilChat(/before the restart/);
       const m = dave2.match;

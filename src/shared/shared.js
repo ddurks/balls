@@ -243,29 +243,6 @@
     return guestName;
   }
 
-  // ---- player token ----------------------------------------------------------
-  // A random id for this browser, kept: the golf server seats a player in
-  // their matches by it (storing only its hash), so a match link opened days
-  // later finds its player. Storage blocked: one per page, so a reload loses
-  // the seat.
-  let pageToken = null;
-  function playerToken() {
-    try {
-      const kept = localStorage.getItem("ballsPlayerToken");
-      if (kept && /^[A-Za-z0-9_-]{16,64}$/.test(kept)) return kept;
-    } catch {}
-    if (!pageToken) {
-      const b = global.crypto.getRandomValues(new Uint8Array(16));
-      pageToken = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join(
-        "",
-      );
-    }
-    try {
-      localStorage.setItem("ballsPlayerToken", pageToken);
-    } catch {}
-    return pageToken;
-  }
-
   function hideBoot() {
     const el =
       typeof document !== "undefined" && document.getElementById("bootScreen");
@@ -300,7 +277,6 @@
     loadModel,
     roomFX,
     playerName,
-    playerToken,
     hideBoot,
     showBoot,
   };

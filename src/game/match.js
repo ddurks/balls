@@ -250,7 +250,7 @@
     textBack(m, opp) {
       const name = m.names[opp] ?? "them";
       const text = `Your move on hole ${m.holeId} ⛳`;
-      const url = Challenge.matchUrl(location, m.id);
+      const url = Challenge.matchUrl(location, m.id, m.seats?.[opp]); // their seat
       const done = (s, title) => {
         s.update({ title, detail: "", buttons: [] });
         setTimeout(() => s.close(), 1500);

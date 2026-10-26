@@ -1704,6 +1704,38 @@
       };
     }
 
+    // The daily leaderboard (src/clubhouse/leaderboard.js): on the east wall,
+    // just north of the SE corner the cig machine stands in, facing the room.
+    // Every part is named leader_* so a tap on it reaches openLeaders().
+    function buildLeaderBoard() {
+      const W = 1024,
+        H = 768;
+      const dt = new BABYLON.DynamicTexture(
+        "leaderTex",
+        { width: W, height: H },
+        scene,
+        true,
+      );
+      const board = BABYLON.MeshBuilder.CreatePlane(
+        "leader_board",
+        { width: 2.0, height: 1.5 },
+        scene,
+      );
+      board.material = unlitTexMat("leaderMat", dt);
+      board.position.set(11.76, floorTopY + 2.62, 9.4); // its foot clear of the panelling
+      board.rotation.y = Math.PI / 2; // face -x, into the room
+      const lb = {
+        entries: [],
+        floorPos: new BABYLON.Vector3(10.2, 0, 9.4),
+        draw() {
+          Leaderboard.drawBoard(dt.getContext(), W, H, lb.entries, lb.draw);
+          dt.update();
+        },
+      };
+      lb.draw();
+      return lb;
+    }
+
     // grab an item from a dispenser (no put-down; grabbing the other one swaps)
     function grabFromDispenser(kind) {
       if (me.holdType === kind) return;
@@ -1886,10 +1918,12 @@
     // in through the door (hold is persisted across the room-switch page load).
     // Sconces run in every room, sized to that room's walls (see buildSconces).
     let phone = null; // {root, floorPos} — the wall phone (main room only)
+    let leaders = null; // {entries, floorPos, draw} — the leaderboard (main room only)
     if (ROOM === "main") {
       buildShelfGlasses();
       buildDispensers();
       phone = buildWallPhone();
+      leaders = buildLeaderBoard();
     }
     buildSconces();
     // sconces push the room past Babylon's default 4-lights-per-mesh cap
@@ -1938,6 +1972,7 @@
       if (remoteIdOf(p.pickedMesh)) return; // decided on the press (above)
       const nm = p.pickedMesh.name || "";
       if (nm.startsWith("phone_")) return challenges.tapPhone();
+      if (nm.startsWith("leader_")) return openLeaders();
       const door = doors.find(
         (d) => nm.startsWith("door_" + d.kind) || p.pickedMesh === d.mesh,
       );
@@ -2075,6 +2110,7 @@
     // alone into an off-screen target by a camera in front of their face.
     // Orthographic, so the target's square aspect can't stretch it.
     const PORTRAIT_PX = 256;
+    const LEADER_PORTRAIT_PX = 64; // a leaderboard row's image: a few KB
     const PORTRAIT_LAYER = 0x10000000; // outside the main camera's default mask
     async function renderPortrait(meshes, center, facing, half) {
       const cam = new BABYLON.FreeCamera(
@@ -2197,7 +2233,6 @@
         phone: phonePortrait,
       },
       myName: MY_NAME,
-      myMatches: () => GolfNet.myMatches(),
       goToCourse(url) {
         localStorage.setItem("ballsHold", me.holdType); // carried like a door walk
         net.close();
@@ -2207,6 +2242,43 @@
       location,
       history: window.history,
       navigator,
+    });
+
+    // Today's leaders from the golf server, onto the wall now and then, and
+    // into the overlay when the board is tapped.
+    function refreshLeaders() {
+      return GolfNet.leaders().then(
+        (list) => {
+          leaders.entries = list;
+          leaders.draw();
+          return list;
+        },
+        () => null,
+      );
+    }
+    function openLeaders() {
+      const view = Leaderboard.open();
+      if (leaders.entries.length) view.update(leaders.entries);
+      refreshLeaders().then((list) => view.update(list ?? leaders.entries));
+    }
+    if (leaders) {
+      refreshLeaders();
+      setInterval(refreshLeaders, 120000);
+    }
+    // Your portrait, small, for the leaderboard: the course page sends it with
+    // a finished round (it has no clubhouse avatar to draw from).
+    avatarPortrait(me).then((url) => {
+      if (!url) return;
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = c.height = LEADER_PORTRAIT_PX;
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        try {
+          localStorage.setItem("ballsPortrait", c.toDataURL("image/png"));
+        } catch {}
+      };
+      img.src = url;
     });
 
     function remoteIdOf(mesh) {
@@ -2654,6 +2726,12 @@
         const dz = phone.floorPos.z - me.wrapper.position.z;
         if (dx * dx + dz * dz < DOOR_RADIUS * DOOR_RADIUS)
           hint = "▸ tap the ☎️ to challenge a friend";
+      }
+      if (!hint && leaders) {
+        const dx = leaders.floorPos.x - me.wrapper.position.x;
+        const dz = leaders.floorPos.z - me.wrapper.position.z;
+        if (dx * dx + dz * dz < DOOR_RADIUS * DOOR_RADIUS)
+          hint = "▸ tap the board for today's leaders";
       }
       if (hint !== lastHint) {
         lastHint = hint;

@@ -52,12 +52,15 @@ function views(rec, code = lastCode(rec)) {
 const strokesSum = (m) =>
   Object.values(m.lies).reduce((n, l) => n + l.strokes, 0);
 // One server state per key: strokes only ever grow within a hole, a hole only
-// ends by adding a result, and the phase changes on finish/forfeit.
+// ends by adding a result, the phase changes on finish/forfeit, and a player
+// going away or coming back may pass the turn (async play).
+const presence = (m) =>
+  Object.values(m.present ?? {})
+    .map(Number)
+    .join("");
 const keyOf = (m) =>
-  `${m.phase}|${m.hole}|${m.holeResults.length}|${strokesSum(m)}`;
-// Who's connected (present) comes and goes without a stroke; it isn't play.
-const canon = (m) =>
-  stable({ ...m, turnEndsIn: undefined, present: undefined });
+  `${m.phase}|${m.hole}|${m.holeResults.length}|${strokesSum(m)}|${presence(m)}`;
+const canon = (m) => stable({ ...m, turnEndsIn: undefined });
 
 function settledStates(rec, code) {
   const out = new Map();
@@ -252,10 +255,15 @@ function checkAgreement(recs, { code, tol = 0.01 } = {}) {
 // ---- 2. honors ----------------------------------------------------------------
 
 function expectedTurn(m) {
-  const active = m.teeOrder.filter(
+  const all = m.teeOrder.filter(
     (id) => !m.lies[id].holed && !m.lies[id].pickedUp,
   );
-  if (!active.length) return null;
+  if (!all.length) return null;
+  // Async play: once the hole is under way, whoever is here plays on (the
+  // tee still goes by honors, away or not).
+  const here = all.filter((id) => m.present?.[id] !== false);
+  const started = m.teeOrder.some((id) => m.lies[id].strokes > 0);
+  const active = started && here.length ? here : all;
   const toTee = active.find((id) => m.lies[id].strokes === 0);
   if (toTee) return toTee;
   const tee = holeById(m.holeId).tee;
@@ -1110,14 +1118,35 @@ function checkSameDecor(sims, { code } = {}) {
 // ---- 8. liveness, errors, resources ---------------------------------------------
 
 /** The match reached `finished` with a result, and nothing is left open. */
+/**
+ * Where a match may rest once nobody acts: finished, or (async play: a drop
+ * keeps the seat) a seat's player away with nothing in flight. The turn
+ * clock runs only while both are here, so a lone player who doesn't swing
+ * waits too, by design.
+ */
+function settled(m) {
+  if (!m) return false;
+  if (m.phase === "finished") return !!m.result;
+  return (
+    m.phase === "playing" &&
+    !m.shotOpen &&
+    Object.values(m.present ?? {}).includes(false)
+  );
+}
+
+/** Nothing left for `b` to do: settled, and (if still playing) not its turn. */
+const resting = (b) =>
+  settled(b.match) &&
+  (b.match.phase === "finished" || b.match.turn !== b.playerId);
+
 function checkLiveness(recs, { code } = {}) {
   const v = [];
   for (const r of recs) {
     const vs = views(r, code ?? lastCode(r));
     const m = vs[vs.length - 1]?.m;
     if (!m) v.push(`${r.name}: no match view`);
-    else if (m.phase !== "finished" || !m.result)
-      v.push(`${r.name}: match ended in phase ${m.phase}`);
+    else if (!settled(m))
+      v.push(`${r.name}: match ended in phase ${m.phase}, turn ${m.turn}`);
   }
   return v;
 }
@@ -1200,6 +1229,8 @@ function assertClean(violations, label = "contract") {
 }
 
 module.exports = {
+  settled,
+  resting,
   checkAgreement,
   checkHonors,
   checkMatchPlay,

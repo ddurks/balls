@@ -20,25 +20,16 @@
 // (X-Forwarded-For, which the server takes from a loopback peer): bots on one
 // machine can stand for clients on several, e.g. for golf's per-address
 // join-code limit.
-//
-// opts.token: a player token, said (`hello`) right after the welcome as the
-// game client does, so the server can seat this bot again in its started
-// matches (resume) from another connection.
 const { setTimeout, clearTimeout } = require("node:timers");
 const WebSocket = require("ws");
 const { CLUB_MAX, holeById } = require("./holes.js");
 
 class Bot {
-  constructor(
-    url,
-    name = "Bot",
-    { log = false, address = null, token = null } = {},
-  ) {
+  constructor(url, name = "Bot", { log = false, address = null } = {}) {
     this.url = url;
     this.name = name;
     this.log = log;
     this.address = address;
-    this.token = token;
     this.ws = null;
     this.playerId = null;
     this.you = null;
@@ -104,7 +95,6 @@ class Bot {
     }
     if (m.t === "welcome") {
       this.playerId = m.playerId;
-      if (this.token) this.action("hello", { message: this.token });
       this._welcome?.(m.playerId);
     } else if (m.t === "gameSnapshot") {
       const { you, broadcasts } = m;
@@ -191,11 +181,9 @@ class Bot {
   rv(key) {
     return this.action("rv", { message: key });
   }
-  resume(matchId) {
-    return this.action("resume", { message: matchId });
-  }
-  listMatches() {
-    return this.action("matches");
+  // Back to the seat `seat` (its key, from a match view's `seats`) in a started match.
+  resume(matchId, seat) {
+    return this.action("resume", { message: matchId, data: { seat } });
   }
   // turnSeq names the turn the shot is played in (the view's, by default).
   shotStart(club, aim, turnSeq = this.match?.turnSeq) {

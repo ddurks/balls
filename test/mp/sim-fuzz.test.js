@@ -75,7 +75,7 @@ async function one(i, srv, rand, t) {
       }, cutAfterMs);
     await Promise.all(
       sims.map((s) =>
-        s.until((b) => b.closed || b.you?.phase === "finished", {
+        s.until((b) => b.closed || C.resting(b), {
           timeout: 12 * 60 * 1000,
           allowClosed: true,
           label: "finished",

@@ -204,7 +204,7 @@ test(
       await audit([dave, sam]);
     });
     await t.test(
-      "forfeit: the player who is up drops mid-shot; the opponent wins and nothing stays queued",
+      "forfeit: the player who is up resigns mid-shot; the opponent wins and nothing stays queued",
       async () => {
         const [dave, sam] = await match();
         await shoot(dave, { at: cup, holed: true });
@@ -218,7 +218,7 @@ test(
           dave.path([
             [0.05 * i, from.x, from.y + i, from.z - 3 * i, 0, 0, 0, 1],
           ]);
-        dave.terminate(); // dropped mid-shot
+        dave.leave(); // resigns mid-shot (a drop keeps the seat: async-play.test.js)
         await sam.untilPhase("finished");
         const r = sam.match.result;
         assert.deepEqual(
@@ -238,7 +238,7 @@ test(
           },
         );
         assert.deepEqual(sys(sam).slice(-2), [
-          "Dave disconnected",
+          "Dave left the match",
           "Sam wins by forfeit",
         ]);
         assert.equal(sam.match.names[dave.playerId], "Dave");

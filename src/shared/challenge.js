@@ -113,12 +113,16 @@
     return loc.origin + dir + "index.html?" + q.toString();
   }
 
-  // Absolute link to a started match, for its two players: each is seated by
-  // their own browser's token (Shared.playerToken). Texted after a turn, and
-  // kept in the address bar so a reload goes back in.
-  function matchUrl(loc, id) {
+  // Absolute link to one seat of a started match: whoever opens it plays that
+  // seat (its key is all the server checks). Texted to the opponent after a
+  // turn, and kept in the address bar so a reload goes back in.
+  function matchUrl(loc, id, seat) {
     const dir = String(loc.pathname || "/").replace(/[^/]*$/, "");
-    const q = new URLSearchParams({ mode: "course", match: String(id) });
+    const q = new URLSearchParams({
+      mode: "course",
+      match: String(id),
+      seat: String(seat ?? ""),
+    });
     withDev(loc, q);
     return loc.origin + dir + "game.html?" + q.toString();
   }

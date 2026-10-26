@@ -15,10 +15,10 @@
 // rendezvous and shows a waiting splash until the match starts. window.golfNet
 // is the same GolfNet; golfNet.rv.state says where the meeting is at.
 //
-// Match entry: game.html?mode=course&match=ID (the address bar once a match
-// has started, a text-back link, the clubhouse's match list) takes this
-// browser's seat back in a started match: every connection says the
-// browser's player token first (`hello`), and the server seats by it.
+// Match entry: game.html?mode=course&match=ID&seat=KEY (the address bar once a
+// match has started, or the link the opponent texted after their turn) takes
+// that seat in a started match: the key is all the server checks, so the link
+// works on any device or browser.
 (function (global) {
   const params = new URLSearchParams(location.search);
   const isLocal =
@@ -68,11 +68,6 @@
       try {
         if (m.t === "welcome") {
           this.playerId = m.playerId;
-          this._send({
-            t: "action",
-            action: "hello",
-            message: Shared.playerToken(),
-          });
           const st = global.BallsStyle?.loadStyle();
           if (st)
             this._send({
@@ -80,6 +75,13 @@
               action: "style",
               data: { hat: st.hat, skin: st.skin },
             });
+          // The clubhouse keeps a small picture of our ball for the leaderboard.
+          let portrait = null;
+          try {
+            portrait = global.localStorage?.getItem("ballsPortrait");
+          } catch {}
+          if (portrait)
+            this._send({ t: "action", action: "portrait", data: portrait });
           if (this.onReady) this.onReady();
         } else if (m.t === "gameSnapshot") {
           // `you` only comes when something in it changed, and `you.match`
@@ -130,11 +132,13 @@
   GolfNet.prototype.start = function () {
     this._send({ t: "action", action: "start" });
   };
-  GolfNet.prototype.resume = function (matchId) {
-    this._send({ t: "action", action: "resume", message: String(matchId) });
-  };
-  GolfNet.prototype.listMatches = function () {
-    this._send({ t: "action", action: "matches" });
+  GolfNet.prototype.resume = function (matchId, seat) {
+    this._send({
+      t: "action",
+      action: "resume",
+      message: String(matchId),
+      data: { seat: String(seat ?? "") },
+    });
   };
   // Join-or-create the private match for a challenge's rendezvous key.
   // `token` is this side's own (see rvToken), so the server knows us when we
@@ -297,8 +301,9 @@
       splash.update(failure(title));
     };
     const lost = () => {
-      const id = net.you?.match?.id;
-      if (id && net.you.phase !== "finished") matchBoot(id, net);
+      const m = net.you?.match;
+      if (m?.id && net.you.phase !== "finished")
+        matchBoot(m.id, m.seats?.[net.playerId], net);
     };
 
     // The server refuses the key after its TTL; no point waiting past that.
@@ -374,7 +379,11 @@
           global.history.replaceState(
             null,
             "",
-            Challenge.matchUrl(location, you.match.id),
+            Challenge.matchUrl(
+              location,
+              you.match.id,
+              you.match.seats?.[net.playerId],
+            ),
           );
         return;
       }
@@ -398,7 +407,7 @@
   // Back to our seat in a started match. The seat waits for us however long
   // we're gone, so a dropped connection redials (backing off) for as long as
   // the page is open. `net`: the rendezvous page's, once its match started.
-  function matchBoot(id, net = new GolfNet(WS_URL, Shared.playerName())) {
+  function matchBoot(id, seat, net = new GolfNet(WS_URL, Shared.playerName())) {
     Object.assign(global, { golfNet: net });
     const toClubhouse = () =>
       Shared.roomFX.leave(Challenge.clubhouseUrl(location), {
@@ -430,7 +439,7 @@
     };
     net.onReady = () => {
       drops = 0;
-      net.resume(id);
+      net.resume(id, seat);
     };
     net.onState = (you) => {
       if (!you) return;
@@ -458,7 +467,7 @@
     const rvKey = params.get("rv");
     if (rvKey) return rvBoot(rvKey, params.get("vs"));
     const matchId = params.get("match");
-    if (matchId) return matchBoot(matchId);
+    if (matchId) return matchBoot(matchId, params.get("seat"));
     const joinCode = params.get("join");
     const hosting = params.get("host") === "1";
     if (!joinCode && !hosting) return;
@@ -504,10 +513,16 @@
     document.addEventListener("DOMContentLoaded", devBoot);
   else devBoot();
 
-  // The clubhouse's "Your matches": a short visit to the golf server, which
-  // looks this browser's matches up by its token. Resolves with
-  // [{id, vs, myTurn, hole, status, finished}], newest first.
-  GolfNet.myMatches = function (timeoutMs = 8000) {
+  // ---- short visits ---------------------------------------------------------
+  // A page in no match (the clubhouse, a solo round) asks the golf server one
+  // thing on a socket of its own: `ask(net, finish)` once it's ready, then
+  // `answer(you)` on each state; either settles it with a value.
+  /**
+   * @param {(net: any, finish: (v: any) => void) => void} ask
+   * @param {(you: any) => any} [answer]
+   * @param {number} [timeoutMs]
+   */
+  function visit(ask, answer = () => undefined, timeoutMs = 8000) {
     return new Promise((resolve, reject) => {
       const net = new GolfNet(WS_URL, Shared.playerName());
       const done = (settle, v) => {
@@ -520,16 +535,30 @@
         () => done(reject, new Error("no answer")),
         timeoutMs,
       );
-      net.onReady = () => net.listMatches();
+      net.onReady = () => ask(net, (v) => done(resolve, v));
       net.onState = (you) => {
-        if (you.matches) done(resolve, you.matches);
+        const v = answer(you);
+        if (v !== undefined) done(resolve, v);
         else if (you.notice) done(reject, new Error(you.notice));
       };
       net.connect();
       if (!net.ws) return done(reject, new Error("no socket"));
       net.ws.addEventListener("close", () => done(reject, new Error("closed")));
     });
-  };
+  }
+  // Today's leaderboard: [{name, image, net, strokes, solo, at}], best first.
+  GolfNet.leaders = () =>
+    visit(
+      (net) => net._send({ t: "action", action: "leaders" }),
+      (you) => you.leaders,
+    );
+  // A solo round's strokes per hole. The server says nothing back unless it
+  // refuses it, so a quiet moment after sending is success.
+  GolfNet.submitScore = (strokes) =>
+    visit((net, finish) => {
+      net._send({ t: "action", action: "score", data: { strokes } });
+      setTimeout(() => finish(true), 1500);
+    });
 
   Object.assign(global, { GolfNet });
   if (typeof module !== "undefined" && module.exports)

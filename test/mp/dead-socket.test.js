@@ -141,22 +141,23 @@ test(
     );
 
     await t.test(
-      "a player whose network dies mid-match forfeits it once the pings go unanswered",
+      "a player whose network dies mid-match goes away (seat kept) once the pings go unanswered",
       async () => {
         const l = await link();
         const dave = await bot(srv.url, "Dave");
         const sam = await bot(l.url, "Sam");
         await lobby([dave, sam]);
+        const samSeat = sam.playerId;
         l.halfOpen();
         const deadAt = Date.now();
-        await dave.untilPhase("finished", { timeout: WITHIN_MS });
-        t.diagnostic(`forfeit after ${Date.now() - deadAt} ms`);
-        assert.deepEqual(dave.match.result, {
-          winner: dave.playerId,
-          text: "Dave wins by forfeit",
-          reason: "forfeit",
+        await dave.until((b) => b.match.present[samSeat] === false, {
+          timeout: WITHIN_MS,
+          label: "Sam away",
         });
-        await dave.untilChat(/^Sam disconnected$/);
+        t.diagnostic(`away after ${Date.now() - deadAt} ms`);
+        assert.equal(dave.match.phase, "playing");
+        assert.equal(dave.match.result, null);
+        await dave.untilChat(/^Sam went offline$/);
       },
     );
 

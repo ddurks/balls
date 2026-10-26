@@ -1203,6 +1203,14 @@
       } else {
         this.hud.hide();
         Scoreboard.show(this.players, this.holes);
+        // A one-player round goes on the clubhouse's daily leaderboard.
+        const [only] = this.players;
+        if (
+          this.players.length === 1 &&
+          !this.practice &&
+          typeof GolfNet !== "undefined"
+        )
+          GolfNet.submitScore(only.scores).catch(() => {});
       }
     }
 

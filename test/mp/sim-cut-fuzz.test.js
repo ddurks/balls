@@ -181,7 +181,7 @@ const finishedOrClosed = (s, code) =>
   s.until(
     (b) =>
       b.closed ||
-      (b.code === code && b.you?.phase === "finished") ||
+      (b.code === code && C.resting(b)) ||
       (b.code !== code && b.sent.some((x) => x.msg?.action === "leave")),
     {
       timeout: 10 * 60 * 1000,

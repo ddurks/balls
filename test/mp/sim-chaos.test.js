@@ -53,7 +53,7 @@ async function setup(
 }
 
 const finished = (s, timeout = 12 * 60 * 1000) =>
-  s.until((b) => b.you?.phase === "finished" || (b.closed && true), {
+  s.until((b) => C.resting(b) || (b.closed && true), {
     timeout,
     allowClosed: true,
     label: `${b_name(s)} finished`,
@@ -306,7 +306,7 @@ const scenarios = [
       const m = dave.match;
       if (
         name !== "cut-match-end" &&
-        m.result.reason === "forfeit" &&
+        m.result?.reason === "forfeit" &&
         m.result.winner !== dave.playerId
       )
         throw new Error(`forfeit won by ${m.result.winner}`);

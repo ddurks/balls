@@ -14,7 +14,6 @@
 //     nameOf,      // (playerId) => name, or undefined if they're not here
 //     portraits,   // {player(id), link(), phone()} -> Promise<dataURL | null>
 //     myName,
-//     myMatches,   // () => Promise<[{id, vs, myTurn, hole, status, finished}]>
 //     goToCourse,  // (url) => leave the room for game.html
 //     storage,     // localStorage: the keys of this browser's own links
 //     location, history, navigator,
@@ -258,7 +257,6 @@
                 else chal.shareWhenReady = true;
               },
             },
-            { label: "Matches", kind: "go", onClick: showMatches },
             {
               label: "Cancel",
               kind: "stop",
@@ -268,53 +266,6 @@
           ],
         },
         env.portraits.phone(),
-      );
-    }
-
-    // The wall phone's "Your matches": started matches (the golf server finds
-    // them by this browser's token) and whose turn it is; a tap goes back in.
-    function showMatches() {
-      const phone = chal;
-      const s = phone.splash;
-      s.update({
-        title: "Your matches",
-        image: undefined,
-        detail: "Looking…",
-        buttons: [
-          {
-            label: "Close",
-            kind: "stop",
-            cancel: true,
-            onClick: () => endChallenge(),
-          },
-        ],
-      });
-      env.myMatches().then(
-        (matches) => {
-          if (chal !== phone) return;
-          s.update({
-            detail: matches.length ? "" : "No matches yet",
-            list: matches.map((m) => ({
-              label:
-                `vs ${m.vs} · ` +
-                (m.finished
-                  ? m.status
-                  : `${m.myTurn ? "your" : "their"} turn, hole ${m.hole}`),
-              hot: m.myTurn,
-              onClick: () => {
-                setChal({ kind: "go", splash: s });
-                s.update({
-                  title: "Teeing it up…",
-                  detail: "",
-                  list: [],
-                  buttons: [],
-                });
-                env.goToCourse(Challenge.matchUrl(env.location, m.id));
-              },
-            })),
-          });
-        },
-        () => chal === phone && s.update({ detail: "Can't reach the course" }),
       );
     }
 

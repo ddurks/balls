@@ -34,15 +34,24 @@ function run(file) {
   return new Promise((resolve) => {
     const start = Date.now();
     let out = "";
+    // Its own process group: node --test runs the file in a child, which runs
+    // servers and browsers of its own, and a hung file must take them all
+    // down (killing node --test alone left the rest running, and slowing
+    // every file after it).
     const child = spawn(process.execPath, ["--test", path.join(DIR, file)], {
       stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
     });
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (out += d));
     let hung = false;
     const timer = setTimeout(() => {
       hung = true;
-      child.kill("SIGKILL");
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL"); // the group already gone
+      }
     }, CAP_MS);
     child.on("close", (code) => {
       clearTimeout(timer);
