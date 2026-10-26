@@ -6,6 +6,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const { URL, URLSearchParams } = require("node:url");
+const { setImmediate } = require("node:timers");
 const Challenge = require("../src/shared/challenge.js");
 const ClubChallenges = require("../src/clubhouse/challenges.js");
 
@@ -27,7 +28,7 @@ function fakeSplash() {
         focus: opts.focus,
         closed: false,
         update(o) {
-          for (const k of ["title", "detail", "image", "field"])
+          for (const k of ["title", "detail", "image", "field", "list"])
             if (k in o) s[k] = o[k];
           if ("buttons" in o) s.buttons = o.buttons || [];
           return s;
@@ -65,7 +66,13 @@ function memoryStorage() {
 // One clubhouse page: Alice, with Bob ("b") and Cat ("c") in the room.
 function club(
   t,
-  { search = "", now = T0, navigator = {}, storage = memoryStorage() } = {},
+  {
+    search = "",
+    now = T0,
+    navigator = {},
+    storage = memoryStorage(),
+    myMatches = () => Promise.resolve([]),
+  } = {},
 ) {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now });
   const sent = [];
@@ -95,6 +102,7 @@ function club(
     nameOf: (id) => ({ b: "Bob", c: "Cat" })[id],
     portraits: { player: portrait, link: portrait, phone: portrait },
     myName: "Alice",
+    myMatches,
     goToCourse: (url) => went.push(url),
     storage,
     location: {
@@ -265,6 +273,45 @@ test("challenges: the wall phone reuses its key for a quick second look", (t) =>
   ch.tapPhone(); // stale by now: a fresh one
   assert.deepStrictEqual(sent.at(-1), ["link", 2]);
   assert.strictEqual(ch.state.key, null);
+});
+
+test("challenges: the wall phone lists this browser's matches; a tap goes back into one", async (t) => {
+  const list = [
+    {
+      id: "abcdefghijkl",
+      vs: "Bob",
+      myTurn: true,
+      hole: 2,
+      status: "ALL SQUARE",
+      finished: false,
+    },
+    {
+      id: "mnopqrstuvwx",
+      vs: "Cat",
+      myTurn: false,
+      hole: 1,
+      status: "Cat wins 2 & 1",
+      finished: true,
+    },
+  ];
+  const { ch, splash, went } = club(t, { myMatches: async () => list });
+  ch.tapPhone();
+  splash.current.press("Matches");
+  assert.strictEqual(splash.current.title, "Your matches");
+  await new Promise((r) => setImmediate(r));
+  const rows = splash.current.list;
+  assert.deepStrictEqual(
+    rows.map((r) => [r.label, !!r.hot]),
+    [
+      ["vs Bob · your turn, hole 2", true],
+      ["vs Cat · Cat wins 2 & 1", false],
+    ],
+  );
+  rows[0].onClick(splash.current);
+  assert.strictEqual(ch.state.kind, "go");
+  assert.deepStrictEqual(went, [
+    "http://localhost:3000/game.html?mode=course&match=abcdefghijkl",
+  ]);
 });
 
 test("challenges: re-opening the phone while its key is on the way waits for it", (t) => {

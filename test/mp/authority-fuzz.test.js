@@ -11,7 +11,6 @@ const { holeById } = require("./holes.js");
 const C = require("./checks.js");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const PORT = 7820;
 
 // Lets every action sent so far land and a snapshot or two go out.
 const settle = (bot) => bot.nextSnapshot().then(() => bot.nextSnapshot());
@@ -24,7 +23,6 @@ const stateOf = (bot) =>
 
 test("authority fuzz battery", { timeout: 180000 }, async (t) => {
   const srv = await startGolfServer({
-    port: PORT,
     env: {
       GOLF_TURN_TIMEOUT_MS: "60000",
       GOLF_SHOT_TIMEOUT_MS: "60000",
@@ -162,6 +160,10 @@ test("authority fuzz battery", { timeout: 180000 }, async (t) => {
           /Not in the cup/,
         ],
       ];
+      // The cup check comes after the path check, so the holed claim needs a
+      // path that reaches its (2 m off) rest spot.
+      const nearPin = cases[cases.length - 1][0].restPos;
+      dave.path([[0.01, nearPin.x, nearPin.y, nearPin.z, 0, 0, 0, 1]]);
       for (const [data, re] of cases) {
         dave.action("shotEnd", { data: { ...data, strokes: 0 } });
         assert.match(await dave.untilNotice(/./), re, JSON.stringify(data));
@@ -279,8 +281,9 @@ test("authority fuzz battery", { timeout: 180000 }, async (t) => {
   await t.test(
     "valid close counts exactly one stroke; duplicate shotEnd refused",
     async () => {
-      const hole = holeById(dave.match.holeId);
-      const rest = { x: hole.tee.x, y: hole.tee.y, z: hole.tee.z - 100 };
+      // Where the flood above left the path (the shot is at its sample cap,
+      // so no frame can move it): a close must rest where its path ended.
+      const rest = { x: 0, y: 1, z: 100 };
       const n0notices = dave.notices.length;
       dave.action("shotEnd", {
         data: { restPos: rest, holed: false, penalty: 0, strokes: -5 },

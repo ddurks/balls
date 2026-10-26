@@ -156,6 +156,42 @@ live head-to-head.
 (durable matches, tokens, hole turns, replay, text-back, matches list) → Web
 Push and deadlines.
 
+**Built (2026-10-25).**
+
+- _Store_ — `games/golf/matchStore.ts`: `MATCH_STORE_MODE=memory` (default;
+  newest 500 matches) or `ddb` (`DDB_TABLE`, `AWS_REGION`, `DDB_ENDPOINT` for
+  DynamoDB Local; `ddbMatchStore.ts`). Items: `MATCH#id / DATA` (the match as
+  JSON) and `PLAYER#tokenHash / MATCH#id` (a summary for the match list). A
+  started match is saved whenever `phase:turnSeq:chatSeq` moves (an open shot
+  isn't kept), evicted from memory once nobody is in it, flushed on shutdown.
+  Stored shots: the current and previous hole, each thinned to 100 samples, so
+  a match stays well under DynamoDB's 400 KB item.
+- _Identity_ — `Shared.playerToken()` (localStorage `ballsPlayerToken`, random
+  128 bits); every golf connection sends it first (`hello`); the server keeps
+  only its sha256, per seat. The stable name was already `ballsGuestName`.
+- _Presence_ — a seat with a token survives its player dropping (a ping
+  timeout too): they're away, not out. Seats are keyed by the connection
+  holding them; `resume` re-keys the seat to the new connection everywhere
+  (lies, turn, chat `from`, stored shots). A seat without a token (an old
+  client, the protocol bots) can't come back, so a drop still forfeits it;
+  `leave` in play is resigning. Mid-hole, with one away, whoever is here plays
+  on (finishes their own hole); the tee still goes by honors. The 90 s turn
+  clock runs only while both are here (the deadline seam: `repick`/`setTurn`).
+- _Replay_ — on taking the seat back on your turn, `you.replay` carries the
+  opponent's stored shots since your own last one, grouped by hole with that
+  hole's pin and wind. The client watches them (loading the previous hole if
+  that's where they were), skippable, then plays.
+- _Links_ — the match link is `game.html?mode=course&match=ID` (12-char
+  random id). It replaces the address bar once a match starts (a reload goes
+  back in), is what the text-back shares ("Your move on hole N ⛳" via
+  `navigator.share`, else the clipboard, else a field), and is what the
+  clubhouse match list opens. Without the seat's token: "This match is between
+  X and Y". The page redials for as long as it's open.
+- _Match list_ — the wall phone's Matches button; `GolfNet.myMatches()` asks
+  the golf server (`matches`) on a short-lived socket.
+- _Not yet_ — an async _start_ (a texted challenge still meets live through
+  the rendezvous, 15 min key), turn deadlines, Web Push.
+
 ## M1 design (head-to-head, 2 players)
 
 **Authority split.** Each client is authoritative for the _physics of its own
@@ -166,9 +202,9 @@ and the match score.
 
 **Protocol** (rides the existing `action` message; match state on `you`):
 
-- server → client (`you.match`): `{ phase, hole, pinIndex, windSeed, turn,
-turnSeq, turnEndsIn, lies: {id: {pos, strokes, holed}}, holeResults[],
-status }`. Sent **only when it changed** since that player last got it (the
+- server → client (`you.match`): `{ id, phase, hole, pinIndex, windSeed,
+turn, turnSeq, turnEndsIn, present: {id: bool}, lies: {id: {pos, strokes,
+holed}}, holeResults[], status }`. Sent **only when it changed** since that player last got it (the
   `turnEndsIn` countdown ticking doesn't count; clients count down locally
   from the value that came with the view) — an unchanged ~1.5 KB view at
   12 Hz outran slow links. A client keeps the last `match` it received; the
@@ -190,7 +226,8 @@ status }`. Sent **only when it changed** since that player last got it (the
   replies, errors and pongs, would otherwise pile up in server memory).
 - A member whose ping has gone unanswered for 45 s (`GOLF_PING_TIMEOUT_MS`,
   `IGameLogic.pingTimeoutMs`) is dropped as if its socket had closed: it
-  leaves the lobby (the host passes on), or forfeits the match in play. A
+  leaves the lobby (the host passes on), or is away from the match in play
+  (a seat without a token forfeits it: see Async play). A
   network that dies without a FIN or RST (a phone leaving Wi-Fi) otherwise
   holds its seat until the kernel gives up on the socket (~15 min on
   Linux): a rejoining guest sat beside its own ghost as "Sam 2" in a lobby
@@ -226,7 +263,8 @@ status }`. Sent **only when it changed** since that player last got it (the
   be picked, 0.25 s for its frame, and the trip). The kit's sim streams this
   way (`test/mp/path-sampler.js`); the S4 client must too.
   Relayed to the opponent _only_ via the per-player broadcast outbox
-  (`takePlayerBroadcasts`, added for the clubhouse image fix); never stored.
+  (`takePlayerBroadcasts`, added for the clubhouse image fix), and kept with
+  the shot (thinned) for the async replay.
   Nothing drops a path frame for coming too fast (frames that bunch up in
   transit are the shooter's honest backlog: past the connection's frame
   budget, below, they are read late, not lost); a sample must lie within
@@ -298,11 +336,12 @@ status }`. Sent **only when it changed** since that player last got it (the
   could send ~170k tiny frames a second (pings, actions, junk), each
   parsed, validated and often answered on the loop every match shares, and
   stalled every match's snapshots and timers 2–4 s at a time.
-- **Open (contract 9 vs M1 scope):** M1 has no reconnect — a disconnect mid-
-  match forfeits it at once, and joining a match in play is refused — so a
-  mid-match reload can't get the chat log back yet, though decision 5 above
-  asks for it. That needs the M3 reconnect (grace timer + per-player rejoin
-  token, see Edge cases); the kit's reload test is a `todo` until then.
+- Async play (above) adds: `hello {message: token}` (first, on connect),
+  `resume {message: matchId}` (back to your seat; the whole chat log comes
+  again, and `replay` if it's your turn), `matches` (answered as
+  `you.matches: [{id, vs, myTurn, hole, status, finished}]` while in no
+  match). A resume of a match not in memory and a list each spend a join try
+  (each is a store read). Contract 9's reload case is covered by `resume`.
 
 **Client.** A `MatchCoordinator` drives `CourseManager` from server state:
 `loadHole(index, pinIndex)` (no local pin randomising), wind from `windSeed`,

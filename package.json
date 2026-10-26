@@ -9,7 +9,7 @@
     "postinstall": "npm run vendor:babylon",
     "vendor:babylon": "node scripts/vendor-babylon.js",
     "test": "node --test test/*.js",
-    "test:mp": "node --test --test-concurrency=1 test/mp/*.test.js",
+    "test:mp": "node scripts/test-mp.js",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

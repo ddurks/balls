@@ -74,7 +74,6 @@ test(
   { timeout: 300000 },
   async (t) => {
     const srv = await startGolfServer({
-      port: 7853,
       env: { GOLF_SHOT_TIMEOUT_MS: "8000" },
     });
     t.after(() => srv.stop());

@@ -20,16 +20,25 @@
 // (X-Forwarded-For, which the server takes from a loopback peer): bots on one
 // machine can stand for clients on several, e.g. for golf's per-address
 // join-code limit.
+//
+// opts.token: a player token, said (`hello`) right after the welcome as the
+// game client does, so the server can seat this bot again in its started
+// matches (resume) from another connection.
 const { setTimeout, clearTimeout } = require("node:timers");
 const WebSocket = require("ws");
 const { CLUB_MAX, holeById } = require("./holes.js");
 
 class Bot {
-  constructor(url, name = "Bot", { log = false, address = null } = {}) {
+  constructor(
+    url,
+    name = "Bot",
+    { log = false, address = null, token = null } = {},
+  ) {
     this.url = url;
     this.name = name;
     this.log = log;
     this.address = address;
+    this.token = token;
     this.ws = null;
     this.playerId = null;
     this.you = null;
@@ -95,6 +104,7 @@ class Bot {
     }
     if (m.t === "welcome") {
       this.playerId = m.playerId;
+      if (this.token) this.action("hello", { message: this.token });
       this._welcome?.(m.playerId);
     } else if (m.t === "gameSnapshot") {
       const { you, broadcasts } = m;
@@ -181,14 +191,38 @@ class Bot {
   rv(key) {
     return this.action("rv", { message: key });
   }
+  resume(matchId) {
+    return this.action("resume", { message: matchId });
+  }
+  listMatches() {
+    return this.action("matches");
+  }
   // turnSeq names the turn the shot is played in (the view's, by default).
   shotStart(club, aim, turnSeq = this.match?.turnSeq) {
+    this._streamed = false;
+    this._autoT = 0;
     return this.action("shotStart", { data: { club, aim, turnSeq } });
   }
   path(samples) {
+    this._streamed = true;
     return this.action("path", { data: { samples } });
   }
-  shotEnd(restPos, holed = false, penalty = 0) {
+  // The server refuses a result its streamed path doesn't reach, so a shot the
+  // test didn't stream gets one at-rest frame first, as the client sends last.
+  // opts.noPath sends shotEnd alone.
+  shotEnd(restPos, holed = false, penalty = 0, { noPath = false } = {}) {
+    const p = restPos;
+    if (
+      !noPath &&
+      !this._streamed &&
+      p &&
+      [p.x, p.y, p.z].every(Number.isFinite)
+    ) {
+      this._autoT = (this._autoT ?? 0) + 0.1;
+      this.action("path", {
+        data: { samples: [[this._autoT, p.x, p.y, p.z, 0, 0, 0, 1]] },
+      });
+    }
     return this.action("shotEnd", { data: { restPos, holed, penalty } });
   }
   mchat(text) {

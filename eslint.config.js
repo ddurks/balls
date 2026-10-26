@@ -38,6 +38,7 @@ const browserGlobals = {
   Splash: "readonly", // window.Splash from splash.js (loaded first)
   Challenge: "readonly", // window.Challenge from challenge.js (loaded first)
   ClubChallenges: "readonly", // window.ClubChallenges from clubhouse/challenges.js
+  GolfNet: "readonly", // window.GolfNet from golfnet.js (the clubhouse's match list)
   ImageData: "readonly",
   Uint8ClampedArray: "readonly",
   Uint8Array: "readonly",

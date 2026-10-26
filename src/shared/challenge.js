@@ -113,6 +113,16 @@
     return loc.origin + dir + "index.html?" + q.toString();
   }
 
+  // Absolute link to a started match, for its two players: each is seated by
+  // their own browser's token (Shared.playerToken). Texted after a turn, and
+  // kept in the address bar so a reload goes back in.
+  function matchUrl(loc, id) {
+    const dir = String(loc.pathname || "/").replace(/[^/]*$/, "");
+    const q = new URLSearchParams({ mode: "course", match: String(id) });
+    withDev(loc, q);
+    return loc.origin + dir + "game.html?" + q.toString();
+  }
+
   // An incoming challenge link, or null when the page wasn't opened from one.
   function parseLink(search, now) {
     const q = new URLSearchParams(search || "");
@@ -151,6 +161,7 @@
     gameUrl,
     clubhouseUrl,
     linkUrl,
+    matchUrl,
     parseLink,
     stripLink,
   };

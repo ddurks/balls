@@ -2197,6 +2197,7 @@
         phone: phonePortrait,
       },
       myName: MY_NAME,
+      myMatches: () => GolfNet.myMatches(),
       goToCourse(url) {
         localStorage.setItem("ballsHold", me.holdType); // carried like a door walk
         net.close();
@@ -3072,9 +3073,16 @@
       fontSize: "30px",
       lineHeight: "1.2",
       color: "#fff",
-      pointerEvents: "auto",
+      // Touches pass through to the game (a move or look drag can start over
+      // the log); it scrolls only while the chat input has focus.
+      pointerEvents: "none",
       scrollbarWidth: "none", // thin/hidden scrollbar (still scrollable)
     });
+    input.addEventListener(
+      "focus",
+      () => (feedEl.style.pointerEvents = "auto"),
+    );
+    input.addEventListener("blur", () => (feedEl.style.pointerEvents = "none"));
 
     let collapsed = false;
     const renderToggle = () =>

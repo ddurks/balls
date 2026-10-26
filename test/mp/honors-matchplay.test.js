@@ -10,7 +10,6 @@ const { setupMatch } = require("./bot.js");
 const { SERVER_HOLES } = require("./holes.js");
 const C = require("./checks.js");
 
-const PORT = 7847;
 const TURN_MS = 1200;
 
 // Shoot from wherever the server has us; resolve once the server reflected it.
@@ -73,7 +72,6 @@ test(
   { timeout: 240000 },
   async (t) => {
     const srv = await startGolfServer({
-      port: PORT,
       env: {
         GOLF_TURN_TIMEOUT_MS: String(TURN_MS),
         GOLF_SHOT_TIMEOUT_MS: "20000",

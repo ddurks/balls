@@ -47,7 +47,6 @@ test(
   { timeout: 40 * 60 * 1000 },
   async (t) => {
     const srv = await startGolfServer({
-      port: 7849,
       env: { GOLF_FINISHED_LINGER_MS: "60000", GOLF_TURN_TIMEOUT_MS: "120000" },
     });
     const cleanup = [];

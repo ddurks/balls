@@ -42,7 +42,7 @@ if (isMainThread) {
         // `n` copies of `frame`, two in flight at most (what the server pays
         // per frame, not a backlog on the sender), then a ping: once its pong
         // is back the server has handled them all. Resolves with the error
-        // codes they drew.
+        // codes they drew, and the close code if the server cut the socket.
         flood: (frame, { n = 20 } = {}) => ask({ cmd: "flood", frame, n }),
         state: () => ask({ cmd: "state" }),
         stop: () => w.terminate(),
@@ -61,17 +61,23 @@ if (isMainThread) {
   parentPort.on("message", async ({ id, cmd, frame, n }) => {
     if (cmd === "flood") {
       const from = bot.other.length;
-      for (let i = 0; i < n; i++) {
-        while (bot.ws.bufferedAmount >= 2 * frame.length) await sleep(2);
+      for (let i = 0; i < n && !bot.closed; i++) {
+        while (bot.ws.bufferedAmount >= 2 * frame.length && !bot.closed)
+          await sleep(2);
         bot.sendRaw(frame);
       }
       const at = bot.other.length;
-      bot.send({ t: "ping" });
+      if (!bot.closed) bot.send({ t: "ping" });
+      // A frame over the socket's cap closes the connection instead (1009).
       await bot.until(
-        (b) => b.other.slice(at).some((o) => o.msg?.t === "pong"),
-        { timeout: 60000, label: "pong" },
+        (b) => b.closed || b.other.slice(at).some((o) => o.msg?.t === "pong"),
+        { timeout: 60000, label: "pong", allowClosed: true },
       );
-      parentPort.postMessage({ id, errs: errsFrom(from) });
+      parentPort.postMessage({
+        id,
+        errs: errsFrom(from),
+        closed: bot.closed ? bot.closeInfo.code : null,
+      });
     } else if (cmd === "state") {
       parentPort.postMessage({
         id,

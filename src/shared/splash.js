@@ -3,7 +3,8 @@
 // game page's waiting room). One glassy green disc in the game's circle-UI
 // style: an optional round portrait, a handwritten title, an optional detail
 // line, an optional read-only `field` (text to copy by hand, e.g. a link the
-// clipboard refused), and round buttons. Escape presses the button marked
+// clipboard refused), an optional `list` of rows to pick from ({label, hot,
+// onClick}, scrolling), and round buttons. Escape presses the button marked
 // `cancel`.
 //
 //   const s = Splash.show({ image, title, detail, buttons: [
@@ -54,6 +55,12 @@
   border:3px solid #476a23;background:rgba(255,255,255,.92);color:#222;outline:none;
   font:16px/1.2 ui-monospace,Menlo,Consolas,monospace;text-overflow:ellipsis;
   -webkit-user-select:text;user-select:text}
+.splash-list{width:78%;max-height:calc(var(--d)*.4);overflow-y:auto;display:flex;
+  flex-direction:column;gap:6px;scrollbar-width:none}
+.splash-row{flex:0 0 auto;padding:6px 12px;border-radius:14px;border:3px solid #476a23;
+  background:rgba(255,255,255,.92);color:#123;font:inherit;font-size:calc(var(--d)*.045);
+  text-align:left;cursor:pointer;touch-action:manipulation}
+.splash-row.hot{background:#e1e44e}
 .splash-btns{display:flex;gap:calc(var(--d)*.06)}
 .splash-btn{width:calc(var(--d)*.23);height:calc(var(--d)*.23);min-width:56px;min-height:56px;
   border-radius:50%;border:3px solid rgba(255,255,255,.65);padding:0;cursor:pointer;
@@ -128,8 +135,9 @@
     field.readOnly = true;
     field.spellcheck = false;
     field.addEventListener("focus", () => field.select());
+    const list = el("div", "splash-list");
     const btns = el("div", "splash-btns");
-    disc.append(imgWrap, title, detail, field, btns);
+    disc.append(imgWrap, title, detail, field, list, btns);
     back.appendChild(disc);
     let cancelBtn = null;
     let armedAt = 0;
@@ -172,6 +180,22 @@
         if ("field" in o) {
           field.value = o.field || "";
           field.style.display = o.field ? "" : "none";
+        }
+        if ("list" in o) {
+          list.textContent = "";
+          armedAt = Date.now() + ARM_MS;
+          for (const r of o.list || []) {
+            const row = el("button", "splash-row" + (r.hot ? " hot" : ""));
+            row.type = "button";
+            row.textContent = r.label;
+            row.addEventListener("click", (e) => {
+              e.stopPropagation();
+              if (e.detail > 0 && !armed()) return;
+              if (!s.closed) r.onClick(s);
+            });
+            list.appendChild(row);
+          }
+          list.style.display = list.children.length ? "" : "none";
         }
         if ("buttons" in o) {
           btns.textContent = "";
@@ -274,6 +298,7 @@
       title: opts.title,
       detail: opts.detail,
       field: opts.field,
+      list: opts.list,
       buttons: opts.buttons,
     });
     document.body.appendChild(back);

@@ -77,13 +77,20 @@ function tab(
   FakeSocket.all = [];
   const splash = fakeSplash();
   const left = [];
+  const replaced = [];
   const winListeners = {};
   const store = (m) => ({
     getItem: (k) => (m.has(k) ? m.get(k) : null),
     setItem: (k, v) => m.set(k, String(v)),
   });
   Object.assign(globalThis, {
-    location: { hostname, search: "?mode=course&rv=x" + search },
+    location: {
+      hostname,
+      search: "?mode=course&rv=x" + search,
+      origin: `http://${hostname}:3000`,
+      pathname: "/game.html",
+    },
+    history: { replaceState: (_s, _t, url) => replaced.push(url) },
     document: { readyState: "loading", addEventListener() {} },
     addEventListener: (type, fn) =>
       (winListeners[type] = winListeners[type] || []).push(fn),
@@ -93,16 +100,19 @@ function tab(
     Shared: {
       roomFX: { leave: (url) => left.push(url) },
       playerName: () => "Dave",
+      playerToken: () => "tok-0123456789abcdef",
     },
     localStorage: store(new Map([["ballsName", "Dave"]])),
     sessionStorage: store(session),
     window: { crypto: require("node:crypto").webcrypto },
   });
   delete require.cache[require.resolve("../src/game/golfnet.js")];
-  const { rvBoot } = require("../src/game/golfnet.js");
+  const { rvBoot, matchBoot } = require("../src/game/golfnet.js");
   const sock = () => FakeSocket.all.at(-1);
   return {
     boot: (key, vs) => rvBoot(key, vs),
+    bootMatch: (id) => matchBoot(id),
+    replaced,
     net: () => globalThis.golfNet,
     sock,
     splash: splash.s,
@@ -117,6 +127,7 @@ const actions = (sock) => sock.sent.map((m) => m.action || m.t);
 test.afterEach(() => {
   for (const k of [
     "location",
+    "history",
     "document",
     "addEventListener",
     "WebSocket",
@@ -335,7 +346,7 @@ test("rv: Leave while waiting tells the server before hanging up", (t) => {
   s.welcome("p1");
   s.you({ matchCode: "ABCD", phase: "lobby" });
   splash.press("Leave");
-  assert.deepStrictEqual(actions(s), ["auth", "join", "rv", "leave"]);
+  assert.deepStrictEqual(actions(s), ["auth", "join", "hello", "rv", "leave"]);
   assert.strictEqual(s.readyState, 3);
   assert.strictEqual(net().rv.state, "left");
   assert.strictEqual(left.length, 1);
@@ -347,7 +358,13 @@ test("rv: closing or leaving the page while waiting is leaving too", (t) => {
   sock().open();
   sock().welcome("p1");
   fire("pagehide");
-  assert.deepStrictEqual(actions(sock()), ["auth", "join", "rv", "leave"]);
+  assert.deepStrictEqual(actions(sock()), [
+    "auth",
+    "join",
+    "hello",
+    "rv",
+    "leave",
+  ]);
 });
 
 // A reload of the waiting page: until pagehide (a second or more into the
@@ -359,7 +376,13 @@ test("rv: a reload calls the wait off as soon as it begins", (t) => {
   sock().open();
   sock().welcome("p1");
   fire("beforeunload");
-  assert.deepStrictEqual(actions(sock()), ["auth", "join", "rv", "leave"]);
+  assert.deepStrictEqual(actions(sock()), [
+    "auth",
+    "join",
+    "hello",
+    "rv",
+    "leave",
+  ]);
 });
 
 test("rv: once the match is on, leaving the page is no withdrawal", (t) => {
@@ -370,28 +393,61 @@ test("rv: once the match is on, leaving the page is no withdrawal", (t) => {
   sock().you({ matchCode: "ABCD", phase: "playing" });
   fire("beforeunload");
   fire("pagehide");
-  assert.deepStrictEqual(actions(sock()), ["auth", "join", "rv"]);
+  assert.deepStrictEqual(actions(sock()), ["auth", "join", "hello", "rv"]);
 });
 
-// The close handler only cared while meeting: after the start a dropped
-// socket left golfNet saying started/playing on a match the server had
-// already forfeited, with nothing on screen.
-test("rv: a match whose connection drops says so, and golfNet stops claiming it", (t) => {
-  const { boot, net, sock, splash } = tab(t);
+// A started match keeps our seat: the address bar becomes the match's link
+// (a reload goes back in), and a dropped connection redials and resumes.
+test("rv: a started match's link replaces the key; a drop redials and takes the seat back", (t) => {
+  const { boot, net, sock, replaced } = tab(t);
   boot(keyAt(T0));
   sock().open();
   sock().welcome("p1");
-  sock().you({ matchCode: "ABCD", phase: "playing" });
+  sock().you({
+    matchCode: "ABCD",
+    phase: "playing",
+    match: { id: "abcdefghijkl", phase: "playing" },
+  });
   assert.strictEqual(net().rv.state, "started");
+  assert.deepStrictEqual(replaced, [
+    "http://localhost:3000/game.html?mode=course&match=abcdefghijkl",
+  ]);
   sock().close();
-  assert.strictEqual(net().rv.state, "failed");
-  assert.strictEqual(net().you, null);
-  assert.strictEqual(splash.title, "Lost the connection to the match");
-  assert.deepStrictEqual(
-    splash.buttons.map((b) => b.label),
-    ["Clubhouse"],
-  );
-  assert.strictEqual(FakeSocket.all.length, 1); // no rejoin in M1: no redial
+  assert.strictEqual(FakeSocket.all.length, 2); // at once
+  sock().open();
+  sock().welcome("p9");
+  assert.deepStrictEqual(actions(sock()), ["auth", "join", "hello", "resume"]);
+  assert.strictEqual(sock().sent[2].message, "tok-0123456789abcdef");
+  assert.strictEqual(sock().sent[3].message, "abcdefghijkl");
+});
+
+test("match link: hello then resume; a seat that isn't ours says whose match it is", (t) => {
+  const { bootMatch, sock, splash, left } = tab(t);
+  bootMatch("abcdefghijkl");
+  assert.strictEqual(splash.title, "Finding your match…");
+  sock().open();
+  sock().welcome("p1");
+  assert.deepStrictEqual(actions(sock()), ["auth", "join", "hello", "resume"]);
+  sock().you({ notice: "This match is between Dave and Sam" });
+  assert.strictEqual(splash.title, "This match is between Dave and Sam");
+  sock().close(); // ours: no redial
+  t.mock.timers.tick(10000);
+  assert.strictEqual(FakeSocket.all.length, 1);
+  splash.press("Clubhouse");
+  assert.strictEqual(left.length, 1);
+});
+
+test("match link: seated, the splash goes", (t) => {
+  const { bootMatch, sock, splash } = tab(t);
+  bootMatch("abcdefghijkl");
+  sock().open();
+  sock().welcome("p1");
+  sock().you({
+    matchCode: "WXYZ",
+    phase: "playing",
+    match: { id: "abcdefghijkl" },
+  });
+  assert.strictEqual(splash.closed, true);
 });
 
 test("rv: a finished match's connection dropping changes nothing", (t) => {
@@ -447,7 +503,7 @@ test("rv: a golf outage doesn't run down the opponent's time to arrive", (t) => 
   t.mock.timers.tick(8000); // the server is back
   sock().open();
   sock().welcome("p1");
-  assert.deepStrictEqual(actions(sock()), ["auth", "join", "rv"]);
+  assert.deepStrictEqual(actions(sock()), ["auth", "join", "hello", "rv"]);
   assert.strictEqual(splash.detail, "");
   // and from here on Bob has his full time
   t.mock.timers.tick(ARRIVE_MS - 1);

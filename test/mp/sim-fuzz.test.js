@@ -19,7 +19,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const SEED = Number(process.env.MP_SEED || 2);
 const N = Number(process.env.MP_SIMS || 3);
 const TIME_SCALE = Number(process.env.MP_TIME_SCALE || 8);
-const PORT = Number(process.env.MP_PORT || 7837);
+const PORT = Number(process.env.MP_PORT) || undefined;
 
 async function one(i, srv, rand, t) {
   const mk = async (k) => {

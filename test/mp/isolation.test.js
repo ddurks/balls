@@ -15,7 +15,6 @@ const { startGolfServer } = require("./server.js");
 const { Bot, setupMatch, fakeShot } = require("./bot.js");
 const C = require("./checks.js");
 
-const PORT = 7848;
 const MATCHES = Number(process.env.MP_ISO_MATCHES || 12);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -52,7 +51,6 @@ test(
   { timeout: 240000 },
   async (t) => {
     const srv = await startGolfServer({
-      port: PORT,
       env: { GOLF_FINISHED_LINGER_MS: "3000", GOLF_TURN_TIMEOUT_MS: "20000" },
     });
     const all = [];

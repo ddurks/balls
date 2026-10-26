@@ -7,7 +7,7 @@
 // never go back in time, survivors must end on the same view, and each sim's
 // shots must agree with what the server recorded.
 // Run: node --test test/mp/sim-cut-fuzz.test.js
-//   MP_FUZZ_MATCHES (6), MP_FUZZ_SEED (1), MP_FUZZ_PAR (3), MP_TIME_SCALE (8), MP_PORT (7834)
+//   MP_FUZZ_MATCHES (6), MP_FUZZ_SEED (1), MP_FUZZ_PAR (3), MP_TIME_SCALE (8), MP_PORT (any free port)
 const test = require("node:test");
 const { setTimeout } = require("node:timers");
 const { startGolfServer } = require("./server.js");
@@ -22,7 +22,7 @@ const MATCHES = Number(process.env.MP_FUZZ_MATCHES || 6);
 const SEED = Number(process.env.MP_FUZZ_SEED || 1);
 const PAR = Number(process.env.MP_FUZZ_PAR || 3);
 const TIME_SCALE = Number(process.env.MP_TIME_SCALE || 8);
-const PORT = Number(process.env.MP_PORT || 7834);
+const PORT = Number(process.env.MP_PORT) || undefined;
 const TURN_MS = Number(process.env.MP_TURN_MS || 9000);
 const SHOT_MS = Number(process.env.MP_SHOT_MS || 7000);
 const LINGER_MS = 30000;

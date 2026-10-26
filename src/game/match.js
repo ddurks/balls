@@ -13,12 +13,21 @@
 // draws the right hole, lies and turn without having seen earlier shots), and
 // a shot is a self-contained record {player, hole, stroke, samples, restPos}
 // that plays the same whether it is streaming in or stored (play()).
+//
+// Async play: taking our seat back on our turn, the server hands over the
+// opponent's shots since our last one (net.replay, by hole). We watch them
+// first (the review, skippable), on their own hole if it was the last one,
+// then play. And when our turn ends with the opponent away, we offer to text
+// them the match link.
 (function (global) {
   const FRAME_MS = 250; // path frames go out at most 4 a second
   const FRAME_SAMPLES = 32;
   const MAX_SHOT_S = 58; // the server expires an open shot 60 s after shotStart
   const r3 = (v) => Math.round(v * 1000) / 1000;
   const r4 = (v) => Math.round(v * 10000) / 10000;
+
+  // The opponent's ball is see-through so it's never mistaken for your own.
+  const GHOST_ALPHA = 0.5;
 
   class MatchCoordinator {
     constructor(game) {
@@ -34,12 +43,15 @@
       this.early = []; // path frames that came before their hole loaded
       this.ghost = null;
       this.ghostStyled = null;
+      this.ghostHat = null;
       this.spectating = false;
       this.holdUntil = 0;
       this.over = false;
       this.banner = null;
       this.ui = null;
       this.results = null; // hole results already shown on a card
+      this.review = null; // [{hole, holeId, pinIndex, windSeed, shots}] still to watch
+      this.lastTurn = undefined; // whose turn the last view said
     }
 
     start() {
@@ -82,7 +94,8 @@
         !!m &&
         m.phase === "playing" &&
         m.turn === this.net.playerId &&
-        !this.replay
+        !this.replay &&
+        !this.review
       );
     }
 
@@ -127,6 +140,7 @@
 
     sync() {
       const m = this.view;
+      if (m?.phase === "playing") this.turnPassed(m);
       if (!m || this.loading || this.shot) return;
       if (m.phase === "finished") {
         if (this.replay) this.replay.closed = true;
@@ -140,6 +154,8 @@
         return;
       }
       if (m.phase !== "playing") return;
+      if (this.net.replay) this.startReview();
+      if (this.review) return this.reviewStep(m);
       const open = m.shotOpen;
       if (this.replay && open?.id !== this.replay.shot)
         this.replay.closed = true;
@@ -148,12 +164,7 @@
         // Let the last shot play out and its result show before the swap.
         if (this.replay) return;
         this.showResults(m);
-        const wait = this.holdUntil - Date.now();
-        if (wait > 0) {
-          clearTimeout(this._wait);
-          this._wait = setTimeout(() => this.sync(), wait);
-          return;
-        }
+        if (this.held()) return;
         this.loadHole(m, key);
         return;
       }
@@ -181,6 +192,101 @@
                 : `${name} is away`,
         );
       }
+    }
+
+    // Still showing the last shot's end: sync again once it's over.
+    held() {
+      const wait = this.holdUntil - Date.now();
+      if (wait <= 0) return false;
+      clearTimeout(this._wait);
+      this._wait = setTimeout(() => this.sync(), wait);
+      return true;
+    }
+
+    // ---- the review: the opponent's shots we missed -------------------------
+
+    startReview() {
+      this.review = this.net.replay.map((h) => ({ ...h, shots: [...h.shots] }));
+      this.net.replay = null;
+      this.ui?.skip(() => this.endReview());
+    }
+
+    // One shot at a time, each on its own hole (loaded with that hole's pin
+    // and wind), a beat apart.
+    reviewStep(m) {
+      if (this.replay || this.held()) return;
+      const h = this.review[0];
+      const key = `${h.hole}:${h.windSeed}`;
+      if (key !== this.hole) return this.loadHole(h, key);
+      const rec = h.shots.shift();
+      if (!rec) {
+        this.review.shift();
+        if (!this.review.length) return this.endReview();
+        return this.sync();
+      }
+      this.spectate(m, null);
+      this.say(`Replay: ${m.names[rec.player] ?? ""}, hole ${h.holeId}`);
+      this.play(rec);
+    }
+
+    endReview() {
+      this.review = null;
+      this.ui?.skip(null);
+      if (this.replay && !this.replay.live) this.replay = null;
+      this.spectating = false;
+      this.sync();
+    }
+
+    // Our turn just ended and the opponent isn't here to take theirs.
+    turnPassed(m) {
+      const was = this.lastTurn;
+      this.lastTurn = m.turn;
+      const opp = this.opponent(m);
+      if (was === this.net.playerId && m.turn === opp && !this.present(m, opp))
+        this.textBack(m, opp);
+    }
+
+    // The share sheet needs a tap of its own, so it's offered, not opened.
+    textBack(m, opp) {
+      const name = m.names[opp] ?? "them";
+      const text = `Your move on hole ${m.holeId} ⛳`;
+      const url = Challenge.matchUrl(location, m.id);
+      const done = (s, title) => {
+        s.update({ title, detail: "", buttons: [] });
+        setTimeout(() => s.close(), 1500);
+      };
+      const copy = (s) => {
+        const showLink = () =>
+          s.update({ title: "Send them this link", detail: "", field: url });
+        if (navigator.clipboard?.writeText)
+          navigator.clipboard
+            .writeText(`${text} ${url}`)
+            .then(() => done(s, "Link copied!"), showLink);
+        else showLink();
+      };
+      Splash.show({
+        title: `${name}'s move`,
+        detail: `Text ${name} it's their turn`,
+        buttons: [
+          {
+            label: "Text",
+            kind: "go",
+            onClick: (s) => {
+              if (!navigator.share) return copy(s);
+              navigator.share({ title: "Balls Golf", text, url }).then(
+                () => done(s, "Sent!"),
+                (e) => e?.name !== "AbortError" && copy(s),
+              );
+            },
+          },
+          {
+            label: "Later",
+            kind: "stop",
+            cancel: true,
+            onClick: (s) => s.close(),
+          },
+        ],
+      });
     }
 
     async loadHole(m, key) {
@@ -370,6 +476,7 @@
         mesh.position = BABYLON.Vector3.Zero();
         mesh.scaling = new BABYLON.Vector3(0.0254, 0.0254, 0.0254);
         mesh.isPickable = false; // a click on it must not count as one on our ball
+        mesh.visibility = GHOST_ALPHA;
       }
       Utils.addShadowCasters(res.meshes, scene.shadowGenerator);
       root.setEnabled(false);
@@ -388,19 +495,27 @@
       const st = BallsStyle.normalizeStyle(p.style);
       const scene = this.game.scene;
       BallsStyle.applySkin(scene, this.ghost.meshes, st.skin, null);
+      // A player back on a new connection comes back under a new id.
+      this.ghostHat?.dispose();
+      this.ghostHat = null;
       const hat = BallsStyle.buildHat(scene, st.hat);
       if (hat) {
         const mount = new BABYLON.TransformNode("ghostHat", scene);
+        this.ghostHat = mount;
         mount.parent = this.ghost.root;
         mount.scaling.setAll(0.0254);
         hat.parent = mount;
-        for (const m of hat.getChildMeshes(false)) m.isPickable = false;
+        for (const m of hat.getChildMeshes(false)) {
+          m.isPickable = false;
+          m.visibility = GHOST_ALPHA;
+        }
       }
     }
 
     placeGhost(m, opp) {
       if (!this.ghost || !opp || this.replay) return;
       this.styleGhost(opp);
+      this.ui?.nameTag(opp, m.names?.[opp] ?? "");
       const lie = m.lies[opp];
       const show = !!lie?.pos && !lie.holed && !lie.pickedUp;
       this.ghost.root.setEnabled(show);

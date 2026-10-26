@@ -87,12 +87,18 @@ test(
       bots: [dave, sam],
     } = await setupMatch(srv.url, ["Dave", "Sam"]);
     open.push(dave, sam);
-    const atk = await startFlooder(srv.url, "Atk");
-    t.after(() => atk.stop());
-    await sleep(500);
+    const flooders = [];
+    t.after(() => flooders.forEach((f) => f.stop()));
+    const flooder = async () => {
+      const f = await startFlooder(srv.url, "Atk");
+      flooders.push(f);
+      await sleep(500);
+      return f;
+    };
+    const atk = await flooder();
 
     const control = await measure(srv, dave, () =>
-      atk.flood(action("noop", BIG)),
+      atk.flood(action("noop", NEAR)),
     );
     t.diagnostic(`control (ignored action): ${JSON.stringify(control)}`);
     assert.ok(
@@ -112,24 +118,24 @@ test(
     };
 
     await t.test(
-      "frames of 9.8 MB are refused before they are read",
+      "frames of 9.8 MB close the socket before they are read",
       async () => {
+        // Golf takes no uploads, so the socket's own cap is golf's 64 KB:
+        // the first big frame ends that connection (1009), unread.
         for (const [label, frame] of [
+          ["ignored action", action("noop", BIG)],
           ["mchat", action("mchat", BIG)],
           ["bootstrap upload", upload(4.9e6)],
           ["join name", JSON.stringify({ t: "join", name: BIG })],
         ]) {
-          await sleep(1000);
-          let errs;
+          const big = await flooder();
+          let res;
           const r = await measure(srv, dave, async () => {
-            ({ errs } = await atk.flood(frame));
+            res = await big.flood(frame, { n: FRAMES });
           });
           bounded(label, r);
-          assert.deepEqual(errs, Array(FRAMES).fill("FRAME_TOO_LARGE"), label);
+          assert.equal(res.closed, 1009, label);
         }
-        const { chat, names } = await atk.state();
-        assert.deepEqual(chat, []);
-        assert.deepEqual(names, ["Atk"]);
       },
     );
 

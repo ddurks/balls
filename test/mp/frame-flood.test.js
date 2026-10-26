@@ -28,22 +28,9 @@ const WebSocket = require("ws");
 const { startGolfServer } = require("./server.js");
 
 const CHILD = path.join(__dirname, "frame-flood-child.js");
-const PORTS = [7823, 7824, 7825, 7826, 7827, 7828, 7829];
 // Idle this probe sees ~1-20 ms, and metered the same; unmetered, 250 ms
 // (an action flood) to 4 s (junk frames, each logged).
 const RTT_LIMIT_MS = 250;
-
-async function startOnAnyPort(env) {
-  let lastErr;
-  for (const port of PORTS) {
-    try {
-      return await startGolfServer({ port, env });
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-  throw lastErr;
-}
 
 // A lone bystander probing the server's event-loop latency: ping every 150 ms,
 // record each pong's round trip.
@@ -99,7 +86,9 @@ test(
   "a single reading client flooding small frames stalls no other match",
   { timeout: 120000 },
   async (t) => {
-    const srv = await startOnAnyPort({ GOLF_TURN_TIMEOUT_MS: "600000" });
+    const srv = await startGolfServer({
+      env: { GOLF_TURN_TIMEOUT_MS: "600000" },
+    });
     t.after(() => srv.stop());
 
     await t.test("flood of valid ping frames", async () => {

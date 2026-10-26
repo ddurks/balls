@@ -29,8 +29,8 @@ const EXPIRY_UP_BPS = Number(process.env.MP_EXPIRY_UP_BPS || 1000);
 const SEED = Number(process.env.MP_SEED || 1);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function setup(t, port, env = {}) {
-  const srv = await startGolfServer({ port, env });
+async function setup(t, env = {}) {
+  const srv = await startGolfServer({ env });
   t.after(() => srv.stop());
   const link = await startTcpLink(srv.url, {
     up: { latencyMs: 40, bytesPerSec: UP_BPS },
@@ -45,7 +45,7 @@ test(
   `a shooter on a ${UP_BPS} B/s uplink streams within the delay bound`,
   { timeout: 15 * 60 * 1000 },
   async (t) => {
-    const { srv, link } = await setup(t, 7854);
+    const { srv, link } = await setup(t);
     // Dave hosts (honor on hole 1) and plays over the slow uplink.
     const dave = new SimClient(link.url, "Dave", { timeScale: 1, seed: SEED });
     const sam = new SimClient(srv.url, "Sam", { timeScale: 1, seed: SEED + 1 });
@@ -93,7 +93,7 @@ test(
   async (t) => {
     // Turns are long so Dave's search for the shot never runs out the turn;
     // the shot timer is the server's default.
-    const { srv, link } = await setup(t, 7857, {
+    const { srv, link } = await setup(t, {
       GOLF_TURN_TIMEOUT_MS: "600000",
     });
     // Hole 1 is played at full speed over a fast link; hole 2 in real time

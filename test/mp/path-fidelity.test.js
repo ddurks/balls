@@ -19,15 +19,12 @@ const { ClubData } = require("../../src/game/clubs.js");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-for (const [deg, port] of [
-  [180, 7850],
-  [90, 7851],
-]) {
+for (const deg of [180, 90]) {
   test(
     `a max-power drive aimed ${deg} deg off the line streams its whole path`,
     { timeout: 120000 },
     async (t) => {
-      const srv = await startGolfServer({ port });
+      const srv = await startGolfServer();
       t.after(() => srv.stop());
       const opts = {
         timeScale: 1,
@@ -86,7 +83,7 @@ test(
   "a 1 s upstream stall mid-flight loses no path samples",
   { timeout: 180000 },
   async (t) => {
-    const srv = await startGolfServer({ port: 7852 });
+    const srv = await startGolfServer();
     t.after(() => srv.stop());
     const proxy = await startChaosProxy({
       target: srv.url,

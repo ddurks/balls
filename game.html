@@ -435,6 +435,16 @@
         height: var(--ui-flag-h);
         margin-bottom: var(--ui-mb-flag);
       }
+      /* The stats circle stacks flag, par and distance; a smaller flag keeps
+         the distance up where the circle is wide enough for it (lower, its
+         border clips three digits on phones). */
+      #circleStats .flag-wrapper {
+        width: calc(var(--ui-flag-w) * 0.8);
+        height: calc(var(--ui-flag-h) * 0.8);
+      }
+      #circleStats .pin-number {
+        font-size: calc(var(--ui-pin-fs) * 0.8);
+      }
       .flag-img {
         width: 100%;
         height: 100%;

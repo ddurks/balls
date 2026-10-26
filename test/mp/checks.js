@@ -55,7 +55,9 @@ const strokesSum = (m) =>
 // ends by adding a result, and the phase changes on finish/forfeit.
 const keyOf = (m) =>
   `${m.phase}|${m.hole}|${m.holeResults.length}|${strokesSum(m)}`;
-const canon = (m) => stable({ ...m, turnEndsIn: undefined });
+// Who's connected (present) comes and goes without a stroke; it isn't play.
+const canon = (m) =>
+  stable({ ...m, turnEndsIn: undefined, present: undefined });
 
 function settledStates(rec, code) {
   const out = new Map();

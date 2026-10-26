@@ -61,7 +61,6 @@ test(
   { timeout: 240000 },
   async (t) => {
     const srv = await startGolfServer({
-      port: 7838,
       env: {
         GOLF_TURN_TIMEOUT_MS: String(TURN_MS),
         GOLF_FINISHED_LINGER_MS: "60000",
@@ -70,7 +69,6 @@ test(
     t.after(() => srv.stop());
     const proxy = await startChaosProxy({
       target: srv.url,
-      port: 7839,
       latencyMs: 80,
       jitterMs: 40,
       down: { bytesPerSec: DOWN_BYTES_PER_SEC },
@@ -124,7 +122,7 @@ test(
   "a spectator on a 12 KB/s downlink sees the opponent's shots within a bounded delay",
   { timeout: 300000 },
   async (t) => {
-    const srv = await startGolfServer({ port: 7854 });
+    const srv = await startGolfServer();
     t.after(() => srv.stop());
     const proxy = await startChaosProxy({
       target: srv.url,

@@ -22,7 +22,6 @@ test(
   { timeout: 60000 },
   async (t) => {
     const srv = await startGolfServer({
-      port: 7836,
       env: {
         GOLF_TURN_TIMEOUT_MS: String(TURN_MS),
         GOLF_SHOT_TIMEOUT_MS: "20000",
@@ -31,7 +30,6 @@ test(
     t.after(() => srv.stop());
     const proxy = await startChaosProxy({
       target: srv.url,
-      port: 7837,
       seed: 1,
     });
     t.after(() => proxy.close());
@@ -121,7 +119,6 @@ test(
   { timeout: 60000 },
   async (t) => {
     const srv = await startGolfServer({
-      port: 7836,
       env: {
         GOLF_TURN_TIMEOUT_MS: String(TURN_MS),
         GOLF_SHOT_TIMEOUT_MS: "20000",
@@ -130,7 +127,6 @@ test(
     t.after(() => srv.stop());
     const proxy = await startChaosProxy({
       target: srv.url,
-      port: 7837,
       up: { latencyMs: 400 },
       seed: 1,
     });

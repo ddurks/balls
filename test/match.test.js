@@ -299,6 +299,105 @@ test("MatchCoordinator: a stored shot record replays like a live one and gates o
   assert.equal(match.present(match.view, "me"), true);
 });
 
+// ---- async play: the review and the text-back -------------------------------
+
+const stored = (hole, z) => ({
+  player: "opp",
+  hole,
+  stroke: 1,
+  samples: [
+    [0, 0, 0, 0, 0, 0, 0, 1],
+    [0.05, 0, 0, z, 0, 0, 0, 1],
+  ],
+  restPos: { x: 0, y: 0, z },
+});
+
+// Plays the review out, minus the beat between shots.
+async function watchReview(match, tick) {
+  for (let i = 0; i < 200 && match.review; i++) {
+    match.holdUntil = 0;
+    match.sync();
+    tick();
+    await new Promise((r) => setTimeout(r, 2));
+  }
+}
+
+test("MatchCoordinator: back on our turn, the opponent's missed shots play first, each on its hole", async (t) => {
+  const { match, game, net, view, tick } = setup();
+  const loads = [];
+  game.courseManager.loadHole = async (hole, pin, wind) =>
+    loads.push([hole, pin, wind]);
+  game.courseManager.disposeHole = () => {};
+  globalThis.Shared = { roomFX: { irisClose: async () => {} } };
+  t.after(() => delete globalThis.Shared);
+  net.replay = [
+    { hole: 0, holeId: 1, pinIndex: 3, windSeed: 9, shots: [stored(0, -40)] },
+    { hole: 1, holeId: 2, pinIndex: 1, windSeed: 5, shots: [stored(1, -9)] },
+  ];
+  view({ hole: 1, turn: "me", turnSeq: 4 });
+  assert.equal(net.replay, null, "taken");
+  assert.equal(match.canAim(), false, "watch first");
+  await watchReview(match, tick);
+  assert.equal(match.review, null);
+  // Hole 1 for its shot, then hole 2 (the match's), which its shot shares.
+  assert.deepEqual(loads, [
+    [0, 3, 9],
+    [1, 1, 5],
+  ]);
+  assert.deepEqual(
+    match.shots.map((s) => s.restPos.z),
+    [-40, -9],
+  );
+  assert.equal(match.canAim(), true);
+});
+
+test("MatchCoordinator: the review can be skipped", async () => {
+  const { match, net, view } = setup();
+  net.replay = [
+    { hole: 0, holeId: 1, pinIndex: 1, windSeed: 5, shots: [stored(0, -40)] },
+  ];
+  view({ turn: "me", turnSeq: 4 });
+  await new Promise((r) => setImmediate(r));
+  match.sync();
+  assert.ok(match.replay);
+  match.endReview();
+  assert.equal(match.replay, null);
+  assert.equal(match.canAim(), true);
+});
+
+test("MatchCoordinator: our turn ending with the opponent away offers to text them the link", (t) => {
+  const { view } = setup();
+  const shown = [];
+  globalThis.Splash = { show: (o) => shown.push(o) };
+  globalThis.Challenge = require("../src/shared/challenge.js");
+  globalThis.location = {
+    origin: "https://balls.example",
+    pathname: "/game.html",
+  };
+  t.after(() => {
+    delete globalThis.Splash;
+    delete globalThis.Challenge;
+    delete globalThis.location;
+  });
+  view({ turn: "me", turnSeq: 2 });
+  view({ turn: "opp", turnSeq: 3 }); // here: they just play
+  assert.equal(shown.length, 0);
+  view({ turn: "me", turnSeq: 4 });
+  view({
+    id: "abcdefghijkl",
+    holeId: 2,
+    turn: "opp",
+    turnSeq: 5,
+    present: { me: true, opp: false },
+  });
+  assert.equal(shown.length, 1);
+  assert.equal(shown[0].title, "Sam's move");
+  assert.deepEqual(
+    shown[0].buttons.map((b) => b.label),
+    ["Text", "Later"],
+  );
+});
+
 // ---- S5: match-play status -----------------------------------
 
 test("matchStatus reads the match from this side", () => {

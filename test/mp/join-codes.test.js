@@ -16,7 +16,6 @@ const { setTimeout } = require("node:timers");
 const { startGolfServer } = require("./server.js");
 const { Bot, setupMatch } = require("./bot.js");
 
-const PORT = 7841;
 const LOBBIES = 12;
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const SPY = "203.0.113.66";
@@ -37,7 +36,7 @@ test(
   "join codes can't be swept to read private lobbies",
   { timeout: 120000 },
   async (t) => {
-    const srv = await startGolfServer({ port: PORT });
+    const srv = await startGolfServer();
     const all = [];
     t.after(async () => {
       for (const b of all) b.close();

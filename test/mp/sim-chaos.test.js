@@ -17,7 +17,7 @@ const C = require("./checks.js");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TIME_SCALE = Number(process.env.MP_TIME_SCALE || 8);
 const ONLY = process.env.MP_ONLY || "";
-const BASE_PORT = Number(process.env.MP_PORT || 7831);
+const BASE_PORT = Number(process.env.MP_PORT) || undefined;
 
 async function setup(
   t,
@@ -317,6 +317,6 @@ const scenarios = [
 for (const [i, s] of scenarios.entries()) {
   if (ONLY && !s.name.includes(ONLY)) continue;
   test(`liveness sims: ${s.name}`, { timeout: 15 * 60 * 1000 }, (t) =>
-    s.run(t, BASE_PORT + (i % 8)),
+    s.run(t, BASE_PORT && BASE_PORT + (i % 8)),
   );
 }

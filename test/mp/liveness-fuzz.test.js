@@ -260,7 +260,6 @@ test(
   { timeout: 20 * 60 * 1000 },
   async (t) => {
     const srv = await startGolfServer({
-      port: 7830,
       env: {
         GOLF_TURN_TIMEOUT_MS: String(TURN_MS),
         GOLF_SHOT_TIMEOUT_MS: String(SHOT_MS),

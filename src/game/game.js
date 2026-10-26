@@ -974,7 +974,10 @@
       // Opened into a networked match (see golfnet.js's entries).
       match:
         urlMode === "course" &&
-        (p.has("rv") || p.has("join") || p.get("host") === "1"),
+        (p.has("rv") ||
+          p.has("match") ||
+          p.has("join") ||
+          p.get("host") === "1"),
     });
   }
 

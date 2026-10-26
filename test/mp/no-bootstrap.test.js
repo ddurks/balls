@@ -61,16 +61,26 @@ test(
         ],
       },
     });
-    mallory.send(upload(4900));
+    // The big one closes the socket it came on (1009), so it comes from a
+    // second connection of hers.
+    const mallory2 = new Bot(srv.url, "Mallory");
+    bots.push(mallory2);
+    await mallory2.connect();
+    mallory2.send(upload(4900));
+    await mallory2.until((b) => b.closed, {
+      label: "the close",
+      allowClosed: true,
+    });
+    assert.equal(mallory2.closeInfo.code, 1009);
     mallory.send(upload(100));
     const refused = await mallory.until(
       (b) => {
         const errs = b.other.filter((o) => o.msg?.t === "err");
-        return errs.length >= 2 && errs.map((o) => o.msg.code);
+        return errs.length >= 1 && errs.map((o) => o.msg.code);
       },
-      { label: "the refusals" },
+      { label: "the refusal" },
     );
-    assert.deepEqual(refused, ["FRAME_TOO_LARGE", "BOOTSTRAP_DENIED"]);
+    assert.deepEqual(refused, ["BOOTSTRAP_DENIED"]);
 
     // A player who connects later, to a match of their own.
     const late = new Bot(srv.url, "Late");

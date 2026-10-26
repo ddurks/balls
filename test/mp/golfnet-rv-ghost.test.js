@@ -75,12 +75,17 @@ function gameTab(key, gws, name) {
     addEventListener() {},
     Splash: { show: (o) => splash.update(o) },
     Challenge,
-    Shared: { roomFX: { leave() {} }, playerName: () => name },
+    Shared: {
+      roomFX: { leave() {} },
+      playerName: () => name,
+      playerToken: () => `${name}-token-0123456789`,
+    },
     sessionStorage: {
       getItem: (k) => (session.has(k) ? session.get(k) : null),
       setItem: (k, v) => session.set(k, String(v)),
     },
     window: { crypto: crypto.webcrypto },
+    history: { replaceState() {} },
   });
   delete require.cache[require.resolve("../../src/game/golfnet.js")];
   require("../../src/game/golfnet.js").rvBoot(key);

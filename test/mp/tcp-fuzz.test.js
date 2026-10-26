@@ -17,7 +17,7 @@ const C = require("./checks.js");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const MATCHES = Number(process.env.MP_FUZZ_MATCHES || 32);
 const SEED = Number(process.env.MP_FUZZ_SEED || 1);
-const PORT = Number(process.env.MP_PORT || 7832);
+const PORT = Number(process.env.MP_PORT) || undefined;
 const TURN_MS = Number(process.env.MP_TURN_MS || 3000);
 const SHOT_MS = Number(process.env.MP_SHOT_MS || 2500);
 // Results stay up this long before a finished match is freed. A client on

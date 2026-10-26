@@ -14,9 +14,8 @@
 //   under when its speaker's " 2" goes on a rejoin (checkChat used to judge
 //   every line by the speaker's last name);
 // - a finished match's log is freed at dissolve and never resurfaces;
-// - a reload mid-match restores the log: TODO, M1 has no reconnect (a reload
-//   forfeits the match and the new connection can't get back in). Reconnect
-//   is M3 in the plan's phasing; see the plan's M1 protocol notes.
+// - a reload mid-match restores the log: the player's token takes their
+//   seat back (resume), and the whole log comes again.
 // Run: node --test test/mp/chat-persistence.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -25,7 +24,6 @@ const { setTimeout } = require("node:timers");
 const { Bot, lobby } = require("./bot.js");
 const C = require("./checks.js");
 
-const PORT = 7845;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function bot(url, name) {
@@ -36,7 +34,6 @@ async function bot(url, name) {
 
 test("match chat persistence (contract 9)", { timeout: 300000 }, async (t) => {
   const srv = await startGolfServer({
-    port: PORT,
     env: {
       GOLF_FINISHED_LINGER_MS: "2500",
       GOLF_TURN_TIMEOUT_MS: "30000",
@@ -351,35 +348,38 @@ test("match chat persistence (contract 9)", { timeout: 300000 }, async (t) => {
     },
   );
 
-  await t.test(
-    "a reload mid-match restores the match chat log",
-    { todo: "needs reconnect (M3): a disconnect mid-match forfeits it" },
-    async () => {
-      const dave = await mk("Dave2");
-      const sam = await mk("Sam2");
-      const code = await lobby([dave, sam]);
-      dave.mchat("before the reload rl1");
-      sam.mchat("me too rl2");
-      await dave.untilChat(/rl2/);
-      // Sam's tab reloads: same person, new connection.
-      sam.terminate();
-      const sam2 = await mk("Sam2");
-      sam2.join(code);
-      await sam2.until((b) => b.code || b.notices.length, {
-        label: "rejoin outcome",
-      });
-      await sleep(300);
-      const restored = C.chatLog(sam2.records(), code).map((l) => l.text);
-      assert.equal(
-        dave.you.phase,
-        "playing",
-        `the reload ended the match: ${dave.match?.result?.text}; Sam2 notices ${JSON.stringify(sam2.notices.map((n) => n.text))}`,
-      );
-      assert.ok(
-        restored.includes("before the reload rl1") &&
-          restored.includes("me too rl2"),
-        `log not restored after reload: ${JSON.stringify(restored)}`,
-      );
-    },
-  );
+  await t.test("a reload mid-match restores the match chat log", async () => {
+    const tokenBot = async (name) => {
+      const b = new Bot(srv.url, name, { token: `${name}-0123456789abcdef` });
+      all.push(b);
+      await b.connect();
+      return b;
+    };
+    const dave = await tokenBot("Dave2");
+    const sam = await tokenBot("Sam2");
+    const code = await lobby([dave, sam]);
+    const id = dave.match.id;
+    dave.mchat("before the reload rl1");
+    sam.mchat("me too rl2");
+    await dave.untilChat(/rl2/);
+    // Sam's tab reloads: same person, new connection.
+    sam.terminate();
+    const sam2 = await tokenBot("Sam2");
+    sam2.resume(id);
+    await sam2.until((b) => b.code || b.notices.length, {
+      label: "rejoin outcome",
+    });
+    await sleep(300);
+    const restored = C.chatLog(sam2.records(), code).map((l) => l.text);
+    assert.equal(
+      dave.you.phase,
+      "playing",
+      `the reload ended the match: ${dave.match?.result?.text}; Sam2 notices ${JSON.stringify(sam2.notices.map((n) => n.text))}`,
+    );
+    assert.ok(
+      restored.includes("before the reload rl1") &&
+        restored.includes("me too rl2"),
+      `log not restored after reload: ${JSON.stringify(restored)}`,
+    );
+  });
 });

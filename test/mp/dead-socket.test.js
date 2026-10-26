@@ -21,7 +21,6 @@ const { startTcpLink } = require("./tcp-link.js");
 const { Bot, lobby } = require("./bot.js");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const PORT = 7843;
 const PING_TIMEOUT_MS = 6000;
 // The ping in flight when the link dies was sent up to ~0.6 s earlier; the
 // rest is slack for a loaded machine.
@@ -32,7 +31,6 @@ test(
   { timeout: 5 * 60 * 1000 },
   async (t) => {
     const srv = await startGolfServer({
-      port: PORT,
       env: {
         GOLF_PING_TIMEOUT_MS: String(PING_TIMEOUT_MS),
         GOLF_TURN_TIMEOUT_MS: "600000",

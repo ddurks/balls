@@ -11,7 +11,6 @@ const { startGolfServer } = require("./server.js");
 const { setupMatch } = require("./bot.js");
 const C = require("./checks.js");
 
-const PORT = 7840;
 const MATCHES = Number(process.env.MP_FUZZ_MATCHES || 10);
 const SEED = Number(process.env.MP_FUZZ_SEED || 1);
 const TURN = 2500,
@@ -193,7 +192,6 @@ test(
   { timeout: 600000 },
   async (t) => {
     const srv = await startGolfServer({
-      port: PORT,
       env: {
         GOLF_TURN_TIMEOUT_MS: String(TURN),
         GOLF_SHOT_TIMEOUT_MS: String(SHOT),

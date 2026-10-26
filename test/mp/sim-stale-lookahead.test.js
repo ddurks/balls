@@ -20,7 +20,7 @@ test(
   "kit: a sim whose view goes stale during its lookahead doesn't swing on it",
   { timeout: 120000 },
   async (t) => {
-    const srv = await startGolfServer({ port: 7835 });
+    const srv = await startGolfServer();
     t.after(() => srv.stop());
     // Dave hosts, so he has the honor on hole 1; plenty of tries makes the
     // lookahead take a while.
@@ -68,7 +68,6 @@ test(
   { timeout: 120000 },
   async (t) => {
     const srv = await startGolfServer({
-      port: 7835,
       env: { GOLF_TURN_TIMEOUT_MS: "3000" },
     });
     t.after(() => srv.stop());

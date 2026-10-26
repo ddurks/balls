@@ -14,7 +14,7 @@
 // involved, so the physics replays the same). The spectator's copy of that
 // shot must stay within the kit's eps (1.5 m) of what Dave's ball really did.
 // Run: node --test test/mp/bounce-fidelity.test.js
-//   MP_PORT (7855), MP_SEED (1)
+//   MP_PORT (any free port), MP_SEED (1)
 const test = require("node:test");
 const { setTimeout } = require("node:timers");
 const { startGolfServer } = require("./server.js");
@@ -24,7 +24,7 @@ const C = require("./checks.js");
 const { ClubData } = require("../../src/game/clubs.js");
 const { PhysicsConfig } = require("../../src/game/physics.js");
 
-const PORT = Number(process.env.MP_PORT || 7855);
+const PORT = Number(process.env.MP_PORT) || undefined;
 const SEED = Number(process.env.MP_SEED || 1);
 const EPS = 1.5;
 const flat = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);

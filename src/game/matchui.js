@@ -1,6 +1,7 @@
 // matchui.js — the match's HUD: the match-play status chip, a result card
 // between holes, the match chat (feed + input, scoped to the match, apart
-// from the clubhouse's) and speech bubbles over the speaker's ball.
+// from the clubhouse's), speech bubbles over the speaker's ball, and the
+// button that skips the replay of the opponent's shots.
 //
 // matchStatus() is pure (Node-testable); MatchUI touches the
 // DOM and is only made in the browser (see MatchCoordinator.start).
@@ -40,11 +41,13 @@
       this.send = send;
       this.anchor = anchor;
       this.bubbles = new Map(); // id -> {el, until}
+      this.tag = null; // {id, el}: the opponent's name under their ball
       this.seen = 0; // highest chat seq shown
       this.typing = false;
       this.buildChat();
       this.card = null;
       this.cardTimer = null;
+      this.skipBtn = null;
     }
 
     buildChat() {
@@ -52,7 +55,8 @@
       Object.assign(wrap.style, {
         position: "fixed",
         left: "12px",
-        top: "calc(var(--ui-margin, 12px) + 150px)",
+        // Below the stats circle (its size + border, scaled down on phones).
+        top: "calc(2 * var(--ui-margin, 12px) + var(--ui-size, 150px) + 2 * var(--ui-border-width, 6px))",
         width: "260px",
         maxWidth: "60vw",
         zIndex: "50",
@@ -91,7 +95,9 @@
         fontSize: "20px",
         lineHeight: "1.2",
         color: "#fff",
-        pointerEvents: "auto",
+        // Touches pass through to the game (an aim can start over the log);
+        // it scrolls only while the chat input has focus.
+        pointerEvents: "none",
         scrollbarWidth: "none",
       });
       const sendNow = () => {
@@ -118,9 +124,13 @@
             input.blur();
           }
         });
-      input.addEventListener("focus", () => (this.typing = true));
+      input.addEventListener("focus", () => {
+        this.typing = true;
+        feed.style.pointerEvents = "auto";
+      });
       input.addEventListener("blur", () => {
         this.typing = false;
+        feed.style.pointerEvents = "none";
         window.scrollTo(0, 0);
       });
       form.appendChild(input);
@@ -216,6 +226,65 @@
       }, 4500);
     }
 
+    // ---- skipping the replay ----------------------------------------------
+
+    // Shown with onClick, gone with null.
+    skip(onClick) {
+      this.skipBtn?.remove();
+      this.skipBtn = null;
+      if (!onClick) return;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = "Skip replay ▸▸";
+      Object.assign(b.style, {
+        position: "fixed",
+        bottom: "24px",
+        left: "50%",
+        transform: "translateX(-50%)",
+        zIndex: "9000",
+        padding: "8px 18px",
+        borderRadius: "999px",
+        border: "3px solid #476a23",
+        background: "rgba(144,200,150,.95)",
+        color: "#fff",
+        font: `bold 20px ${FONT}`,
+        textShadow: "1px 1px 0 rgba(0,0,0,.6)",
+        cursor: "pointer",
+        touchAction: "manipulation",
+      });
+      b.addEventListener("pointerdown", (e) => e.stopPropagation());
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        onClick();
+      });
+      document.body.appendChild(b);
+      this.skipBtn = b;
+    }
+
+    // ---- name tag (as in the clubhouse: white, under the ball) -------------
+
+    nameTag(id, name) {
+      if (this.tag?.id === id && this.tag.el.textContent === name) return;
+      this.tag?.el.remove();
+      const el = document.createElement("div");
+      el.textContent = name;
+      Object.assign(el.style, {
+        position: "fixed",
+        transform: "translate(-50%, 0)", // top-centre: hangs below the point
+        color: "#fff",
+        fontSize: "22px",
+        fontWeight: "bold",
+        fontFamily: FONT,
+        textShadow: "1px 1px 0 rgba(0,0,0,0.9), 0 0 4px rgba(0,0,0,0.9)",
+        whiteSpace: "nowrap",
+        pointerEvents: "none",
+        zIndex: "40",
+        display: "none",
+      });
+      document.body.appendChild(el);
+      this.tag = { id, el };
+    }
+
     // ---- speech bubbles ---------------------------------------------------
 
     bubble(id, text) {
@@ -263,9 +332,10 @@
       });
     }
 
-    // Per frame: hang each bubble over its speaker's ball.
+    // Per frame: hang each bubble over its speaker's ball and the name tag
+    // under the opponent's.
     frame() {
-      if (!this.bubbles.size) return;
+      if (!this.bubbles.size && !this.tag) return;
       const scene = this.scene;
       const cam = scene.activeCamera;
       if (!cam) return;
@@ -279,6 +349,28 @@
       const sy = rect ? rect.height / engine.getRenderHeight() : 1;
       const fwd = cam.getDirection(BABYLON.Axis.Z);
       const now = Date.now();
+      // Writes only on change: this runs every frame.
+      const put = (el, at) => {
+        const show =
+          !!at && BABYLON.Vector3.Dot(at.subtract(cam.position), fwd) > 0;
+        const display = show ? "block" : "none";
+        if (el.style.display !== display) el.style.display = display;
+        if (!show) return;
+        const p = BABYLON.Vector3.Project(
+          at,
+          BABYLON.Matrix.Identity(),
+          scene.getTransformMatrix(),
+          vp,
+        );
+        const left = Math.round((rect?.left ?? 0) + p.x * sx) + "px";
+        const top = Math.round((rect?.top ?? 0) + p.y * sy) + "px";
+        if (el.style.left !== left) el.style.left = left;
+        if (el.style.top !== top) el.style.top = top;
+      };
+      if (this.tag) {
+        const at = this.anchor(this.tag.id);
+        put(this.tag.el, at && new BABYLON.Vector3(at.x, at.y - 0.03, at.z));
+      }
       for (const [id, b] of this.bubbles) {
         if (now > b.until) {
           b.el.remove();
@@ -286,19 +378,7 @@
           continue;
         }
         const at = this.anchor(id);
-        const head = at && new BABYLON.Vector3(at.x, at.y + 0.08, at.z);
-        const show =
-          !!head && BABYLON.Vector3.Dot(head.subtract(cam.position), fwd) > 0;
-        b.el.style.display = show ? "block" : "none";
-        if (!show) continue;
-        const p = BABYLON.Vector3.Project(
-          head,
-          BABYLON.Matrix.Identity(),
-          scene.getTransformMatrix(),
-          vp,
-        );
-        b.el.style.left = Math.round((rect?.left ?? 0) + p.x * sx) + "px";
-        b.el.style.top = Math.round((rect?.top ?? 0) + p.y * sy) + "px";
+        put(b.el, at && new BABYLON.Vector3(at.x, at.y + 0.08, at.z));
       }
     }
   }

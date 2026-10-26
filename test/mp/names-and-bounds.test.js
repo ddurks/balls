@@ -14,7 +14,6 @@ const { startGolfServer } = require("./server.js");
 const { Bot, lobby } = require("./bot.js");
 const C = require("./checks.js");
 
-const PORT = 7846;
 const MAX_SNAPSHOT = 32 * 1024;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // eslint-disable-next-line no-control-regex
@@ -29,7 +28,6 @@ test(
   { timeout: 120000 },
   async (t) => {
     const srv = await startGolfServer({
-      port: PORT,
       env: { GOLF_TURN_TIMEOUT_MS: "1500", GOLF_FINISHED_LINGER_MS: "20000" },
     });
     const all = [];
@@ -91,22 +89,20 @@ test(
         const names = host.you.players.map((p) => p.name);
         assert.deepEqual(names, ["Host", "N".repeat(24)]);
         assert.ok(maxBytes(host) < 2048, `snapshot of ${maxBytes(host)} bytes`);
-        // A 1 MiB join frame is refused before it is read: no player at all.
+        // A 1 MiB join frame closes the socket before it is read (1009): no
+        // player at all.
         const huge = new Bot(srv.url, "N".repeat(1 << 20));
         all.push(huge);
         const joined = huge.connect({ timeout: 10000 }).then(
           () => true,
           () => false,
         );
-        await huge.until((b) => b.other.some((o) => o.msg?.t === "err"), {
-          label: "refusal",
+        await huge.until((b) => b.closed, {
+          label: "close",
+          allowClosed: true,
         });
-        huge.terminate();
         assert.equal(await joined, false);
-        assert.deepEqual(
-          huge.other.map((o) => o.msg?.code),
-          ["FRAME_TOO_LARGE"],
-        );
+        assert.equal(huge.closeInfo.code, 1009);
       },
     );
 

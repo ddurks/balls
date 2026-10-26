@@ -14,6 +14,11 @@
 // a shared challenge link) meets the opponent through the server's `rv`
 // rendezvous and shows a waiting splash until the match starts. window.golfNet
 // is the same GolfNet; golfNet.rv.state says where the meeting is at.
+//
+// Match entry: game.html?mode=course&match=ID (the address bar once a match
+// has started, a text-back link, the clubhouse's match list) takes this
+// browser's seat back in a started match: every connection says the
+// browser's player token first (`hello`), and the server seats by it.
 (function (global) {
   const params = new URLSearchParams(location.search);
   const isLocal =
@@ -33,6 +38,9 @@
     this.onMatch = null; // fired after onState, for the MatchCoordinator
     this.onPath = null; // fired with each relayed {playerId, shot, samples}
     this.rv = null; // {key, state} while meeting a challenger (rvBoot)
+    // The opponent's shots to watch before our turn (sent once, on taking our
+    // seat back), until the MatchCoordinator takes them.
+    this.replay = null;
     // Every match chat line received, kept here so lines that arrive before
     // the course has loaded (the waiting room, a restored log) aren't lost.
     this.chatLog = [];
@@ -60,6 +68,11 @@
       try {
         if (m.t === "welcome") {
           this.playerId = m.playerId;
+          this._send({
+            t: "action",
+            action: "hello",
+            message: Shared.playerToken(),
+          });
           const st = global.BallsStyle?.loadStyle();
           if (st)
             this._send({
@@ -80,6 +93,7 @@
                 ? { ...m.you, match: prev.match }
                 : m.you;
             if (m.you.chat) this.chatLog.push(...m.you.chat);
+            if (m.you.replay) this.replay = m.you.replay;
             if (this.onState) this.onState(this.you);
             if (this.onMatch) this.onMatch(this.you);
           }
@@ -116,6 +130,12 @@
   GolfNet.prototype.start = function () {
     this._send({ t: "action", action: "start" });
   };
+  GolfNet.prototype.resume = function (matchId) {
+    this._send({ t: "action", action: "resume", message: String(matchId) });
+  };
+  GolfNet.prototype.listMatches = function () {
+    this._send({ t: "action", action: "matches" });
+  };
   // Join-or-create the private match for a challenge's rendezvous key.
   // `token` is this side's own (see rvToken), so the server knows us when we
   // come back on a new connection.
@@ -148,12 +168,15 @@
   GolfNet.prototype.sendChat = function (text) {
     this._send({ t: "action", action: "mchat", message: String(text) });
   };
+  // A socket closed here is no longer net.ws by the time its close event
+  // fires, which tells a close we asked for from one we didn't.
   GolfNet.prototype.close = function () {
-    if (this.ws) {
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
       try {
-        this.ws.close();
+        ws.close();
       } catch {}
-      this.ws = null;
     }
   };
 
@@ -162,9 +185,9 @@
   // a private match for the first, and starts it when the host, seeing the
   // second arrive, sends the key again: a host whose socket died without the
   // server noticing never does, and its redial takes its place instead.
-  // rv.state: connecting -> waiting -> started | failed | left, and started ->
-  // failed (you = null) if the match's connection drops: M1 has no rejoin, so
-  // the server has forfeited it.
+  // rv.state: connecting -> waiting -> started | failed | left. Once started
+  // the address bar holds the match's link, and a dropped connection takes
+  // the seat back like any match link (matchBoot).
 
   // A clubhouse challenge's opponent (?vs=NAME) was in the room a moment ago
   // and is loading this page too. Past this, they aren't coming (their page
@@ -274,11 +297,8 @@
       splash.update(failure(title));
     };
     const lost = () => {
-      const you = net.you;
-      if (!you || !you.matchCode || you.phase === "finished") return;
-      net.rv.state = "failed";
-      net.you = null;
-      Splash.show(failure("Lost the connection to the match"));
+      const id = net.you?.match?.id;
+      if (id && net.you.phase !== "finished") matchBoot(id, net);
     };
 
     // The server refuses the key after its TTL; no point waiting past that.
@@ -308,8 +328,9 @@
     const connect = () => {
       net.connect();
       if (!net.ws) return giveUp("Can't reach the course");
-      net.ws.addEventListener("close", () => {
-        if (net.rv.state === "started") return lost();
+      const ws = net.ws;
+      ws.addEventListener("close", () => {
+        if (net.rv.state === "started") return net.ws === ws && lost();
         if (net.rv.state !== "connecting" && net.rv.state !== "waiting") return;
         arriveClock(false);
         // The course loading on this same thread can stall the handshake past
@@ -349,6 +370,12 @@
         clearTimeout(timer);
         arriveClock(false);
         splash.close();
+        if (you.match?.id)
+          global.history.replaceState(
+            null,
+            "",
+            Challenge.matchUrl(location, you.match.id),
+          );
         return;
       }
       // Once, per opponent: after the start the key is spent, and saying it
@@ -367,10 +394,71 @@
     connect();
   }
 
+  // ---- a match link ---------------------------------------------------------
+  // Back to our seat in a started match. The seat waits for us however long
+  // we're gone, so a dropped connection redials (backing off) for as long as
+  // the page is open. `net`: the rendezvous page's, once its match started.
+  function matchBoot(id, net = new GolfNet(WS_URL, Shared.playerName())) {
+    Object.assign(global, { golfNet: net });
+    const toClubhouse = () =>
+      Shared.roomFX.leave(Challenge.clubhouseUrl(location), {
+        from: "course",
+      });
+    const splash = net.you?.matchCode
+      ? null
+      : Splash.show({
+          title: "Finding your match…",
+          buttons: [
+            {
+              label: "Clubhouse",
+              kind: "stop",
+              cancel: true,
+              onClick: toClubhouse,
+            },
+          ],
+        });
+    let drops = 0;
+    const connect = () => {
+      net.connect();
+      const ws = net.ws;
+      if (!ws) return;
+      ws.addEventListener("close", () => {
+        if (net.ws !== ws) return; // closed on purpose
+        drops++;
+        setTimeout(connect, Math.min(1000 * 2 ** (drops - 1), 8000));
+      });
+    };
+    net.onReady = () => {
+      drops = 0;
+      net.resume(id);
+    };
+    net.onState = (you) => {
+      if (!you) return;
+      if (you.matchCode) return splash?.close();
+      // Not seated: not our match, gone, or taken over by another tab.
+      if (!you.notice) return;
+      net.close();
+      Splash.show({
+        title: you.notice,
+        buttons: [
+          {
+            label: "Clubhouse",
+            kind: "go",
+            cancel: true,
+            onClick: toClubhouse,
+          },
+        ],
+      });
+    };
+    connect();
+  }
+
   // ---- M0 dev entry ----------------------------------------------------------
   function devBoot() {
     const rvKey = params.get("rv");
     if (rvKey) return rvBoot(rvKey, params.get("vs"));
+    const matchId = params.get("match");
+    if (matchId) return matchBoot(matchId);
     const joinCode = params.get("join");
     const hosting = params.get("host") === "1";
     if (!joinCode && !hosting) return;
@@ -416,7 +504,34 @@
     document.addEventListener("DOMContentLoaded", devBoot);
   else devBoot();
 
+  // The clubhouse's "Your matches": a short visit to the golf server, which
+  // looks this browser's matches up by its token. Resolves with
+  // [{id, vs, myTurn, hole, status, finished}], newest first.
+  GolfNet.myMatches = function (timeoutMs = 8000) {
+    return new Promise((resolve, reject) => {
+      const net = new GolfNet(WS_URL, Shared.playerName());
+      const done = (settle, v) => {
+        clearTimeout(timer);
+        net.onReady = net.onState = null;
+        net.close();
+        settle(v);
+      };
+      const timer = setTimeout(
+        () => done(reject, new Error("no answer")),
+        timeoutMs,
+      );
+      net.onReady = () => net.listMatches();
+      net.onState = (you) => {
+        if (you.matches) done(resolve, you.matches);
+        else if (you.notice) done(reject, new Error(you.notice));
+      };
+      net.connect();
+      if (!net.ws) return done(reject, new Error("no socket"));
+      net.ws.addEventListener("close", () => done(reject, new Error("closed")));
+    });
+  };
+
   Object.assign(global, { GolfNet });
   if (typeof module !== "undefined" && module.exports)
-    module.exports = { GolfNet, rvBoot, ARRIVE_MS };
+    module.exports = { GolfNet, rvBoot, matchBoot, ARRIVE_MS };
 })(/** @type {any} */ (typeof globalThis !== "undefined" ? globalThis : this));

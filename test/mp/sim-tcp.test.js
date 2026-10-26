@@ -4,7 +4,7 @@
 // timeouts. Every match must finish (or be forfeited) and the survivors'
 // views and shots must agree with the server.
 // Run: node --test test/mp/sim-tcp.test.js
-//   MP_ONLY=<scenario substring>, MP_TIME_SCALE (8), MP_PORT (7833), MP_SEED
+//   MP_ONLY=<scenario substring>, MP_TIME_SCALE (8), MP_PORT (any free port), MP_SEED
 const test = require("node:test");
 const { setTimeout } = require("node:timers");
 const { startGolfServer } = require("./server.js");
@@ -16,7 +16,7 @@ const C = require("./checks.js");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TIME_SCALE = Number(process.env.MP_TIME_SCALE || 8);
 const ONLY = process.env.MP_ONLY || "";
-const PORT = Number(process.env.MP_PORT || 7833);
+const PORT = Number(process.env.MP_PORT) || undefined;
 const SEED = Number(process.env.MP_SEED || 0);
 
 async function setup(t, { env, links, seeds, sim = {} }) {
