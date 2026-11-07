@@ -1231,14 +1231,26 @@
     .score-card{width:min(94vmin,600px);height:min(94vmin,600px);max-width:none;min-width:0;
       border-radius:50%;padding:0;display:flex;align-items:center;justify-content:center;
       background:#fff;border:8px solid #2e8b48;}
-    .score-inner{width:70%;max-height:70%;overflow:auto;display:flex;flex-direction:column;
-      align-items:center;scrollbar-width:none;}
-    .score-inner::-webkit-scrollbar{display:none;}
+    .score-inner{width:70%;max-height:70%;display:flex;flex-direction:column;align-items:center;}
+    /* Only the table scrolls (a hot-seat game's many rows); the buttons always show. */
+    .score-table{width:100%;flex:0 1 auto;min-height:0;overflow:auto;scrollbar-width:none;}
+    .score-table::-webkit-scrollbar{display:none;}
+    .score-btns{flex:none;display:flex;justify-content:center;gap:10px;}
+    .score-btns .aero-btn{margin:0;}
     /* orb sheen that follows the circle instead of the rounded-rect top gloss */
     .score-card::before{inset:0;height:auto;border-radius:50%;
       background:radial-gradient(circle at 50% 24%,rgba(255,255,255,.55),rgba(255,255,255,0) 62%);}
     .score-title{font-size:30px;margin-bottom:2px;}
     .score-card .aero-sub{margin:2px 0 12px;}
+    /* A phone's circle is half the size: tighten everything so a round fits. */
+    @media (max-width:640px),(max-height:640px){
+      .score-title{font-size:24px;}
+      .score-card .aero-sub{margin:0 0 6px;font-size:14px;}
+      .score-card table.scorecard{margin:2px 0 10px;}
+      .score-card table.scorecard th,.score-card table.scorecard td{padding:4px 3px;font-size:13px;}
+      .score-btns{gap:8px;}
+      .score-btns .aero-btn{font-size:15px;padding:9px 14px;}
+    }
     table.scorecard{border-collapse:separate;border-spacing:0;width:100%;margin:6px 0 20px;
       border-radius:16px;overflow:hidden;box-shadow:0 4px 12px rgba(0,60,20,.15);}
     table.scorecard th,table.scorecard td{padding:7px 5px;font-size:14px;text-align:center;}
@@ -1324,9 +1336,9 @@
         `<div class="score-inner">
         <div class="aero-title score-title">SCORECARD</div>
         ${winLine}
-        <table class="scorecard"><thead>${head}${parRow}</thead>
-        <tbody class="players">${rows}</tbody></table>
-        <div>
+        <div class="score-table"><table class="scorecard"><thead>${head}${parRow}</thead>
+        <tbody class="players">${rows}</tbody></table></div>
+        <div class="score-btns">
           <button class="aero-btn" id="sbPlayAgain">Play Again</button>
           <button class="aero-btn secondary" id="sbClubhouse">Clubhouse</button>
         </div>
