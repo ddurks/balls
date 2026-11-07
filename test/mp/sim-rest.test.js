@@ -5,28 +5,25 @@
 // shots in sim matches): the game had no cap, and in a match the server
 // expired the shot at 60 s, charged a stroke and put the ball back where it
 // was hit from.
-// - hole 1 drive: plugs in a bunker's vertical lip, still spinning at ~80 rad/s.
-//   Sand holds a ball at any tilt, and the hold kept "real spin" for contact
-//   friction to act on, but with no weight on that face there was none.
 // - hole 3 chip: held in a bunker, it crept on at 1.6 cm/s. The hold pushed it
 //   into the contact normal it came to rest on, kept while held, which wasn't
 //   the face it then touched: part of the push ran along that face.
 // - hole 3 approach: wedged against a rock on rough too steep for the turf to
 //   hold, and still. Only the turf's hold counted as rest; the rock's contact
 //   wasn't support.
-// - hole 3 drive: caught under the edge of the fairway's mesh where it lies
-//   over the rough, pinned and still. Nothing the rolling law models holds it
-//   there; a ball that crawls slower than turf's catch speed for 2 s is now
-//   at rest whatever holds it.
+// (Two more cases, a drive plugged in a bunker's vertical lip and one pinned
+// under the fairway's edge, are gone with those edges: the course's seams are
+// flush now, so neither swing finds its trap.)
 // Each case is replayed a few times (the first swing after a hole loads can
 // take a slightly different line). Every replay must come to rest, still
 // enough for the game's own settle check, and the scenario must play out (the
 // ball rests where it used to be stuck).
-// And the sim itself plays a genuine shot to rest: a 9 iron off hole 2's
-// rough that runs out down the slope rolls for 52.5 s (crawling its last
-// metres at ~5 cm/s, above the game's 2 cm/s backstop). The sim used to cut
-// any shot off at 45 s, send the still-rolling ball's spot as its rest, and
-// report a stuck shot that wasn't.
+// And the sim itself plays a long roll-out to rest. It used to cut any shot
+// off at 45 s, send the still-rolling ball's spot as its rest, and report a
+// stuck shot that wasn't; its cap now outlasts the 45 s, short of the server's
+// 60 s shot timer. The 52 s roll-out this was found with crawled down a seam's
+// dip that the flush course no longer has (thousands of swings now find
+// nothing past ~30 s), so it's a 28 s putt off hole 2's desert, found by a sweep.
 // Run: node --test test/mp/sim-rest.test.js
 const test = require("node:test");
 const { SimClient } = require("./sim-client.js");
@@ -35,27 +32,6 @@ const { ClubData } = require("../../src/game/clubs.js");
 const { CONFIG } = require("../../src/game/config.js");
 
 const CASES = [
-  {
-    label: "hole 1 drive that plugs in a bunker's lip, spinning",
-    hole: 0,
-    pinIndex: 2,
-    windSeed: 995982218,
-    fromTee: true,
-    club: 12,
-    aim: -0.002612188790923387,
-    hit: {
-      deltaX: 63.38146292259512,
-      deltaY: -28.223705551736828,
-      force: 138.76292584519024,
-      swipeDuration: 0.01,
-    },
-    spin: {
-      t: 1.015857490242352,
-      dx: -50.453913887031376,
-      dy: -55.29384617228061,
-    },
-    stuckAt: { x: -27.942, y: 0.621, z: -104.744 },
-  },
   {
     label: "hole 3 chip that crept through a bunker",
     hole: 2,
@@ -103,23 +79,6 @@ const CASES = [
     },
     spin: { t: 1.0839927124693158, dx: 23.35276713129133, dy: 21.715073059313 },
     stuckAt: { x: 54.326, y: 1.81, z: -219.764 },
-  },
-  {
-    label: "hole 3 drive caught under the fairway's edge",
-    hole: 2,
-    pinIndex: 0,
-    windSeed: 60310685,
-    fromTee: true,
-    club: 10,
-    aim: -0.014986581834868645,
-    hit: {
-      deltaX: -100,
-      deltaY: -35.1567916624939,
-      force: 175,
-      swipeDuration: 0.01,
-    },
-    spin: { t: 0.9333333333333338, dx: 90.077443420887, dy: 16.6308737359941 },
-    stuckAt: { x: 50.08, y: 2.166, z: -60.927 },
   },
 ];
 const REPLAYS = 3;
@@ -212,7 +171,7 @@ for (const c of CASES)
     },
   );
 
-test("the sim plays a genuine 52 s roll-out to rest, not cut off as stuck", async (t) => {
+test("the sim plays a genuine long roll-out to rest, not cut off as stuck", async (t) => {
   // Defaults (the sim's own shot cap), except no mid-air spin: the swing had none.
   const sim = new SimClient("ws://127.0.0.1:1", "Dave", {
     timeScale: Infinity,
@@ -223,25 +182,29 @@ test("the sim plays a genuine 52 s roll-out to rest, not cut off as stuck", asyn
   await sim.buildWorld();
   const w = sim.world;
   await w.loadHole(1, 4);
-  w.wind.setFromSeed(497971582);
-  // A height-grid cell on the rough right of the fairway, as a sweep found it.
-  const x = 22.10289001464844;
-  const z = 31.10020446777344;
+  w.wind.setFromSeed(186155557);
+  // A spot on hole 2's desert, as a sweep found it.
+  const x = 20.222043693065643;
+  const z = -10.402905464172363;
   sim._place({ x, y: w.course.groundY(x, z) + 0.03, z });
   w.course.lastLie = w.ball.getPosition().clone();
-  const bearing = -0.14442905568428394;
+  const bearing = 2.298444231748581;
   const plan = {
-    club: ClubData.getClub(3),
-    target: { x: 8.997318267822266, y: -0.10478242836401819, z: -59 },
+    club: ClubData.getClub(0),
+    target: {
+      x: x + Math.sin(bearing) * 100,
+      y: 0,
+      z: z - Math.cos(bearing) * 100,
+    },
     bearing,
-    strength: 1.75,
+    strength: 0.3081337302923203,
     dist: 0,
     putt: false,
     trials: [],
     aim: bearing,
     power: 1,
   };
-  w.clubSelector.currentClub = 3;
+  w.clubSelector.currentClub = 0;
   const hit = sim._swipe(plan, plan.strength);
   if (!hit) throw new Error("swipe produced no hit");
   const shot = { spins: [], truth: [], sent: [], sentAt: [] };
@@ -254,8 +217,10 @@ test("the sim plays a genuine 52 s roll-out to rest, not cut off as stuck", asyn
     throw new Error(
       `cut off at ${shot.simSeconds.toFixed(1)} s while still rolling at ${v.toFixed(3)} m/s`,
     );
-  // The scenario played out: a roll-out longer than the old 45 s cap, ending
-  // inside the server's 60 s shot timer.
-  if (!(shot.simSeconds > 46 && shot.simSeconds < sim.opts.maxShotSeconds))
+  // The scenario played out (a long crawl to rest), under a cap past the old
+  // 45 s and inside the server's 60 s shot timer.
+  if (!(shot.simSeconds > 25 && shot.simSeconds < sim.opts.maxShotSeconds))
     throw new Error(`the shot took ${shot.simSeconds.toFixed(1)} s`);
+  if (!(sim.opts.maxShotSeconds > 45 && sim.opts.maxShotSeconds < 60))
+    throw new Error(`the sim's shot cap is ${sim.opts.maxShotSeconds} s`);
 });

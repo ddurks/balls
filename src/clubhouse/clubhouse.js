@@ -64,14 +64,18 @@
   }[ROOM];
   const MY_AREA = ROOM_CFG.area;
 
-  const MY_NAME = Shared.playerName();
+  let MY_NAME = ""; // read once the title screen (title.js) has had its say
 
   // ---- boot ------------------------------------------------------------------
   function whenReady() {
     if (typeof BABYLON === "undefined" || !BABYLON.Engine) {
       return setTimeout(whenReady, 30);
     }
-    start().catch((e) => console.error("[clubhouse] fatal", e));
+    // The title screen (a fresh visit) picks where to go first; Clubhouse or
+    // Challenge a Friend brings the player here.
+    Title.choice.then((choice) =>
+      start(choice).catch((e) => console.error("[clubhouse] fatal", e)),
+    );
   }
   whenReady();
 
@@ -158,7 +162,9 @@
   }
 
   // ---- main ------------------------------------------------------------------
-  async function start() {
+  async function start(choice) {
+    MY_NAME = Shared.playerName();
+    let roomShown = false; // the boot screen is gone
     // Preload the handwriting font so canvas-baked text (door signs, CIGS panel,
     // skins) renders in it — canvas ignores @font-face until the face is loaded.
     if (document.fonts?.load)
@@ -2009,6 +2015,7 @@
       net.sendFace(myStyle.face || "");
       net.sendSkinImg(myStyle.skinImg || "");
       challenges.connected();
+      phoneFromTitle();
     };
     const remotes = new Map(); // id -> { av, x,z,ry, tx,tz,try, moving, seen }
     const faceStore = new Map(); // id -> {v, data} drawn-face blobs (from broadcasts)
@@ -2232,7 +2239,9 @@
         link: defaultPortrait,
         phone: phonePortrait,
       },
-      myName: MY_NAME,
+      get myName() {
+        return MY_NAME;
+      },
       goToCourse(url) {
         localStorage.setItem("ballsHold", me.holdType); // carried like a door walk
         net.close();
@@ -2834,6 +2843,16 @@
     Shared.hideBoot();
     Shared.roomFX.enter(); // iris open now the room is built (no-op on cold loads)
     challenges.start(); // opened from a friend's challenge link?
+    roomShown = true;
+    phoneFromTitle();
+
+    // Challenge a Friend on the title screen: the wall phone's challenge, once
+    // the room is up and the clubhouse has us (it needs our id to mint a link).
+    function phoneFromTitle() {
+      if (choice !== "challenge" || !roomShown || !net.playerId) return;
+      choice = null;
+      challenges.tapPhone();
+    }
 
     function goToDoor(kind) {
       const d = doors.find((dd) => dd.kind === kind);

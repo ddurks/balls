@@ -192,15 +192,15 @@ const ROCK_SHOT = {
   strength: 1.75,
   bearing: -0.7453981633974481,
 };
-// A 9 iron off hole 2's rough that rolls out for 52.5 s (sim-rest.test.js).
+// A putt off hole 2's desert that rolls out for 28 s (sim-rest.test.js).
 const LONG_ROLL = {
   hole: 1,
   pin: 4,
-  wind: 497971582,
-  at: { x: 22.10289001464844, z: 31.10020446777344 },
-  club: 3,
-  strength: 1.75,
-  bearing: -0.14442905568428394,
+  wind: 186155557,
+  at: { x: 20.222043693065643, z: -10.402905464172363 },
+  club: 0,
+  strength: 0.3081337302923203,
+  bearing: 2.298444231748581,
 };
 
 test("a ball that strikes a rock between two 20 Hz samples replays within cm of its path", async (t) => {
@@ -225,7 +225,7 @@ test("a long roll-out streams inside the budget all the way", async (t) => {
   t.diagnostic(
     `${shot.sent.length} poses in ${shot.simSeconds.toFixed(1)} s: ${cost.perSecond.toFixed(0)} B/s (worst 5 s ${cost.worst.toFixed(0)}); 20 Hz one-pose frames: ${old.perSecond.toFixed(0)} B/s`,
   );
-  assert.ok(shot.simSeconds > 46, "the roll-out played out as found");
+  assert.ok(shot.simSeconds > 25, "the roll-out played out as found");
   assert.ok(replayError(shot.sent, shot.truth) < 0.15);
   assert.ok(cost.worst < 0.8 * BUDGET, JSON.stringify(cost));
   assert.ok(old.perSecond > 2 * BUDGET); // what it used to cost

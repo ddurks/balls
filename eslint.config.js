@@ -40,6 +40,8 @@ const browserGlobals = {
   ClubChallenges: "readonly", // window.ClubChallenges from clubhouse/challenges.js
   GolfNet: "readonly", // window.GolfNet from golfnet.js (the clubhouse reads the leaderboard)
   Leaderboard: "readonly", // window.Leaderboard from clubhouse/leaderboard.js
+  Title: "readonly", // window.Title from clubhouse/title.js (the title screen's choice)
+  PlayerName: "readonly", // window.PlayerName from shared/name.js
   ImageData: "readonly",
   Uint8ClampedArray: "readonly",
   Uint8Array: "readonly",

@@ -225,23 +225,9 @@
 
   // ---- player name -----------------------------------------------------------
   // The name shown in the clubhouse, on a challenge link and on the course.
-  // Until the player picks one (ballsName), a guest name is made up once and
-  // kept: rolled per page, the challenger in the feed or a link turned out to
-  // be someone else on the course.
-  let guestName = null; // storage blocked: at least one name per page
-  function playerName() {
-    try {
-      const chosen = (localStorage.getItem("ballsName") || "").trim();
-      if (chosen) return chosen;
-      const kept = localStorage.getItem("ballsGuestName");
-      if (kept) return kept;
-    } catch {}
-    if (!guestName) guestName = "Guest" + Math.floor(100 + Math.random() * 900);
-    try {
-      localStorage.setItem("ballsGuestName", guestName);
-    } catch {}
-    return guestName;
-  }
+  // The player's name lives in name.js (loaded first: the title screen needs
+  // it before this file); Shared.playerName stays the way the rest reads it.
+  const playerName = () => global.PlayerName.get();
 
   function hideBoot() {
     const el =

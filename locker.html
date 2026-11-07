@@ -389,6 +389,7 @@
         if (chainIndex >= scriptChain.length) {
           // Shared helper modules load (in order) before the editor script.
           loadLocalScripts([
+            "src/shared/name.js",
             "src/shared/shared.js",
             "src/shared/balls.js",
             "src/shared/materials.js",

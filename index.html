@@ -159,6 +159,10 @@
       </div>
     </div>
 
+    <!-- The title screen first, so it's up at once; everything below loads behind it. -->
+    <script src="src/shared/name.js"></script>
+    <script src="src/clubhouse/title.js"></script>
+
     <!-- Babylon core + GLTF loaders (no Havok: the clubhouse is physics-free). -->
     <script>
       const scriptChain = [
