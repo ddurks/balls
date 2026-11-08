@@ -44,6 +44,7 @@ for f in index.html game.html locker.html; do
   aws s3 cp "$f" "s3://${BUCKET}/$f" --cache-control "no-cache"
 done
 aws s3 cp favicon.ico "s3://${BUCKET}/favicon.ico" --cache-control "public,max-age=86400"
+aws s3 cp apple-touch-icon.png "s3://${BUCKET}/apple-touch-icon.png" --cache-control "public,max-age=86400"
 
 # Discover the distribution by its alias so no id needs hardcoding.
 DIST_ID=$(aws cloudfront list-distributions \
