@@ -17,7 +17,18 @@ echo "==> Target bucket: s3://${BUCKET}"
 # the file is unchanged, or fresh bytes automatically when it changes — no manual
 # ?v= cache-busting needed.
 echo "==> Syncing assets (no-cache, ETag-revalidated)"
-aws s3 sync assets "s3://${BUCKET}/assets" --delete --cache-control "no-cache"
+aws s3 sync assets "s3://${BUCKET}/assets" --delete --cache-control "no-cache" --exclude "*.glb"
+
+# GLBs are mostly uncompressed geometry (they gzip to about half), but S3 serves
+# them as binary/octet-stream, which CloudFront won't compress. Upload them
+# pre-gzipped instead. -n keeps the bytes (and so the ETag) identical between
+# deploys, so returning visitors still get a 304. The sync above skips *.glb, so
+# a deleted model stays in the bucket until removed by hand.
+echo "==> Uploading GLBs (gzipped)"
+find assets -name "*.glb" | while read -r f; do
+  gzip -9nc "$f" | aws s3 cp - "s3://${BUCKET}/$f" --only-show-errors \
+    --content-encoding gzip --content-type model/gltf-binary --cache-control "no-cache"
+done
 
 # Vendored Babylon lib is large and effectively never changes: cache hard for a year.
 echo "==> Syncing babylon (immutable, 1y)"

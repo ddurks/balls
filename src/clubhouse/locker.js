@@ -30,11 +30,11 @@
   }
 
   function woodTex(scene) {
-    return fileTex(scene, "wood-color.png");
+    return fileTex(scene, "wood-color.ktx2");
   }
 
   function shagTex(scene) {
-    return fileTex(scene, "carpet-color.png");
+    return fileTex(scene, "carpet-color.ktx2");
   }
 
   function buildRoom(scene, shadow) {

@@ -25,7 +25,7 @@
   // /assets is served immutable in production, so a texture/model URL must change
   // for a redeploy to reach returning users. This is the single source of truth —
   // bump it on any asset rebuild. v(path) appends it; loadModel() takes `version`.
-  const ASSET_V = "17";
+  const ASSET_V = "18";
   const v = (path) => path + (path.includes("?") ? "&" : "?") + "v=" + ASSET_V;
 
   // Point Babylon's KTX2 transcoder at the self-hosted decoder + WASM (vendored

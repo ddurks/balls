@@ -74,6 +74,9 @@ async function startGolfServer({
   const cfgPath = path.join(dir, "golf.config.json");
   const cfg = JSON.parse(fs.readFileSync(GOLF_CONFIG, "utf8"));
   cfg.worldServer.port = port;
+  // The live cap (worldServer.maxPlayers) refuses joins with WORLD_FULL; the
+  // fuzz suites put far more bots than that through one private world.
+  cfg.worldServer.maxPlayers = 10000;
   fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 
   const tsNode = require.resolve("ts-node/dist/bin.js", {

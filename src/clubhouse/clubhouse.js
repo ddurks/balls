@@ -94,11 +94,11 @@
   }
 
   function woodTexture(scene) {
-    return fileTex(scene, "wood-color.png");
+    return fileTex(scene, "wood-color.ktx2");
   }
 
   function shagTexture(scene) {
-    return fileTex(scene, "carpet-color.png");
+    return fileTex(scene, "carpet-color.ktx2");
   }
 
   // Compute per-vertex tangents from positions/uvs/normals so StandardMaterial
@@ -158,7 +158,7 @@
   }
 
   function stoneTexture(scene) {
-    return fileTex(scene, "stone-color.png");
+    return fileTex(scene, "stone-color.ktx2");
   }
 
   // ---- main ------------------------------------------------------------------
@@ -227,14 +227,14 @@
     const stoneTex = stoneTexture(scene);
     const woodMat = flatMat("wood", scene, woodTex);
     woodMat.emissiveColor = new BABYLON.Color3(0.13, 0.11, 0.07);
-    woodMat.bumpTexture = fileTex(scene, "wood-normal.png");
+    woodMat.bumpTexture = fileTex(scene, "wood-normal.ktx2");
     woodMat.bumpTexture.level = 0.8;
     const shagMat = flatMat("shag", scene, shagTex);
-    shagMat.bumpTexture = fileTex(scene, "carpet-normal.png");
+    shagMat.bumpTexture = fileTex(scene, "carpet-normal.ktx2");
     shagMat.bumpTexture.level = 0.7;
     const stoneMat = flatMat("stone", scene, stoneTex);
     stoneMat.emissiveColor = new BABYLON.Color3(0.15, 0.15, 0.15);
-    stoneMat.bumpTexture = fileTex(scene, "stone-normal.png");
+    stoneMat.bumpTexture = fileTex(scene, "stone-normal.ktx2");
     stoneMat.bumpTexture.level = 0.6;
     const creamMat = colorMat(
       "cream",
@@ -274,9 +274,9 @@
     const vipFloorMat = flatMat(
       "floorVip",
       scene,
-      fileTex(scene, "carpet-vip-color.png"),
+      fileTex(scene, "carpet-vip-color.ktx2"),
     );
-    vipFloorMat.bumpTexture = fileTex(scene, "carpet-normal.png");
+    vipFloorMat.bumpTexture = fileTex(scene, "carpet-normal.ktx2");
     vipFloorMat.bumpTexture.level = 0.7;
     const fireRedMat = colorMat(
       "fireRed",
@@ -1256,8 +1256,8 @@
       const ps = new BABYLON.ParticleSystem("smoke", 220, scene);
       ps.particleTexture = smokeTex;
       ps.isAnimationSheetEnabled = true;
-      ps.spriteCellWidth = 256;
-      ps.spriteCellHeight = 256; // 1792 / 7
+      ps.spriteCellWidth = 128;
+      ps.spriteCellHeight = 128; // 896 / 7
       ps.startSpriteCellID = 0;
       ps.endSpriteCellID = 45;
       ps.spriteRandomStartCell = true;
